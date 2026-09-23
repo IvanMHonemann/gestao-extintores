@@ -1,7 +1,7 @@
 import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
@@ -15,11 +15,31 @@ export function useAuth(options?: UseAuthOptions) {
   // desync it from an in-flight login's `state`.
   const { redirectOnUnauthenticated = false, redirectPath } = options ?? {};
   const utils = trpc.useUtils();
+  const [isOffline, setIsOffline] = useState(() => typeof navigator !== "undefined" && !navigator.onLine);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => { window.removeEventListener("online", handleOnline); window.removeEventListener("offline", handleOffline); };
+  }, []);
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
+    enabled: !isOffline,
     retry: false,
     refetchOnWindowFocus: false,
   });
+
+  const cachedUser = useMemo(() => {
+    if (typeof window === "undefined" || !isOffline) return null;
+    try {
+      const raw = localStorage.getItem("manus-runtime-user-info");
+      return raw && raw !== "null" ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }, [isOffline]);
 
   const logoutMutation = trpc.auth.logout.useMutation({
     onSuccess: () => {
@@ -45,21 +65,20 @@ export function useAuth(options?: UseAuthOptions) {
       try {
         sessionStorage.removeItem("manus-cookie");
       } catch {}
+      try { localStorage.removeItem("manus-runtime-user-info"); } catch {}
       utils.auth.me.setData(undefined, null);
       await utils.auth.me.invalidate();
     }
   }, [logoutMutation, utils]);
 
   const state = useMemo(() => {
-    localStorage.setItem(
-      "manus-runtime-user-info",
-      JSON.stringify(meQuery.data)
-    );
+    if (meQuery.data) localStorage.setItem("manus-runtime-user-info", JSON.stringify(meQuery.data));
+    const user = meQuery.data ?? cachedUser;
     return {
-      user: meQuery.data ?? null,
-      loading: meQuery.isLoading || logoutMutation.isPending,
+      user,
+      loading: (meQuery.isLoading && !cachedUser) || logoutMutation.isPending,
       error: meQuery.error ?? logoutMutation.error ?? null,
-      isAuthenticated: Boolean(meQuery.data),
+      isAuthenticated: Boolean(user),
     };
   }, [
     meQuery.data,
@@ -67,10 +86,12 @@ export function useAuth(options?: UseAuthOptions) {
     meQuery.isLoading,
     logoutMutation.error,
     logoutMutation.isPending,
+    cachedUser,
   ]);
 
   useEffect(() => {
     if (!redirectOnUnauthenticated) return;
+    if (isOffline) return;
     if (meQuery.isLoading || logoutMutation.isPending) return;
     if (state.user) return;
     if (typeof window === "undefined") return;
@@ -84,6 +105,7 @@ export function useAuth(options?: UseAuthOptions) {
     }
   }, [
     redirectOnUnauthenticated,
+    isOffline,
     redirectPath,
     logoutMutation.isPending,
     meQuery.isLoading,
