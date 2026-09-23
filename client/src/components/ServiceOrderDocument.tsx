@@ -1,6 +1,8 @@
 import React, { useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Printer, ArrowLeft, MessageCircle } from "lucide-react";
+import { jsPDF } from "jspdf";
+import { toast } from "sonner";
 
 interface ServiceOrderDocumentProps {
   order: any;
@@ -21,11 +23,138 @@ export function ServiceOrderDocument({
     window.print();
   };
 
-  const handleShareWhatsApp = () => {
-    const orderLabel = order?.orderNumber ? `OS nº ${String(order.orderNumber).padStart(5, "0")}` : "Ordem de Serviço";
-    const shareUrl = window.location.href;
-    const message = `${orderLabel} — documento pronto para visualizar e salvar em PDF: ${shareUrl}`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
+  const handleShareWhatsApp = async () => {
+    if (!componentRef.current) return;
+
+    try {
+      toast.info("Gerando o PDF da Ordem de Serviço...");
+      const pdf = new jsPDF("p", "mm", "a4");
+      const margin = 12;
+      const pageWidth = 210;
+      const contentWidth = pageWidth - margin * 2;
+      let y = 14;
+      const lineHeight = 5;
+      const text = (value: unknown) => String(value ?? "—");
+      const money = (value: unknown) => value === undefined || value === null || value === "" ? "" : `R$ ${Number(value).toFixed(2)}`;
+      const section = (title: string) => {
+        pdf.setFillColor(226, 232, 240);
+        pdf.rect(margin, y, contentWidth, 7, "F");
+        pdf.setDrawColor(30, 41, 59);
+        pdf.rect(margin, y, contentWidth, 7);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(9);
+        pdf.text(title, pageWidth / 2, y + 4.8, { align: "center" });
+        y += 7;
+      };
+      const row = (label: string, value: string, x = margin + 3, width = contentWidth - 6) => {
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(8);
+        pdf.text(label, x, y);
+        pdf.setFont("helvetica", "normal");
+        pdf.text(pdf.splitTextToSize(value, width - 38), x + 38, y);
+        y += lineHeight;
+      };
+
+      pdf.setDrawColor(15, 23, 42);
+      pdf.setLineWidth(0.6);
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(18);
+      pdf.text("CONTROLE DE EXTINTORES", margin, y + 7);
+      pdf.setFontSize(9);
+      pdf.text("GESTÃO E MANUTENÇÃO", margin, y + 13);
+      pdf.setFontSize(15);
+      pdf.text("ORDEM DE SERVIÇO", pageWidth - margin, y + 7, { align: "right" });
+      pdf.setFontSize(9);
+      pdf.text(`Nº: ${String(order?.orderNumber || 1001).padStart(5, "0")}`, pageWidth - margin, y + 13, { align: "right" });
+      pdf.text(`DATA: ${formatDateBR(order?.orderDate)}`, pageWidth - margin, y + 18, { align: "right" });
+      y += 24;
+      pdf.line(margin, y, pageWidth - margin, y);
+      y += 4;
+
+      pdf.rect(margin, y, contentWidth, 35);
+      section("DADOS DO CLIENTE");
+      row("EMPRESA:", text(client?.companyName));
+      row("ENDEREÇO:", text(client?.address));
+      row("CIDADE:", `${text(client?.city)}   CEP: ${text(client?.cep)}`);
+      row("CNPJ:", `${text(client?.cnpj)}   FONE: ${text(client?.phone)}`);
+      row("RESPONSÁVEL:", text(order?.responsibleName || client?.contactName));
+      row("CPF:", `${text(order?.responsibleCpf || client?.cpf)}   NASC.: ${text(order?.responsibleBirthDate || client?.birthDate)}`);
+      y += 3;
+
+      section("SERVIÇOS PRESTADOS");
+      const tableTop = y;
+      const col = [margin, margin + 93, margin + 116, margin + 151, pageWidth - margin];
+      pdf.rect(margin, y, contentWidth, 8);
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(8);
+      ["DESCRIÇÃO", "QTD.", "VALOR UNID.", "VALOR TOTAL"].forEach((label, i) => pdf.text(label, col[i] + (i === 0 ? 3 : (col[i + 1] - col[i]) / 2), y + 5, { align: i === 0 ? "left" : "center" }));
+      y += 8;
+      displayItems.forEach((item) => {
+        pdf.rect(margin, y, contentWidth, 7);
+        pdf.setFont("helvetica", "normal");
+        pdf.text(text(item.description), margin + 3, y + 4.5, { maxWidth: 88 });
+        pdf.text(text(item.quantity), col[1] + 11, y + 4.5, { align: "center" });
+        pdf.text(money(item.unitPrice), col[2] + 17, y + 4.5, { align: "right" });
+        pdf.text(money(item.totalPrice), col[3] + 27, y + 4.5, { align: "right" });
+        col.slice(1, -1).forEach((x) => pdf.line(x, y, x, y + 7));
+        y += 7;
+      });
+      pdf.line(col[1], tableTop, col[1], y);
+      pdf.line(col[2], tableTop, col[2], y);
+      pdf.line(col[3], tableTop, col[3], y);
+      y += 5;
+
+      section("STATUS E VENCIMENTOS");
+      row("TROCADO E ENTREGUE:", `${text(order?.replacedAndDelivered)}    DEIXOU RESERVA: ${text(order?.leftReserve)}`);
+      row("VENCIMENTO DO EXTINTOR:", formatDateBR(order?.extinguisherExpirationDate));
+      row("VENCIMENTO DO ALVARÁ:", formatDateBR(order?.permitExpirationDate));
+      y += 3;
+
+      section("FORMA DE PAGAMENTO");
+      row("VALOR TOTAL:", money(order?.totalAmount));
+      row("FORMA DE PAGAMENTO:", text(order?.paymentMethod));
+      row("NÚMERO DE PARCELAS:", text(order?.installments));
+      row("DATAS:", text(order?.paymentDates));
+      y += 13;
+      pdf.line(margin, y, margin + 78, y);
+      pdf.line(pageWidth - margin - 78, y, pageWidth - margin, y);
+      pdf.setFontSize(8);
+      pdf.text("CONTROLE DE EXTINTORES", margin + 39, y + 5, { align: "center" });
+      pdf.text("PROPRIETÁRIO OU RESPONSÁVEL", pageWidth - margin - 39, y + 5, { align: "center" });
+      pdf.text(`CPF: ${text(order?.responsibleCpf || client?.cpf)}`, pageWidth - margin - 78, y + 10);
+      pdf.text(`DATA NASC.: ${text(order?.responsibleBirthDate || client?.birthDate)}`, pageWidth - margin - 78, y + 15);
+
+      const orderNumber = String(order?.orderNumber || order?.id || "ordem").padStart(5, "0");
+      const fileName = `ordem-servico-${orderNumber}.pdf`;
+      const file = new File([pdf.output("blob")], fileName, { type: "application/pdf" });
+      const shareData = {
+        title: `Ordem de Serviço ${orderNumber}`,
+        text: "Segue a Ordem de Serviço em PDF.",
+        files: [file],
+      };
+
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+        await navigator.share(shareData);
+        toast.success("PDF pronto para ser enviado. Selecione o WhatsApp na tela de compartilhamento.");
+        return;
+      }
+
+      // Navegadores sem compartilhamento de arquivos: baixa o PDF real para anexar manualmente no WhatsApp.
+      const downloadUrl = URL.createObjectURL(file);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(downloadUrl);
+      toast.success("PDF baixado. Anexe o arquivo baixado na conversa do WhatsApp.");
+    } catch (error) {
+      if ((error as DOMException)?.name !== "AbortError") {
+        console.error("Falha ao gerar PDF:", error);
+        toast.error("Não foi possível gerar o PDF. Tente novamente.");
+      }
+    }
   };
 
   // Formata data YYYY-MM-DD para DD / MM / AAAA
@@ -78,7 +207,7 @@ export function ServiceOrderDocument({
             className="border-green-600 text-green-700 hover:bg-green-50 gap-2 font-semibold"
           >
             <MessageCircle className="w-4 h-4" />
-            Compartilhar PDF no WhatsApp
+            Compartilhar arquivo PDF no WhatsApp
           </Button>
           <Button
             onClick={handlePrint}
