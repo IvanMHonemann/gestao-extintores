@@ -32,7 +32,7 @@ export function useAuth(options?: UseAuthOptions) {
   });
 
   const cachedUser = useMemo(() => {
-    if (typeof window === "undefined" || !isOffline) return null;
+    if (typeof window === "undefined") return null;
     try {
       const raw = localStorage.getItem("manus-runtime-user-info");
       return raw && raw !== "null" ? JSON.parse(raw) : null;
