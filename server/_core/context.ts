@@ -10,6 +10,7 @@ export type TrpcContext = {
   res: CreateExpressContextOptions["res"];
   user: User | null;
   accountId?: number;
+  memberAccountId?: number;
   isMember?: boolean;
 };
 
@@ -18,6 +19,7 @@ export async function createContext(
 ): Promise<TrpcContext> {
   let user: User | null = null;
   let accountId: number | undefined;
+  let memberAccountId: number | undefined;
   let isMember = false;
 
   const cookies = parseCookie(opts.req.headers.cookie ?? "");
@@ -35,6 +37,7 @@ export async function createContext(
       updatedAt: memberAccount.updatedAt,
       lastSignedIn: memberAccount.createdAt,
     };
+    memberAccountId = memberAccount.id;
     accountId = memberAccount.role === "admin" ? undefined : memberAccount.id;
     isMember = memberAccount.role !== "admin";
   }
@@ -53,6 +56,7 @@ export async function createContext(
     res: opts.res,
     user,
     accountId,
+    memberAccountId,
     isMember,
   };
 }

@@ -29,6 +29,23 @@ export const appRouter = router({
         return { success: true } as const;
       }),
 
+    recoverPassword: publicProcedure
+      .input(z.object({ email: z.string().email(), recoveryCode: z.string().min(1), newPassword: z.string().min(8, "A nova senha deve ter pelo menos 8 caracteres") }))
+      .mutation(async ({ input }) => {
+        const recovered = await memberAuth.recoverMemberPassword(input.email, input.recoveryCode, input.newPassword);
+        if (!recovered) throw new TRPCError({ code: "UNAUTHORIZED", message: "E-mail ou código de recuperação inválido." });
+        return { success: true, recoveryCode: recovered.recoveryCode } as const;
+      }),
+
+    changePassword: protectedProcedure
+      .input(z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(8, "A nova senha deve ter pelo menos 8 caracteres") }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.memberAccountId) throw new TRPCError({ code: "BAD_REQUEST", message: "A troca de senha está disponível para contas próprias." });
+        const changed = await memberAuth.changeMemberPassword(ctx.memberAccountId, input.currentPassword, input.newPassword);
+        if (!changed) throw new TRPCError({ code: "UNAUTHORIZED", message: "A senha atual está incorreta." });
+        return { success: true } as const;
+      }),
+
     logout: publicProcedure.mutation(async ({ ctx }) => {
       const cookies = parseCookie(ctx.req.headers.cookie ?? "");
       await memberAuth.revokeMemberSession(cookies[MEMBER_COOKIE_NAME] ?? "");
@@ -53,8 +70,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => {
         try {
-          const id = await memberAuth.createMemberAccount(input);
-          return { id };
+          return await memberAuth.createMemberAccount(input);
         } catch (error: any) {
           if (error?.code === "ER_DUP_ENTRY") {
             throw new TRPCError({ code: "CONFLICT", message: "Este e-mail já está cadastrado." });
@@ -73,6 +89,12 @@ export const appRouter = router({
           }
           throw error;
         }
+        return { success: true } as const;
+      }),
+    resetPassword: adminProcedure
+      .input(z.object({ id: z.number(), newPassword: z.string().min(8, "A nova senha deve ter pelo menos 8 caracteres") }))
+      .mutation(async ({ input }) => {
+        await memberAuth.resetMemberPassword(input.id, input.newPassword);
         return { success: true } as const;
       }),
   }),

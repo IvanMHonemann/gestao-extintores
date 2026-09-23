@@ -19,6 +19,41 @@ export function verifyPassword(password: string, encoded: string) {
   return expected.length === derived.length && timingSafeEqual(expected, derived);
 }
 
+export async function changeMemberPassword(accountId: number, currentPassword: string, newPassword: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const result = await db.select().from(memberAccounts).where(eq(memberAccounts.id, accountId)).limit(1);
+  const account = result[0];
+  if (!account || !verifyPassword(currentPassword, account.passwordHash)) return false;
+  await db.update(memberAccounts).set({ passwordHash: hashPassword(newPassword) }).where(eq(memberAccounts.id, accountId));
+  return true;
+}
+
+export async function resetMemberPassword(accountId: number, newPassword: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  await db.update(memberAccounts).set({ passwordHash: hashPassword(newPassword) }).where(eq(memberAccounts.id, accountId));
+  await db.delete(memberSessions).where(eq(memberSessions.accountId, accountId));
+}
+
+export async function setRecoveryCode(accountId: number, recoveryCode: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  await db.update(memberAccounts).set({ recoveryCodeHash: hashPassword(recoveryCode) }).where(eq(memberAccounts.id, accountId));
+}
+
+export async function recoverMemberPassword(email: string, recoveryCode: string, newPassword: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const result = await db.select().from(memberAccounts).where(eq(memberAccounts.email, email.toLowerCase())).limit(1);
+  const account = result[0];
+  if (!account?.active || !account.recoveryCodeHash || !verifyPassword(recoveryCode, account.recoveryCodeHash)) return false;
+  const nextRecoveryCode = `EXT-${randomBytes(12).toString("base64url")}`;
+  await db.update(memberAccounts).set({ passwordHash: hashPassword(newPassword), recoveryCodeHash: hashPassword(nextRecoveryCode) }).where(eq(memberAccounts.id, account.id));
+  await db.delete(memberSessions).where(eq(memberSessions.accountId, account.id));
+  return { recoveryCode: nextRecoveryCode };
+}
+
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -40,14 +75,16 @@ export async function createMemberAccount(input: {
 }, role: "user" | "admin" = "user") {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
+  const recoveryCode = `EXT-${randomBytes(12).toString("base64url")}`;
   const result = await db.insert(memberAccounts).values({
     companyName: input.companyName,
     userName: input.userName,
     email: input.email.toLowerCase(),
     passwordHash: hashPassword(input.password),
+    recoveryCodeHash: hashPassword(recoveryCode),
     role,
   });
-  return Number(result[0].insertId);
+  return { id: Number(result[0].insertId), recoveryCode };
 }
 
 export async function listMemberAccounts() {

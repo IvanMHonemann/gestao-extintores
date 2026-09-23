@@ -23,6 +23,7 @@ export const memberAccounts = mysqlTable("member_accounts", {
   userName: varchar("userName", { length: 255 }).notNull(),
   email: varchar("email", { length: 320 }).notNull().unique(),
   passwordHash: varchar("passwordHash", { length: 255 }).notNull(),
+  recoveryCodeHash: varchar("recoveryCodeHash", { length: 255 }),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
   active: boolean("active").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),

@@ -1236,36 +1236,49 @@ export default function Home() {
                 </Button>
               </div>
 
-              <div className="p-2 space-y-2">
+              <div className="border-b border-slate-200 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-500">
+                Preencha uma linha para cada serviço ou grupo de extintores. <strong>Quantidade</strong> é o número de unidades, <strong>valor unitário</strong> é o preço de cada unidade e o <strong>total</strong> é calculado automaticamente.
+              </div>
+              <div className="hidden grid-cols-[minmax(0,1fr)_70px_110px_110px_32px] gap-2 bg-slate-50 px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:grid">
+                <span>Descrição do serviço / modelo</span><span className="text-center">Qtd.</span><span className="text-right">Valor unitário</span><span className="text-right">Total calculado</span><span />
+              </div>
+              <div className="space-y-3 p-3">
                 {orderForm.items.map((item, idx) => (
-                  <div key={idx} className="flex gap-2 items-center">
+                  <div key={idx} className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 sm:grid-cols-[minmax(0,1fr)_70px_110px_110px_32px] sm:items-center sm:border-0 sm:bg-transparent sm:p-0">
+                    <label className="text-[10px] font-bold uppercase text-slate-500 sm:hidden">Descrição do serviço ou modelo do extintor</label>
                     <Input
-                      placeholder="Descrição do serviço / extintor"
+                      placeholder="Ex.: Recarga de Extintor PQS ABC 4kg"
                       value={item.description}
                       onChange={(e) => handleItemChange(idx, "description", e.target.value)}
-                      className="flex-1 text-xs"
+                      className="text-xs"
                     />
+                    <label className="text-[10px] font-bold uppercase text-slate-500 sm:hidden">Quantidade de unidades</label>
                     <Input
                       type="number"
-                      placeholder="Qtd"
+                      min="1"
+                      placeholder="Ex.: 1"
                       value={item.quantity}
                       onChange={(e) => handleItemChange(idx, "quantity", Number(e.target.value))}
-                      className="w-16 text-center text-xs"
+                      className="text-xs sm:text-center"
                     />
+                    <label className="text-[10px] font-bold uppercase text-slate-500 sm:hidden">Preço de cada unidade (R$)</label>
                     <Input
-                      placeholder="Valor Unit (R$)"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="Ex.: 45,00"
                       value={item.unitPrice}
                       onChange={(e) => handleItemChange(idx, "unitPrice", e.target.value)}
-                      className="w-24 text-right text-xs"
+                      className="text-xs sm:text-right"
                     />
-                    <div className="w-24 text-right font-mono font-bold text-slate-900 pr-2">
-                      R$ {item.totalPrice}
+                    <div className="flex items-center justify-between rounded-md border border-dashed border-slate-300 bg-white px-2 py-2 text-xs font-bold text-slate-900 sm:block sm:border-0 sm:bg-transparent sm:p-0 sm:text-right">
+                      <span className="text-[10px] font-bold uppercase text-slate-500 sm:hidden">Total desta linha</span><span className="font-mono">R$ {item.totalPrice}</span>
                     </div>
                     {orderForm.items.length > 1 && (
                       <Button
                         size="sm"
                         variant="ghost"
-                        className="h-8 w-8 p-0 text-red-500 hover:text-red-700"
+                        className="h-8 w-full p-0 text-red-500 hover:text-red-700 sm:w-8"
                         onClick={() => removeItemRow(idx)}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
