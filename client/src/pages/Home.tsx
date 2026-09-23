@@ -44,6 +44,8 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "clients" | "extinguishers" | "orders" | "alerts">("dashboard");
   const [selectedCity, setSelectedCity] = useState<string>("TODAS");
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const [extinguisherFilter, setExtinguisherFilter] = useState<"all" | "active">("all");
+  const [alertFilter, setAlertFilter] = useState<"all" | "near" | "expired">("all");
   
   // Visualização e Impressão de OS
   const [viewingOrderId, setViewingOrderId] = useState<number | null>(null);
@@ -231,6 +233,15 @@ export default function Home() {
       .toFixed(2);
   }, [orderForm.items]);
 
+  const openClients = (filter: "all" | "active" = "all") => {
+    setExtinguisherFilter(filter);
+    setActiveTab("clients");
+  };
+  const openAlerts = (filter: "all" | "near" | "expired" = "all") => {
+    setAlertFilter(filter);
+    setActiveTab("alerts");
+  };
+
   // Se estiver visualizando a OS para impressão
   if (viewingOrderId && orderDetailsQuery.data) {
     return (
@@ -250,6 +261,10 @@ export default function Home() {
       (c.cnpj && c.cnpj.includes(searchQuery)) ||
       (c.contactName && c.contactName.toLowerCase().includes(searchQuery.toLowerCase()));
     return matchSearch;
+  });
+  const visibleAlerts = (alertsQuery.data || []).filter((item) => {
+    if (alertFilter === "all") return true;
+    return alertFilter === "expired" ? item.alertStatus === "expired" : item.alertStatus === "urgent" || item.alertStatus === "warning";
   });
 
   return (
@@ -341,7 +356,7 @@ export default function Home() {
             <Button
               variant={activeTab === "clients" ? "default" : "ghost"}
               size="sm"
-              onClick={() => setActiveTab("clients")}
+              onClick={() => { setExtinguisherFilter("all"); setActiveTab("clients"); }}
               className={`gap-2 ${activeTab === "clients" ? "bg-slate-900 text-white" : "text-slate-600"}`}
             >
               <MapPin className="w-4 h-4" />
@@ -352,7 +367,7 @@ export default function Home() {
             <Button
               variant={activeTab === "alerts" ? "default" : "ghost"}
               size="sm"
-              onClick={() => setActiveTab("alerts")}
+              onClick={() => { setAlertFilter("all"); setActiveTab("alerts"); }}
               className={`gap-2 relative ${activeTab === "alerts" ? "bg-slate-900 text-white" : "text-slate-600"}`}
             >
               <BellRing className="w-4 h-4 text-amber-500" />
@@ -404,7 +419,7 @@ export default function Home() {
           <div className="space-y-6">
             {/* CARDS DE RESUMO */}
             <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
-              <Card className="border-l-4 border-l-blue-600 shadow-sm min-w-0">
+              <Card role="button" tabIndex={0} title="Abrir clientes cadastrados" onClick={() => openClients()} onKeyDown={(event) => event.key === "Enter" && openClients()} className="cursor-pointer border-l-4 border-l-blue-600 shadow-sm min-w-0 transition hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-blue-500">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-xs font-bold uppercase tracking-wider text-slate-500">
                     Total Clientes
@@ -419,7 +434,7 @@ export default function Home() {
                 </CardContent>
               </Card>
 
-              <Card className="border-l-4 border-l-emerald-600 shadow-sm min-w-0">
+              <Card role="button" tabIndex={0} title="Abrir extintores ativos" onClick={() => openClients("active")} onKeyDown={(event) => event.key === "Enter" && openClients("active")} className="cursor-pointer border-l-4 border-l-emerald-600 shadow-sm min-w-0 transition hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-emerald-500">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-xs font-bold uppercase tracking-wider text-slate-500">
                     Extintores Ativos
@@ -434,7 +449,7 @@ export default function Home() {
                 </CardContent>
               </Card>
 
-              <Card className="border-l-4 border-l-amber-500 shadow-sm bg-amber-50/40 min-w-0">
+              <Card role="button" tabIndex={0} title="Abrir extintores perto da validade" onClick={() => openAlerts("near")} onKeyDown={(event) => event.key === "Enter" && openAlerts("near")} className="cursor-pointer border-l-4 border-l-amber-500 shadow-sm bg-amber-50/40 min-w-0 transition hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-amber-500">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-xs font-bold uppercase tracking-wider text-amber-800">
                     Perto da Validade
@@ -449,7 +464,7 @@ export default function Home() {
                 </CardContent>
               </Card>
 
-              <Card className="border-l-4 border-l-red-600 shadow-sm bg-red-50/40 min-w-0">
+              <Card role="button" tabIndex={0} title="Abrir extintores vencidos" onClick={() => openAlerts("expired")} onKeyDown={(event) => event.key === "Enter" && openAlerts("expired")} className="cursor-pointer border-l-4 border-l-red-600 shadow-sm bg-red-50/40 min-w-0 transition hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-red-500">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-xs font-bold uppercase tracking-wider text-red-800">
                     Extintores Vencidos
@@ -464,7 +479,7 @@ export default function Home() {
                 </CardContent>
               </Card>
 
-              <Card className="border-l-4 border-l-purple-600 shadow-sm min-w-0">
+              <Card role="button" tabIndex={0} title="Abrir ordens de serviço" onClick={() => setActiveTab("orders")} onKeyDown={(event) => event.key === "Enter" && setActiveTab("orders")} className="cursor-pointer border-l-4 border-l-purple-600 shadow-sm min-w-0 transition hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-purple-500">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-xs font-bold uppercase tracking-wider text-slate-500">
                     Ordens Geradas
@@ -641,9 +656,9 @@ export default function Home() {
                 <h2 className="text-xl font-bold text-slate-900">
                   Gerenciamento de Clientes & Extintores
                 </h2>
-                <p className="text-xs text-slate-500">
-                  Visualização detalhada dos extintores instalados por empresa e cidade
-                </p>
+                  <p className="text-xs text-slate-500">
+                    {extinguisherFilter === "active" ? "Mostrando os extintores ativos cadastrados por empresa e cidade" : "Visualização detalhada dos extintores instalados por empresa e cidade"}
+                  </p>
               </div>
 
               <Button
@@ -660,6 +675,7 @@ export default function Home() {
                 <ClientDetailCard
                   key={client.id}
                   client={client}
+                  extinguisherFilter={extinguisherFilter}
                   onAddExtinguisher={() => {
                     setSelectedClientIdForExtinguisher(client.id);
                     setExtinguisherForm(prev => ({ ...prev, clientId: client.id }));
@@ -696,26 +712,18 @@ export default function Home() {
                 <div>
                   <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
                     <BellRing className="w-5 h-5 text-amber-500" />
-                    Alertas de Vencimento de Extintores
+                    Alertas de Vencimento de Extintores{alertFilter === "near" ? " — Próximos do vencimento" : alertFilter === "expired" ? " — Vencidos" : ""}
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
                     Extintores organizados por urgência. Antecedência configurada para: <strong>{alertDaysQuery.data || 30} dias</strong>
                   </p>
                 </div>
 
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsSettingsModalOpen(true)}
-                  className="gap-1.5 text-xs"
-                >
-                  <Settings className="w-3.5 h-3.5" />
-                  Ajustar Dias de Antecedência
-                </Button>
+                <div className="flex flex-wrap gap-2"><Button variant={alertFilter === "all" ? "default" : "outline"} size="sm" onClick={() => setAlertFilter("all")} className="text-xs">Todos</Button><Button variant="outline" size="sm" onClick={() => setIsSettingsModalOpen(true)} className="gap-1.5 text-xs"><Settings className="w-3.5 h-3.5" /> Ajustar Dias de Antecedência</Button></div>
               </div>
 
               <div className="mt-4 divide-y divide-slate-100">
-                {(alertsQuery.data || []).map((item, idx) => {
+                {visibleAlerts.map((item, idx) => {
                   const isExpired = item.alertStatus === "expired";
                   const isUrgent = item.alertStatus === "urgent";
 
@@ -825,10 +833,10 @@ export default function Home() {
                   );
                 })}
 
-                {(alertsQuery.data || []).length === 0 && (
+                {visibleAlerts.length === 0 && (
                   <div className="py-12 text-center text-slate-400">
                     <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
-                    Parabéns! Todos os extintores estão dentro da validade e sem alertas pendentes.
+                    {alertFilter === "expired" ? "Nenhum extintor vencido encontrado." : alertFilter === "near" ? "Nenhum extintor próximo do vencimento encontrado." : "Parabéns! Todos os extintores estão dentro da validade e sem alertas pendentes."}
                   </div>
                 )}
               </div>
@@ -1505,16 +1513,24 @@ export default function Home() {
 ======================================================== */
 function ClientDetailCard({
   client,
+  extinguisherFilter = "all",
   onAddExtinguisher,
   onCreateOrder,
   onDelete,
 }: {
   client: any;
+  extinguisherFilter?: "all" | "active";
   onAddExtinguisher: () => void;
   onCreateOrder: () => void;
   onDelete: () => void;
 }) {
   const extinguishersQuery = trpc.extinguishers.listByClient.useQuery({ clientId: client.id });
+  const visibleExtinguishers = (extinguishersQuery.data || []).filter((ext) => {
+    if (extinguisherFilter === "all") return true;
+    const expiration = new Date(ext.expirationDate);
+    expiration.setHours(0, 0, 0, 0);
+    return expiration >= new Date(new Date().setHours(0, 0, 0, 0));
+  });
 
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
@@ -1571,12 +1587,12 @@ function ClientDetailCard({
       {/* EXTINTORES INSTALADOS */}
       <div>
         <div className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center justify-between">
-          <span>Extintores no Estabelecimento ({extinguishersQuery.data?.length || 0})</span>
+          <span>Extintores no Estabelecimento ({visibleExtinguishers.length})</span>
         </div>
 
-        {extinguishersQuery.data && extinguishersQuery.data.length > 0 ? (
+        {visibleExtinguishers.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-            {extinguishersQuery.data.map((ext) => {
+            {visibleExtinguishers.map((ext) => {
               const expDate = new Date(ext.expirationDate);
               const today = new Date();
               today.setHours(0, 0, 0, 0);
@@ -1631,7 +1647,7 @@ function ClientDetailCard({
           </div>
         ) : (
           <div className="p-4 bg-slate-50 rounded-lg text-center text-xs text-slate-400">
-            Nenhum extintor cadastrado para este cliente ainda. Clique em "+ Extintor" para adicionar.
+            {extinguisherFilter === "active" ? "Nenhum extintor ativo encontrado para este cliente." : 'Nenhum extintor cadastrado para este cliente ainda. Clique em "+ Extintor" para adicionar.'}
           </div>
         )}
       </div>
