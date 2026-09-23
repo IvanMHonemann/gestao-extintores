@@ -373,7 +373,7 @@ export default function Home() {
         {activeTab === "dashboard" && (
           <div className="space-y-6">
             {/* CARDS DE RESUMO */}
-            <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 sm:gap-4">
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
               <Card className="border-l-4 border-l-blue-600 shadow-sm min-w-0">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-xs font-bold uppercase tracking-wider text-slate-500">
@@ -452,17 +452,17 @@ export default function Home() {
 
             {/* SEÇÃO DE ALERTAS CRÍTICOS (Banner de Aviso com Antecedência) */}
             {((statsQuery.data?.nearExpirationCount || 0) > 0 || (statsQuery.data?.expiredCount || 0) > 0) && (
-              <div className="bg-gradient-to-r from-amber-50 to-red-50 border-2 border-amber-300 rounded-xl p-5 shadow-sm">
-                <div className="flex items-start justify-between">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2 bg-amber-500 text-white rounded-lg shadow mt-0.5">
+              <div className="bg-gradient-to-r from-amber-50 to-red-50 border-2 border-amber-300 rounded-xl p-3 sm:p-5 shadow-sm">
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div className="p-2 bg-amber-500 text-white rounded-lg shadow mt-0.5 shrink-0">
                       <BellRing className="w-5 h-5 animate-pulse" />
                     </div>
-                    <div>
-                      <h3 className="text-base font-bold text-slate-900">
+                    <div className="min-w-0">
+                      <h3 className="text-base sm:text-lg font-bold text-slate-900 leading-snug">
                         Atenção aos Prazos de Validade dos Extintores!
                       </h3>
-                      <p className="text-sm text-slate-700 mt-0.5">
+                      <p className="text-sm text-slate-700 mt-1 leading-relaxed">
                         Existem extintores que venceram ou estão a menos de <strong>{alertDaysQuery.data || 30} dias</strong> do vencimento. 
                         Revise os clientes abaixo e agende a recarga/troca.
                       </p>
@@ -470,7 +470,7 @@ export default function Home() {
                   </div>
                   <Button
                     size="sm"
-                    className="bg-amber-600 hover:bg-amber-700 text-white font-semibold gap-1 shrink-0"
+                    className="w-full sm:w-auto bg-amber-600 hover:bg-amber-700 text-white font-semibold gap-1 shrink-0"
                     onClick={() => setActiveTab("alerts")}
                   >
                     Ver Lista Completa
