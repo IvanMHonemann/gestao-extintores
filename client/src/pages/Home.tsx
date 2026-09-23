@@ -28,11 +28,8 @@ import {
   Users,
   LogOut,
   Menu,
-  X,
-  PieChart as PieChartIcon,
-  BarChart3
+  X
 } from "lucide-react";
-import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from "recharts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
@@ -272,11 +269,6 @@ export default function Home() {
     if (alertFilter === "all") return true;
     return alertFilter === "expired" ? item.alertStatus === "expired" : item.alertStatus === "urgent" || item.alertStatus === "warning";
   });
-  const validityChartData = [
-    { name: "Válidos", value: Math.max(0, (statsQuery.data?.totalExtinguishers || 0) - (statsQuery.data?.nearExpirationCount || 0) - (statsQuery.data?.expiredCount || 0)), color: "#059669" },
-    { name: "Perto da validade", value: statsQuery.data?.nearExpirationCount || 0, color: "#f59e0b" },
-    { name: "Vencidos", value: statsQuery.data?.expiredCount || 0, color: "#dc2626" },
-  ].filter((item) => item.value > 0);
   const navigateToSection = (section: "dashboard" | "clients" | "orders" | "alerts") => {
     if (section === "clients") setExtinguisherFilter("all");
     if (section === "alerts") setAlertFilter("all");
@@ -290,7 +282,7 @@ export default function Home() {
       <header className="bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-30 shadow-md">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:h-16 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2 sm:gap-3 justify-between sm:justify-end">
-            <Button variant="outline" size="sm" className="border-slate-700 bg-slate-900 text-white hover:bg-slate-800 lg:hidden" onClick={() => setIsSidebarOpen(true)} aria-label="Abrir menu"><Menu className="h-5 w-5" /></Button>
+            <Button variant="default" size="sm" className="h-10 gap-1.5 border border-red-400 bg-red-600 px-3 text-white shadow-lg shadow-red-950/40 hover:bg-red-700 lg:hidden" onClick={() => setIsSidebarOpen(true)} aria-label="Abrir menu lateral"><Menu className="h-5 w-5" /><span className="text-xs font-black uppercase tracking-wide">Menu</span></Button>
             <div className="w-10 h-10 bg-red-600 rounded-lg flex items-center justify-center shadow-inner">
               <Flame className="w-6 h-6 text-white" />
             </div>
@@ -474,19 +466,6 @@ export default function Home() {
                 </CardContent>
               </Card>
             </div>
-
-            <Card className="overflow-hidden border-slate-200 shadow-sm">
-              <CardHeader className="border-b border-slate-100 pb-3">
-                <CardTitle className="flex items-center gap-2 text-base font-bold text-slate-900"><PieChartIcon className="h-5 w-5 text-red-600" /> Status de validade dos extintores</CardTitle>
-                <CardDescription>Proporção entre extintores válidos, próximos do vencimento e vencidos.</CardDescription>
-              </CardHeader>
-              <CardContent className="grid items-center gap-4 p-4 sm:grid-cols-[minmax(0,1fr)_220px] sm:p-5">
-                <div className="h-[230px] min-w-0 sm:h-[260px]">
-                  {validityChartData.length > 0 ? <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={validityChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="52%" outerRadius="78%" paddingAngle={3}>{validityChartData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}</Pie><RechartsTooltip formatter={(value: number, name: string) => [`${value} extintor(es)`, name]} /><Legend verticalAlign="bottom" height={30} /></PieChart></ResponsiveContainer> : <div className="flex h-full items-center justify-center text-sm text-slate-400">Cadastre um extintor para visualizar o gráfico.</div>}
-                </div>
-                <div className="space-y-3 rounded-xl bg-slate-50 p-4"><div className="flex items-center gap-2 text-sm font-semibold text-slate-700"><BarChart3 className="h-4 w-4 text-slate-500" /> Resumo atual</div>{validityChartData.length > 0 ? validityChartData.map((item) => <div key={item.name} className="flex items-center justify-between gap-3 text-sm"><span className="flex items-center gap-2 text-slate-600"><span className="h-3 w-3 rounded-full" style={{ backgroundColor: item.color }} />{item.name}</span><strong className="text-slate-900">{item.value}</strong></div>) : <p className="text-xs text-slate-500">Ainda não há dados para exibir.</p>}</div>
-              </CardContent>
-            </Card>
 
             {/* SEÇÃO DE ALERTAS CRÍTICOS (Banner de Aviso com Antecedência) */}
             {((statsQuery.data?.nearExpirationCount || 0) > 0 || (statsQuery.data?.expiredCount || 0) > 0) && (

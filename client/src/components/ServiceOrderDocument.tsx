@@ -1,6 +1,6 @@
 import React, { useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { Printer, Download, ArrowLeft } from "lucide-react";
+import { Printer, ArrowLeft, MessageCircle } from "lucide-react";
 
 interface ServiceOrderDocumentProps {
   order: any;
@@ -19,6 +19,13 @@ export function ServiceOrderDocument({
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const handleShareWhatsApp = () => {
+    const orderLabel = order?.orderNumber ? `OS nº ${String(order.orderNumber).padStart(5, "0")}` : "Ordem de Serviço";
+    const shareUrl = window.location.href;
+    const message = `${orderLabel} — documento pronto para visualizar e salvar em PDF: ${shareUrl}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
   };
 
   // Formata data YYYY-MM-DD para DD / MM / AAAA
@@ -64,7 +71,15 @@ export function ServiceOrderDocument({
             Voltar
           </Button>
         )}
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
+          <Button
+            onClick={handleShareWhatsApp}
+            variant="outline"
+            className="border-green-600 text-green-700 hover:bg-green-50 gap-2 font-semibold"
+          >
+            <MessageCircle className="w-4 h-4" />
+            Compartilhar PDF no WhatsApp
+          </Button>
           <Button
             onClick={handlePrint}
             className="bg-red-700 hover:bg-red-800 text-white gap-2 font-semibold shadow-md"
