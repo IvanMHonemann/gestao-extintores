@@ -30,13 +30,13 @@ export async function createContext(
       name: memberAccount.userName,
       email: memberAccount.email,
       loginMethod: "password",
-      role: "user",
+      role: memberAccount.role,
       createdAt: memberAccount.createdAt,
       updatedAt: memberAccount.updatedAt,
       lastSignedIn: memberAccount.createdAt,
     };
-    accountId = memberAccount.id;
-    isMember = true;
+    accountId = memberAccount.role === "admin" ? undefined : memberAccount.id;
+    isMember = memberAccount.role !== "admin";
   }
 
   if (!user) {

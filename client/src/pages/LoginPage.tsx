@@ -1,5 +1,4 @@
 import { FormEvent, useState } from "react";
-import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -60,9 +59,7 @@ export default function LoginPage() {
               <div className="space-y-2"><Label htmlFor="login-password">Senha</Label><Input id="login-password" type="password" autoComplete="current-password" placeholder="Digite sua senha" value={password} onChange={(event) => setPassword(event.target.value)} required /></div>
               <Button type="submit" className="h-11 w-full bg-red-600 font-bold hover:bg-red-700" disabled={loginMutation.isPending}>{loginMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <LockKeyhole className="h-4 w-4" />} Entrar</Button>
             </form>
-            <div className="my-7 flex items-center gap-3 text-xs text-slate-400"><div className="h-px flex-1 bg-slate-200" /> acesso administrativo <div className="h-px flex-1 bg-slate-200" /></div>
-            <Button type="button" variant="outline" className="h-11 w-full" onClick={() => startLogin()}>Entrar como administrador</Button>
-            <p className="mt-5 text-center text-xs leading-relaxed text-slate-400">O administrador é o único perfil que pode criar, bloquear e gerenciar usuários comerciais.</p>
+            <div className="mt-7 rounded-xl border border-slate-200 bg-slate-50 p-4 text-center text-xs leading-relaxed text-slate-500"><ShieldCheck className="mx-auto mb-2 h-5 w-5 text-emerald-600" />O administrador também entra por este mesmo login próprio e é o único perfil que pode criar, bloquear e gerenciar usuários comerciais.</div>
           </div>
         </section>
       </div>

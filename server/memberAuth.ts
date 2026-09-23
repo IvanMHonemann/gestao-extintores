@@ -37,7 +37,7 @@ export async function createMemberAccount(input: {
   userName: string;
   email: string;
   password: string;
-}) {
+}, role: "user" | "admin" = "user") {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
   const result = await db.insert(memberAccounts).values({
@@ -45,6 +45,7 @@ export async function createMemberAccount(input: {
     userName: input.userName,
     email: input.email.toLowerCase(),
     passwordHash: hashPassword(input.password),
+    role,
   });
   return Number(result[0].insertId);
 }
@@ -57,6 +58,7 @@ export async function listMemberAccounts() {
     companyName: memberAccounts.companyName,
     userName: memberAccounts.userName,
     email: memberAccounts.email,
+    role: memberAccounts.role,
     active: memberAccounts.active,
     createdAt: memberAccounts.createdAt,
   }).from(memberAccounts).orderBy(memberAccounts.companyName);
@@ -65,6 +67,8 @@ export async function listMemberAccounts() {
 export async function setMemberActive(id: number, active: boolean) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
+  const account = await db.select({ role: memberAccounts.role }).from(memberAccounts).where(eq(memberAccounts.id, id)).limit(1);
+  if (account[0]?.role === "admin" && !active) throw new Error("A conta administrativa não pode ser bloqueada.");
   await db.update(memberAccounts).set({ active }).where(eq(memberAccounts.id, id));
 }
 

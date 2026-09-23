@@ -65,7 +65,14 @@ export const appRouter = router({
     setActive: adminProcedure
       .input(z.object({ id: z.number(), active: z.boolean() }))
       .mutation(async ({ input }) => {
-        await memberAuth.setMemberActive(input.id, input.active);
+        try {
+          await memberAuth.setMemberActive(input.id, input.active);
+        } catch (error: any) {
+          if (error?.message === "A conta administrativa não pode ser bloqueada.") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+          }
+          throw error;
+        }
         return { success: true } as const;
       }),
   }),

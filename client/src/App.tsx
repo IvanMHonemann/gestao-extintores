@@ -21,6 +21,7 @@ function Protected({ children }: { children: React.ReactNode }) {
 function Router() {
   return (
     <Switch>
+      <Route path="/login" component={LoginPage} />
       <Route path="/"><Protected><Home /></Protected></Route>
       <Route path="/admin/usuarios"><Protected><AdminUsersPage /></Protected></Route>
       <Route path="/os/:id"><Protected><PrintOrderPage /></Protected></Route>
