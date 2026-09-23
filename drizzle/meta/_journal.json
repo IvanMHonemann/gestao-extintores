@@ -15,6 +15,13 @@
       "when": 1790182757628,
       "tag": "0001_sour_leopardon",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1790184460364,
+      "tag": "0002_chemical_misty_knight",
+      "breakpoints": true
     }
   ]
 }

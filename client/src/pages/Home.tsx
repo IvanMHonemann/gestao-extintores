@@ -1,4 +1,6 @@
 import React, { useState, useMemo } from "react";
+import { useLocation } from "wouter";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { 
   Building2, 
@@ -22,7 +24,9 @@ import {
   BellRing,
   Download,
   ShieldCheck,
-  ChevronRight
+  ChevronRight,
+  Users,
+  LogOut
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,6 +39,8 @@ import { ServiceOrderDocument } from "@/components/ServiceOrderDocument";
 import { toast } from "sonner";
 
 export default function Home() {
+  const { user, logout } = useAuth();
+  const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState<"dashboard" | "clients" | "extinguishers" | "orders" | "alerts">("dashboard");
   const [selectedCity, setSelectedCity] = useState<string>("TODAS");
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -260,20 +266,33 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3 justify-between sm:justify-end">
-            {/* Botão Configurar Dias de Alerta */}
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-slate-200 border-slate-700 hover:bg-slate-800 gap-1.5"
-              onClick={() => {
-                setConfigDays(alertDaysQuery.data || 30);
-                setIsSettingsModalOpen(true);
-              }}
-            >
-              <Settings className="w-4 h-4 text-slate-400" />
-              <span className="hidden md:inline">Antecedência Alertas:</span>
-              <span className="font-bold text-amber-400">{alertDaysQuery.data || 30} dias</span>
-            </Button>
+            {user?.role === "admin" && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 border-slate-700 text-slate-200 hover:bg-slate-800"
+                onClick={() => navigate("/admin/usuarios")}
+              >
+                <Users className="h-4 w-4" />
+                <span className="hidden sm:inline">Usuários</span>
+              </Button>
+            )}
+            {/* Botão Configurar Dias de Alerta — somente administrador */}
+            {user?.role === "admin" && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-slate-200 border-slate-700 hover:bg-slate-800 gap-1.5"
+                onClick={() => {
+                  setConfigDays(alertDaysQuery.data || 30);
+                  setIsSettingsModalOpen(true);
+                }}
+              >
+                <Settings className="w-4 h-4 text-slate-400" />
+                <span className="hidden md:inline">Antecedência Alertas:</span>
+                <span className="font-bold text-amber-400">{alertDaysQuery.data || 30} dias</span>
+              </Button>
+            )}
 
             {/* Criar Ordem de Serviço Rápida */}
             <Button
@@ -287,7 +306,11 @@ export default function Home() {
               }}
             >
               <Plus className="w-4 h-4" />
-              Nova Ordem de Serviço
+              <span className="hidden sm:inline">Nova Ordem de Serviço</span>
+              <span className="sm:hidden">Nova OS</span>
+            </Button>
+            <Button variant="ghost" size="sm" className="px-2 text-slate-300 hover:bg-slate-800 hover:text-white" title="Sair" onClick={() => logout()}>
+              <LogOut className="h-4 w-4" />
             </Button>
           </div>
         </div>

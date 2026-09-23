@@ -1,17 +1,17 @@
-import { and, desc, eq, sql, inArray, gte, lte, or } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { 
-  clients, 
-  extinguishers, 
-  serviceOrders, 
-  serviceOrderItems, 
-  systemSettings, 
-  users, 
-  type InsertClient, 
-  type InsertExtinguisher, 
-  type InsertServiceOrder, 
-  type InsertServiceOrderItem, 
-  type InsertUser 
+import {
+  clients,
+  extinguishers,
+  serviceOrders,
+  serviceOrderItems,
+  systemSettings,
+  users,
+  type InsertClient,
+  type InsertExtinguisher,
+  type InsertServiceOrder,
+  type InsertServiceOrderItem,
+  type InsertUser,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
@@ -30,377 +30,258 @@ export async function getDb() {
 }
 
 export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) {
-    throw new Error("User openId is required for upsert");
-  }
-
+  if (!user.openId) throw new Error("User openId is required for upsert");
   const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
-    return;
+  if (!db) return;
+
+  const values: InsertUser = { openId: user.openId };
+  const updateSet: Record<string, unknown> = {};
+  const textFields = ["name", "email", "loginMethod"] as const;
+  for (const field of textFields) {
+    if (user[field] !== undefined) {
+      values[field] = user[field] ?? null;
+      updateSet[field] = user[field] ?? null;
+    }
   }
-
-  try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
-    }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
-    }
-
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
-
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
-    });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
+  if (user.lastSignedIn !== undefined) {
+    values.lastSignedIn = user.lastSignedIn;
+    updateSet.lastSignedIn = user.lastSignedIn;
   }
+  if (user.role !== undefined || user.openId === ENV.ownerOpenId) {
+    values.role = user.role ?? "admin";
+    updateSet.role = values.role;
+  }
+  if (!values.lastSignedIn) values.lastSignedIn = new Date();
+  if (Object.keys(updateSet).length === 0) updateSet.lastSignedIn = new Date();
+  await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
 }
 
 export async function getUserByOpenId(openId: string) {
   const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
+  if (!db) return undefined;
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-  return result.length > 0 ? result[0] : undefined;
+  return result[0];
 }
 
-/* ========================================================
-   CLIENTES (com agregação por cidade e contagem de extintores)
-======================================================== */
+function accountCondition(accountId?: number) {
+  return accountId ? eq(clients.accountId, accountId) : undefined;
+}
 
-export async function getClients(cityFilter?: string) {
+/* Clientes */
+export async function getClients(cityFilter?: string, accountId?: number) {
   const db = await getDb();
   if (!db) return [];
-
-  let query = db.select().from(clients);
-  if (cityFilter && cityFilter !== "TODAS") {
-    return await query.where(eq(clients.city, cityFilter)).orderBy(desc(clients.createdAt));
-  }
-  return await query.orderBy(desc(clients.createdAt));
+  const conditions = [];
+  if (cityFilter && cityFilter !== "TODAS") conditions.push(eq(clients.city, cityFilter));
+  if (accountId) conditions.push(eq(clients.accountId, accountId));
+  const query = db.select().from(clients);
+  return conditions.length
+    ? await query.where(and(...conditions)).orderBy(desc(clients.createdAt))
+    : await query.orderBy(desc(clients.createdAt));
 }
 
-export async function getClientById(id: number) {
+export async function getClientById(id: number, accountId?: number) {
   const db = await getDb();
   if (!db) return undefined;
-  const res = await db.select().from(clients).where(eq(clients.id, id)).limit(1);
-  return res[0];
+  const conditions = [eq(clients.id, id)];
+  if (accountId) conditions.push(eq(clients.accountId, accountId));
+  const result = await db.select().from(clients).where(and(...conditions)).limit(1);
+  return result[0];
 }
 
 export async function createClient(data: InsertClient) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
   const result = await db.insert(clients).values(data);
-  return result[0].insertId;
+  return Number(result[0].insertId);
 }
 
-export async function updateClient(id: number, data: Partial<InsertClient>) {
+export async function updateClient(id: number, data: Partial<InsertClient>, accountId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
+  const client = await getClientById(id, accountId);
+  if (!client) throw new Error("Cliente não encontrado ou sem permissão");
   await db.update(clients).set(data).where(eq(clients.id, id));
 }
 
-export async function deleteClient(id: number) {
+export async function deleteClient(id: number, accountId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  // Remove extintores e OS vinculados
+  const client = await getClientById(id, accountId);
+  if (!client) throw new Error("Cliente não encontrado ou sem permissão");
   await db.delete(extinguishers).where(eq(extinguishers.clientId, id));
   await db.delete(clients).where(eq(clients.id, id));
 }
 
-export async function getDistinctCities() {
+export async function getDistinctCities(accountId?: number) {
   const db = await getDb();
   if (!db) return [];
-  const res = await db.selectDistinct({ city: clients.city }).from(clients).orderBy(clients.city);
-  return res.map(r => r.city).filter(Boolean);
+  const query = db.selectDistinct({ city: clients.city }).from(clients);
+  const result = accountId
+    ? await query.where(eq(clients.accountId, accountId)).orderBy(clients.city)
+    : await query.orderBy(clients.city);
+  return result.map(row => row.city).filter(Boolean);
 }
 
-/* ========================================================
-   EXTINTORES (com verificação de vencimento e alertas)
-======================================================== */
-
-export async function getExtinguishersByClient(clientId: number) {
+/* Extintores */
+export async function getExtinguishersByClient(clientId: number, accountId?: number) {
   const db = await getDb();
   if (!db) return [];
-  return await db.select().from(extinguishers).where(eq(extinguishers.clientId, clientId)).orderBy(extinguishers.expirationDate);
+  if (accountId && !(await getClientById(clientId, accountId))) return [];
+  return await db.select().from(extinguishers)
+    .where(eq(extinguishers.clientId, clientId))
+    .orderBy(extinguishers.expirationDate);
 }
 
-export async function createExtinguisher(data: InsertExtinguisher) {
+export async function createExtinguisher(data: InsertExtinguisher, accountId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  const res = await db.insert(extinguishers).values(data);
-  return res[0].insertId;
+  if (accountId && !(await getClientById(data.clientId, accountId))) throw new Error("Cliente sem permissão");
+  const result = await db.insert(extinguishers).values(data);
+  return Number(result[0].insertId);
 }
 
-export async function updateExtinguisher(id: number, data: Partial<InsertExtinguisher>) {
+export async function updateExtinguisher(id: number, data: Partial<InsertExtinguisher>, accountId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
+  const existing = await db.select().from(extinguishers).where(eq(extinguishers.id, id)).limit(1);
+  if (!existing[0] || (accountId && !(await getClientById(existing[0].clientId, accountId)))) throw new Error("Extintor sem permissão");
   await db.update(extinguishers).set(data).where(eq(extinguishers.id, id));
 }
 
-export async function deleteExtinguisher(id: number) {
+export async function deleteExtinguisher(id: number, accountId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
+  const existing = await db.select().from(extinguishers).where(eq(extinguishers.id, id)).limit(1);
+  if (!existing[0] || (accountId && !(await getClientById(existing[0].clientId, accountId)))) throw new Error("Extintor sem permissão");
   await db.delete(extinguishers).where(eq(extinguishers.id, id));
 }
 
-/**
- * Retorna extintores com status de alerta ou vencidos
- * @param daysAhead Dias de antecedência para considerar em alerta (ex: 30, 45, 60 dias)
- */
-export async function getExpiringExtinguishers(daysAhead: number = 30) {
+export async function getExpiringExtinguishers(daysAhead = 30, accountId?: number) {
   const db = await getDb();
   if (!db) return [];
-
-  // Obter todos os extintores com os dados do cliente
-  const result = await db
-    .select({
-      extinguisher: extinguishers,
-      client: clients,
-    })
+  const base = db.select({ extinguisher: extinguishers, client: clients })
     .from(extinguishers)
-    .innerJoin(clients, eq(extinguishers.clientId, clients.id))
-    .orderBy(extinguishers.expirationDate);
+    .innerJoin(clients, eq(extinguishers.clientId, clients.id));
+  const result = accountId
+    ? await base.where(eq(clients.accountId, accountId)).orderBy(extinguishers.expirationDate)
+    : await base.orderBy(extinguishers.expirationDate);
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-
-  const targetDate = new Date();
-  targetDate.setDate(today.getDate() + daysAhead);
-  targetDate.setHours(23, 59, 59, 999);
-
   return result.map(item => {
     const expDate = new Date(item.extinguisher.expirationDate);
     expDate.setHours(0, 0, 0, 0);
-
-    const diffTime = expDate.getTime() - today.getTime();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
+    const diffDays = Math.ceil((expDate.getTime() - today.getTime()) / 86400000);
     let alertStatus: "expired" | "urgent" | "warning" | "ok" = "ok";
     let alertMessage = "";
-
     if (diffDays < 0) {
       alertStatus = "expired";
       alertMessage = `VENCIDO há ${Math.abs(diffDays)} dia(s)!`;
-    } else if (diffDays === 0) {
-      alertStatus = "urgent";
-      alertMessage = `VENCE HOJE!`;
     } else if (diffDays <= 15) {
       alertStatus = "urgent";
-      alertMessage = `Vence em ${diffDays} dia(s) (Urgente)`;
+      alertMessage = diffDays === 0 ? "VENCE HOJE!" : `Vence em ${diffDays} dia(s) (Urgente)`;
     } else if (diffDays <= daysAhead) {
       alertStatus = "warning";
       alertMessage = `Vence em ${diffDays} dia(s) (Alerta prévio)`;
     }
-
-    return {
-      ...item,
-      diffDays,
-      alertStatus,
-      alertMessage,
-      isNearExpiration: diffDays <= daysAhead,
-    };
+    return { ...item, diffDays, alertStatus, alertMessage, isNearExpiration: diffDays <= daysAhead };
   });
 }
 
-/* ========================================================
-   ORDENS DE SERVIÇO (com itens e numeração sequencial)
-======================================================== */
-
-export async function getNextOrderNumber(): Promise<number> {
+/* Ordens de Serviço */
+export async function getNextOrderNumber(accountId?: number) {
   const db = await getDb();
   if (!db) return 1001;
-  const res = await db.select({ maxNum: sql<number>`MAX(${serviceOrders.orderNumber})` }).from(serviceOrders);
-  const max = res[0]?.maxNum;
-  return max ? Number(max) + 1 : 1001;
+  if (accountId) {
+    const result = await db.select({ maxNum: sql<number>`MAX(${serviceOrders.orderNumber})` })
+      .from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id))
+      .where(eq(clients.accountId, accountId));
+    return result[0]?.maxNum ? Number(result[0].maxNum) + 1 : 1001;
+  }
+  const result = await db.select({ maxNum: sql<number>`MAX(${serviceOrders.orderNumber})` }).from(serviceOrders);
+  return result[0]?.maxNum ? Number(result[0].maxNum) + 1 : 1001;
 }
 
-export async function createServiceOrder(
-  order: any,
-  items: Omit<InsertServiceOrderItem, "serviceOrderId">[]
-) {
+export async function createServiceOrder(order: InsertServiceOrder, items: Omit<InsertServiceOrderItem, "serviceOrderId">[], accountId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-
-  const orderNum = order.orderNumber || (await getNextOrderNumber());
-  const res = await db.insert(serviceOrders).values({
-    ...order,
-    orderNumber: orderNum,
-  });
-  const orderId = res[0].insertId;
-
-  if (items && items.length > 0) {
-    const itemsToInsert = items.map(item => ({
-      ...item,
-      serviceOrderId: orderId,
-    }));
-    await db.insert(serviceOrderItems).values(itemsToInsert);
-  }
-
-  return { id: orderId, orderNumber: orderNum };
+  if (accountId && !(await getClientById(order.clientId, accountId))) throw new Error("Cliente sem permissão");
+  const orderNumber = order.orderNumber || await getNextOrderNumber(accountId);
+  const result = await db.insert(serviceOrders).values({ ...order, orderNumber });
+  const orderId = Number(result[0].insertId);
+  if (items.length) await db.insert(serviceOrderItems).values(items.map(item => ({ ...item, serviceOrderId: orderId })));
+  return { id: orderId, orderNumber };
 }
 
-export async function getServiceOrderById(id: number) {
+export async function getServiceOrderById(id: number, accountId?: number) {
   const db = await getDb();
   if (!db) return null;
-
-  const orderRes = await db
-    .select({
-      order: serviceOrders,
-      client: clients,
-    })
-    .from(serviceOrders)
-    .innerJoin(clients, eq(serviceOrders.clientId, clients.id))
-    .where(eq(serviceOrders.id, id))
-    .limit(1);
-
-  if (!orderRes.length) return null;
-
-  const items = await db
-    .select()
-    .from(serviceOrderItems)
-    .where(eq(serviceOrderItems.serviceOrderId, id));
-
-  return {
-    ...orderRes[0].order,
-    client: orderRes[0].client,
-    items,
-  };
+  const conditions = [eq(serviceOrders.id, id)];
+  if (accountId) conditions.push(eq(clients.accountId, accountId));
+  const orderResult = await db.select({ order: serviceOrders, client: clients })
+    .from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id))
+    .where(and(...conditions)).limit(1);
+  if (!orderResult[0]) return null;
+  const items = await db.select().from(serviceOrderItems).where(eq(serviceOrderItems.serviceOrderId, id));
+  return { ...orderResult[0].order, client: orderResult[0].client, items };
 }
 
-export async function getServiceOrders(clientId?: number) {
+export async function getServiceOrders(clientId?: number, accountId?: number) {
   const db = await getDb();
   if (!db) return [];
-
-  let query = db
-    .select({
-      order: serviceOrders,
-      client: clients,
-    })
-    .from(serviceOrders)
-    .innerJoin(clients, eq(serviceOrders.clientId, clients.id));
-
-  if (clientId) {
-    return await query.where(eq(serviceOrders.clientId, clientId)).orderBy(desc(serviceOrders.createdAt));
-  }
-  return await query.orderBy(desc(serviceOrders.createdAt));
+  const conditions = [];
+  if (clientId) conditions.push(eq(serviceOrders.clientId, clientId));
+  if (accountId) conditions.push(eq(clients.accountId, accountId));
+  const query = db.select({ order: serviceOrders, client: clients })
+    .from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id));
+  return conditions.length
+    ? await query.where(and(...conditions)).orderBy(desc(serviceOrders.createdAt))
+    : await query.orderBy(desc(serviceOrders.createdAt));
 }
 
-export async function deleteServiceOrder(id: number) {
+export async function deleteServiceOrder(id: number, accountId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
+  const order = await getServiceOrderById(id, accountId);
+  if (!order) throw new Error("Ordem não encontrada ou sem permissão");
   await db.delete(serviceOrderItems).where(eq(serviceOrderItems.serviceOrderId, id));
   await db.delete(serviceOrders).where(eq(serviceOrders.id, id));
 }
 
-/* ========================================================
-   CONFIGURAÇÕES DO SISTEMA (ex: antecedência de alertas)
-======================================================== */
-
-export async function getSetting(key: string, defaultValue: string = "30"): Promise<string> {
+/* Configuração global */
+export async function getSetting(key: string, defaultValue = "30") {
   const db = await getDb();
   if (!db) return defaultValue;
-  const res = await db.select().from(systemSettings).where(eq(systemSettings.settingKey, key)).limit(1);
-  return res[0]?.settingValue ?? defaultValue;
+  const result = await db.select().from(systemSettings).where(eq(systemSettings.settingKey, key)).limit(1);
+  return result[0]?.settingValue ?? defaultValue;
 }
 
-export async function setSetting(key: string, value: string): Promise<void> {
+export async function setSetting(key: string, value: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  await db.insert(systemSettings).values({
-    settingKey: key,
-    settingValue: value,
-  }).onDuplicateKeyUpdate({
-    set: { settingValue: value },
-  });
+  await db.insert(systemSettings).values({ settingKey: key, settingValue: value }).onDuplicateKeyUpdate({ set: { settingValue: value } });
 }
 
-/**
- * Resumo para o Dashboard
- */
-export async function getDashboardStats() {
+export async function getDashboardStats(accountId?: number) {
   const db = await getDb();
-  if (!db) {
-    return {
-      totalClients: 0,
-      totalCities: 0,
-      totalExtinguishers: 0,
-      nearExpirationCount: 0,
-      expiredCount: 0,
-      totalOrders: 0,
-    };
-  }
-
-  const daysAheadStr = await getSetting("alert_days_ahead", "30");
-  const daysAhead = parseInt(daysAheadStr, 10) || 30;
-
-  const allClients = await db.select().from(clients);
-  const citiesSet = new Set(allClients.map(c => c.city).filter(Boolean));
-
-  const allExtinguishers = await db.select().from(extinguishers);
+  if (!db) return { totalClients: 0, totalCities: 0, totalExtinguishers: 0, nearExpirationCount: 0, expiredCount: 0, totalOrders: 0, alertDaysConfig: 30 };
+  const daysAhead = parseInt(await getSetting("alert_days_ahead", "30"), 10) || 30;
+  const allClients = await getClients(undefined, accountId);
+  const cityCount = new Set(allClients.map(client => client.city)).size;
+  const extinguisherResult = accountId
+    ? await db.select({ extinguisher: extinguishers }).from(extinguishers).innerJoin(clients, eq(extinguishers.clientId, clients.id)).where(eq(clients.accountId, accountId))
+    : await db.select({ extinguisher: extinguishers }).from(extinguishers);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-
-  const targetDate = new Date();
-  targetDate.setDate(today.getDate() + daysAhead);
-  targetDate.setHours(23, 59, 59, 999);
-
   let nearExpirationCount = 0;
   let expiredCount = 0;
-
-  for (const ext of allExtinguishers) {
-    const exp = new Date(ext.expirationDate);
-    exp.setHours(0, 0, 0, 0);
-    if (exp < today) {
-      expiredCount++;
-    } else if (exp <= targetDate) {
-      nearExpirationCount++;
-    }
+  for (const row of extinguisherResult) {
+    const expiration = new Date(row.extinguisher.expirationDate);
+    expiration.setHours(0, 0, 0, 0);
+    if (expiration < today) expiredCount++;
+    else if (expiration.getTime() <= today.getTime() + daysAhead * 86400000) nearExpirationCount++;
   }
-
-  const allOrders = await db.select().from(serviceOrders);
-
-  return {
-    totalClients: allClients.length,
-    totalCities: citiesSet.size,
-    totalExtinguishers: allExtinguishers.length,
-    nearExpirationCount,
-    expiredCount,
-    totalOrders: allOrders.length,
-    alertDaysConfig: daysAhead,
-  };
+  const orders = await getServiceOrders(undefined, accountId);
+  return { totalClients: allClients.length, totalCities: cityCount, totalExtinguishers: extinguisherResult.length, nearExpirationCount, expiredCount, totalOrders: orders.length, alertDaysConfig: daysAhead };
 }
