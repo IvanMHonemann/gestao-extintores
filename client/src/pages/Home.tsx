@@ -53,6 +53,7 @@ export default function Home() {
   const [isExtinguisherModalOpen, setIsExtinguisherModalOpen] = useState(false);
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [returnToOrderAfterClient, setReturnToOrderAfterClient] = useState(false);
 
   // Seleções para sub-ações
   const [selectedClientIdForExtinguisher, setSelectedClientIdForExtinguisher] = useState<number | null>(null);
@@ -75,11 +76,16 @@ export default function Home() {
   const utils = trpc.useUtils();
 
   const createClientMutation = trpc.clients.create.useMutation({
-    onSuccess: () => {
+    onSuccess: async (result) => {
       toast.success("Cliente cadastrado com sucesso!");
       setIsClientModalOpen(false);
-      utils.clients.invalidate();
+      await utils.clients.invalidate();
       utils.dashboard.stats.invalidate();
+      if (returnToOrderAfterClient) {
+        setOrderForm(prev => ({ ...prev, clientId: result.id, responsibleName: clientForm.contactName, responsibleCpf: clientForm.cpf, responsibleBirthDate: clientForm.birthDate }));
+        setReturnToOrderAfterClient(false);
+        setIsOrderModalOpen(true);
+      }
     },
     onError: (err) => toast.error(err.message),
   });
@@ -299,6 +305,7 @@ export default function Home() {
               size="sm"
               className="bg-red-600 hover:bg-red-700 text-white font-semibold gap-1.5 shadow"
               onClick={() => {
+                setReturnToOrderAfterClient(false);
                 if (clientsQuery.data && clientsQuery.data.length > 0) {
                   setOrderForm(prev => ({ ...prev, clientId: clientsQuery.data[0].id }));
                 }
@@ -596,6 +603,7 @@ export default function Home() {
                         size="sm"
                         className="bg-red-600 hover:bg-red-700 text-white font-semibold text-xs gap-1 h-8"
                         onClick={() => {
+                          setReturnToOrderAfterClient(false);
                           setOrderForm(prev => ({
                             ...prev,
                             clientId: client.id,
@@ -1189,8 +1197,8 @@ export default function Home() {
             {/* CABEÇALHO DA OS */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-50 p-3 rounded-lg border border-slate-200">
               <div>
-                <label className="font-bold block mb-1">Cliente *</label>
-                <Select
+                <div className="mb-1 flex items-center justify-between gap-2"><label className="font-bold">Cliente *</label><Button type="button" variant="link" className="h-auto p-0 text-[11px] font-bold text-red-600" onClick={() => { setReturnToOrderAfterClient(true); setIsOrderModalOpen(false); setIsClientModalOpen(true); }}><Plus className="mr-1 h-3 w-3" /> Cadastrar cliente</Button></div>
+                <div className="flex flex-col gap-2 sm:flex-row"><Select
                   value={orderForm.clientId ? String(orderForm.clientId) : ""}
                   onValueChange={(val) => {
                     const cId = Number(val);
@@ -1204,17 +1212,10 @@ export default function Home() {
                     });
                   }}
                 >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Selecione o cliente" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(clientsQuery.data || []).map((c) => (
-                      <SelectItem key={c.id} value={String(c.id)}>
-                        {c.companyName} ({c.city})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  <SelectTrigger className="w-full"><SelectValue placeholder="Selecione um cliente já cadastrado" /></SelectTrigger>
+                  <SelectContent>{(clientsQuery.data || []).map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.companyName} ({c.city})</SelectItem>)}</SelectContent>
+                </Select></div>
+                {(!clientsQuery.data || clientsQuery.data.length === 0) && <p className="mt-1 text-[11px] text-amber-700">Nenhum cliente cadastrado. Clique em “Cadastrar cliente” para continuar.</p>}
               </div>
 
               <div>
