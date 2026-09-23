@@ -244,14 +244,14 @@ export default function Home() {
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
       {/* CABEÇALHO PRINCIPAL */}
       <header className="bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-30 shadow-md">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:h-16 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 justify-between sm:justify-end">
             <div className="w-10 h-10 bg-red-600 rounded-lg flex items-center justify-center shadow-inner">
               <Flame className="w-6 h-6 text-white" />
             </div>
             <div>
               <div className="text-lg font-black tracking-tight leading-none text-white">
-                EFRAIM EXTINTORES
+                CONTROLE DE EXTINTORES
               </div>
               <div className="text-[11px] font-semibold text-red-400 tracking-wider uppercase">
                 Sistema de Gestão & Ordens de Serviço
@@ -259,7 +259,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 justify-between sm:justify-end">
             {/* Botão Configurar Dias de Alerta */}
             <Button
               variant="outline"
@@ -271,7 +271,7 @@ export default function Home() {
               }}
             >
               <Settings className="w-4 h-4 text-slate-400" />
-              <span className="hidden sm:inline">Antecedência Alertas:</span>
+              <span className="hidden md:inline">Antecedência Alertas:</span>
               <span className="font-bold text-amber-400">{alertDaysQuery.data || 30} dias</span>
             </Button>
 
@@ -295,8 +295,8 @@ export default function Home() {
 
       {/* SUB-MENU DE NAVEGAÇÃO */}
       <div className="bg-white border-b border-slate-200 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-between items-center py-2.5">
-          <div className="flex gap-2 sm:gap-4 overflow-x-auto">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 flex flex-col lg:flex-row lg:justify-between lg:items-center gap-2 py-2.5">
+          <div className="flex gap-1 sm:gap-4 overflow-x-auto pb-1 -mx-1 px-1">
             <Button
               variant={activeTab === "dashboard" ? "default" : "ghost"}
               size="sm"
@@ -304,7 +304,8 @@ export default function Home() {
               className={`gap-2 ${activeTab === "dashboard" ? "bg-slate-900 text-white" : "text-slate-600"}`}
             >
               <Building2 className="w-4 h-4" />
-              Visão Geral
+              <span className="sm:hidden">Início</span>
+              <span className="hidden sm:inline">Visão Geral</span>
             </Button>
 
             <Button
@@ -314,7 +315,8 @@ export default function Home() {
               className={`gap-2 ${activeTab === "clients" ? "bg-slate-900 text-white" : "text-slate-600"}`}
             >
               <MapPin className="w-4 h-4" />
-              Clientes por Cidade
+              <span className="sm:hidden">Cidades</span>
+              <span className="hidden sm:inline">Clientes por Cidade</span>
             </Button>
 
             <Button
@@ -324,7 +326,8 @@ export default function Home() {
               className={`gap-2 relative ${activeTab === "alerts" ? "bg-slate-900 text-white" : "text-slate-600"}`}
             >
               <BellRing className="w-4 h-4 text-amber-500" />
-              Alertas de Vencimento
+              <span className="sm:hidden">Alertas</span>
+              <span className="hidden sm:inline">Alertas de Vencimento</span>
               {(statsQuery.data?.nearExpirationCount || 0) + (statsQuery.data?.expiredCount || 0) > 0 && (
                 <span className="ml-1 px-1.5 py-0.5 text-xs bg-red-600 text-white font-bold rounded-full">
                   {(statsQuery.data?.nearExpirationCount || 0) + (statsQuery.data?.expiredCount || 0)}
@@ -339,15 +342,16 @@ export default function Home() {
               className={`gap-2 ${activeTab === "orders" ? "bg-slate-900 text-white" : "text-slate-600"}`}
             >
               <FileText className="w-4 h-4" />
-              Ordens de Serviço
+              <span className="sm:hidden">OS</span>
+              <span className="hidden sm:inline">Ordens de Serviço</span>
             </Button>
           </div>
 
           {/* Seletor de Cidade Global */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 w-full lg:w-auto">
             <span className="text-xs font-semibold text-slate-500 hidden sm:inline">Filtrar Cidade:</span>
             <Select value={selectedCity} onValueChange={(val) => setSelectedCity(val)}>
-              <SelectTrigger className="w-[160px] h-8 text-xs bg-slate-50">
+              <SelectTrigger className="w-full lg:w-[160px] h-8 text-xs bg-slate-50">
                 <SelectValue placeholder="Todas as cidades" />
               </SelectTrigger>
               <SelectContent>
@@ -369,13 +373,13 @@ export default function Home() {
         {activeTab === "dashboard" && (
           <div className="space-y-6">
             {/* CARDS DE RESUMO */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-              <Card className="border-l-4 border-l-blue-600 shadow-sm">
+            <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 sm:gap-4">
+              <Card className="border-l-4 border-l-blue-600 shadow-sm min-w-0">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-xs font-bold uppercase tracking-wider text-slate-500">
                     Total Clientes
                   </CardDescription>
-                  <CardTitle className="text-2xl font-black text-slate-900">
+                  <CardTitle className="text-xl sm:text-2xl font-black text-slate-900">
                     {statsQuery.data?.totalClients || 0}
                   </CardTitle>
                 </CardHeader>
@@ -385,12 +389,12 @@ export default function Home() {
                 </CardContent>
               </Card>
 
-              <Card className="border-l-4 border-l-emerald-600 shadow-sm">
+              <Card className="border-l-4 border-l-emerald-600 shadow-sm min-w-0">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-xs font-bold uppercase tracking-wider text-slate-500">
                     Extintores Ativos
                   </CardDescription>
-                  <CardTitle className="text-2xl font-black text-emerald-700">
+                  <CardTitle className="text-xl sm:text-2xl font-black text-emerald-700">
                     {statsQuery.data?.totalExtinguishers || 0}
                   </CardTitle>
                 </CardHeader>
@@ -400,12 +404,12 @@ export default function Home() {
                 </CardContent>
               </Card>
 
-              <Card className="border-l-4 border-l-amber-500 shadow-sm bg-amber-50/40">
+              <Card className="border-l-4 border-l-amber-500 shadow-sm bg-amber-50/40 min-w-0">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-xs font-bold uppercase tracking-wider text-amber-800">
                     Perto da Validade
                   </CardDescription>
-                  <CardTitle className="text-2xl font-black text-amber-700">
+                  <CardTitle className="text-xl sm:text-2xl font-black text-amber-700">
                     {statsQuery.data?.nearExpirationCount || 0}
                   </CardTitle>
                 </CardHeader>
@@ -415,12 +419,12 @@ export default function Home() {
                 </CardContent>
               </Card>
 
-              <Card className="border-l-4 border-l-red-600 shadow-sm bg-red-50/40">
+              <Card className="border-l-4 border-l-red-600 shadow-sm bg-red-50/40 min-w-0">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-xs font-bold uppercase tracking-wider text-red-800">
                     Extintores Vencidos
                   </CardDescription>
-                  <CardTitle className="text-2xl font-black text-red-700">
+                  <CardTitle className="text-xl sm:text-2xl font-black text-red-700">
                     {statsQuery.data?.expiredCount || 0}
                   </CardTitle>
                 </CardHeader>
@@ -430,12 +434,12 @@ export default function Home() {
                 </CardContent>
               </Card>
 
-              <Card className="border-l-4 border-l-purple-600 shadow-sm">
+              <Card className="border-l-4 border-l-purple-600 shadow-sm min-w-0">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-xs font-bold uppercase tracking-wider text-slate-500">
                     Ordens Geradas
                   </CardDescription>
-                  <CardTitle className="text-2xl font-black text-purple-700">
+                  <CardTitle className="text-xl sm:text-2xl font-black text-purple-700">
                     {statsQuery.data?.totalOrders || 0}
                   </CardTitle>
                 </CardHeader>
@@ -812,7 +816,7 @@ export default function Home() {
                   Ordens de Serviço Emitidas
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Documentos no formato exato da Efraim Extintores com opção de impressão e PDF
+                  Documentos prontos para impressão e PDF no formato profissional da empresa
                 </p>
               </div>
 
@@ -1147,14 +1151,14 @@ export default function Home() {
       </Dialog>
 
       {/* ========================================================
-          MODAL: CRIAR ORDEM DE SERVIÇO COMPLETA (MODELO EFRAIM)
+          MODAL: CRIAR ORDEM DE SERVIÇO COMPLETA
       ======================================================== */}
       <Dialog open={isOrderModalOpen} onOpenChange={setIsOrderModalOpen}>
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold flex items-center gap-2">
               <FileText className="w-5 h-5 text-red-600" />
-              Criar Ordem de Serviço (Ficha Efraim)
+              Criar Ordem de Serviço
             </DialogTitle>
           </DialogHeader>
 

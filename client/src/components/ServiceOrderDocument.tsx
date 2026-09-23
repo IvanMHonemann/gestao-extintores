@@ -55,9 +55,9 @@ export function ServiceOrderDocument({
   const isBoleto = order?.paymentMethod?.toUpperCase().includes("BOLETO");
 
   return (
-    <div className="flex flex-col items-center py-6 bg-slate-100 min-h-screen">
+    <div className="flex flex-col items-center py-3 sm:py-6 px-2 sm:px-4 bg-slate-100 min-h-screen overflow-x-hidden">
       {/* Barra de Ações Superior (Oculta na Impressão) */}
-      <div className="w-full max-w-4xl flex items-center justify-between mb-6 px-4 print:hidden">
+      <div className="w-full max-w-4xl flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 mb-4 sm:mb-6 px-1 sm:px-4 print:hidden">
         {onBack && (
           <Button variant="outline" onClick={onBack} className="gap-2">
             <ArrowLeft className="w-4 h-4" />
@@ -78,36 +78,30 @@ export function ServiceOrderDocument({
       {/* DOCUMENTO IMPRESSO (Página A4 Exata) */}
       <div
         ref={componentRef}
-        className="w-[210mm] min-h-[297mm] bg-white p-[10mm] text-slate-900 shadow-xl border border-slate-300 print:shadow-none print:border-none print:p-0 print:w-full print:m-0 flex flex-col justify-between"
+        className="w-[calc(100vw-16px)] sm:w-[210mm] max-w-[210mm] min-h-0 sm:min-h-[297mm] bg-white p-3 sm:p-[10mm] text-slate-900 shadow-xl border border-slate-300 print:shadow-none print:border-none print:p-0 print:w-full print:m-0 flex flex-col justify-between"
         style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
       >
         <div>
           {/* CABEÇALHO */}
           <div className="flex justify-between items-start border-b-2 border-slate-800 pb-3 mb-3">
             <div className="flex items-center gap-4">
-              <div className="w-16 h-18 flex items-center justify-center">
-                <img
-                  src="/assets/logo_shield.png"
-                  alt="Efraim Logo"
-                  className="w-16 h-auto object-contain"
-                  onError={(e) => {
-                    // Fallback visual se a imagem não carregar
-                    (e.target as HTMLElement).style.display = "none";
-                  }}
-                />
+              <div className="w-10 sm:w-16 h-12 sm:h-18 flex items-center justify-center">
+                <div className="w-10 h-10 sm:w-14 sm:h-14 rounded-full bg-red-700 text-white flex items-center justify-center text-xl sm:text-2xl font-black">
+                  ✓
+                </div>
               </div>
               <div className="border-l-2 border-slate-700 pl-3">
-                <h1 className="text-2xl font-black tracking-tight text-slate-900 leading-none">
-                  EFRAIM EXTINTORES
+                <h1 className="text-base sm:text-2xl font-black tracking-tight text-slate-900 leading-none">
+                  CONTROLE DE EXTINTORES
                 </h1>
                 <p className="text-xs font-bold tracking-wider text-slate-800 uppercase mt-1">
-                  PREVENÇÃO CONTRA INCÊNDIOS
+                  GESTÃO E MANUTENÇÃO
                 </p>
               </div>
             </div>
 
             <div className="text-right">
-              <h2 className="text-lg font-black tracking-wide text-slate-900">
+              <h2 className="text-sm sm:text-lg font-black tracking-wide text-slate-900">
                 ORDEM DE SERVIÇO
               </h2>
               <div className="text-sm font-bold mt-1 text-slate-800">
@@ -120,7 +114,7 @@ export function ServiceOrderDocument({
           </div>
 
           {/* DADOS DO CLIENTE */}
-          <div className="border-2 border-slate-800 mb-3 text-xs">
+          <div className="border-2 border-slate-800 mb-3 text-[10px] sm:text-xs">
             <div className="bg-slate-200 text-center font-bold py-1 border-b-2 border-slate-800 tracking-wider">
               DADOS DO CLIENTE
             </div>
@@ -179,12 +173,12 @@ export function ServiceOrderDocument({
           </div>
 
           {/* SERVIÇOS PRESTADOS */}
-          <div className="border-2 border-slate-800 mb-3 text-xs">
+          <div className="border-2 border-slate-800 mb-3 text-[10px] sm:text-xs">
             <div className="bg-slate-200 text-center font-bold py-1 border-b-2 border-slate-800 tracking-wider">
               SERVIÇOS PRESTADO
             </div>
 
-            <table className="w-full text-left border-collapse">
+            <table className="w-full text-left border-collapse text-[10px] sm:text-xs">
               <thead>
                 <tr className="border-b-2 border-slate-800 font-bold bg-slate-100 text-center">
                   <th className="p-1.5 border-r-2 border-slate-800 w-[55%] text-left pl-3">DESCRIÇÃO</th>
@@ -230,15 +224,15 @@ export function ServiceOrderDocument({
               </span>
             </div>
 
-            <div className="flex items-center">
-              <span className="w-52">DEIXOU RESERVA:</span>
+            <div className="flex flex-wrap items-center gap-y-1">
+              <span className="w-full sm:w-52">DEIXOU RESERVA:</span>
               <span className="mr-6">
                 (&nbsp;{isReserveYes ? "X" : "\u00A0\u00A0"}&nbsp;) SIM
               </span>
               <span className="mr-8">
                 (&nbsp;{isReserveNo ? "X" : "\u00A0\u00A0"}&nbsp;) NÃO
               </span>
-              <div className="flex-1 flex items-center">
+              <div className="w-full sm:flex-1 flex items-center">
                 <span className="mr-2">QUAIS:</span>
                 <span className="flex-1 border-b border-slate-700 font-normal px-2">
                   {order?.reserveDetails || ""}
@@ -262,7 +256,7 @@ export function ServiceOrderDocument({
           </div>
 
           {/* FORMA DE PAGAMENTO */}
-          <div className="border-2 border-slate-800 mb-4 text-xs">
+          <div className="border-2 border-slate-800 mb-4 text-[10px] sm:text-xs">
             <div className="bg-slate-200 text-center font-bold py-1 border-b-2 border-slate-800 tracking-wider">
               FORMA DE PAGAMENTO
             </div>
@@ -308,7 +302,7 @@ export function ServiceOrderDocument({
           <div className="grid grid-cols-2 gap-8 pt-8 pb-4 text-xs text-center font-bold">
             <div>
               <div className="border-t-2 border-slate-800 pt-1.5 uppercase">
-                EFRAIM EXTINTORES PREVENÇÃO<br />CONTRA INCÊNDIO
+                CONTROLE DE EXTINTORES PREVENÇÃO<br />CONTRA INCÊNDIO
               </div>
             </div>
 
@@ -326,44 +320,12 @@ export function ServiceOrderDocument({
           </div>
         </div>
 
-        {/* RODAPÉ INSTITUCIONAL (Exato como na foto) */}
-        <div className="border-t-2 border-slate-800 pt-2 text-[10.5px] leading-relaxed text-slate-800 flex justify-between items-end">
-          <div className="space-y-0.5">
-            <div className="font-bold text-slate-900">
-              CNPJ: 27.229.997/0001-02 - IE: 131/0156090
-            </div>
-            <div className="flex items-center gap-3">
-              <span>☎ Fone: (51) 3559-8872</span>
-              <span>📱 (51) 99588-1665</span>
-            </div>
-            <div>
-              ✉ efraimextintoressapiranga@gmail.com
-            </div>
-            <div>
-              📍 Rua: Rolante, nº 399, Bairro: Amaral Ribeiro - Sapiranga/RS - CEP: 93821-070
-            </div>
-          </div>
-
-          <div className="text-right flex flex-col items-end">
-            <div className="text-[9px] font-black tracking-widest text-slate-900 uppercase">
-              REGISTRO
-            </div>
-            <img
-              src="/assets/inmetro.png"
-              alt="Inmetro"
-              className="h-10 w-auto object-contain my-0.5"
-              onError={(e) => {
-                (e.target as HTMLElement).style.display = "none";
-              }}
-            />
-            <div className="text-[9px] font-bold text-slate-800 tracking-wider">
-              INMETRO
-            </div>
-            <div className="text-[10px] font-black text-slate-950 font-mono">
-              006065/2023
-            </div>
-          </div>
+        {/* RODAPÉ DA APLICAÇÃO */}
+        <div className="border-t-2 border-slate-800 pt-2 text-[9px] sm:text-[10.5px] leading-relaxed text-slate-700 text-center">
+          <div className="font-bold text-slate-900">CONTROLE DE EXTINTORES</div>
+          <div>Ordem de Serviço • Controle de manutenção e validade</div>
         </div>
+
       </div>
 
       {/* ESTILOS DE IMPRESSÃO CSS */}

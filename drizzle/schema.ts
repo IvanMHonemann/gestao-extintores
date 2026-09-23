@@ -65,7 +65,7 @@ export type InsertExtinguisher = typeof extinguishers.$inferInsert;
 
 /**
  * Ordens de Serviço
- * Reproduz fielmente a ficha da Efraim Extintores
+ * Reproduz o modelo profissional da ordem de serviço
  */
 export const serviceOrders = mysqlTable("service_orders", {
   id: int("id").autoincrement().primaryKey(),
