@@ -139,7 +139,8 @@ export function ServiceOrderDocument({
         return;
       }
 
-      // Navegadores sem compartilhamento de arquivos: baixa o PDF real para anexar manualmente no WhatsApp.
+      // No PC, os navegadores bloqueiam anexar automaticamente um arquivo local ao WhatsApp Web.
+      // Por isso, baixamos o PDF real e abrimos o WhatsApp Web para o usuário anexá-lo na conversa.
       const downloadUrl = URL.createObjectURL(file);
       const link = document.createElement("a");
       link.href = downloadUrl;
@@ -148,7 +149,8 @@ export function ServiceOrderDocument({
       link.click();
       link.remove();
       URL.revokeObjectURL(downloadUrl);
-      toast.success("PDF baixado. Anexe o arquivo baixado na conversa do WhatsApp.");
+      window.open("https://web.whatsapp.com/", "_blank", "noopener,noreferrer");
+      toast.success("PDF baixado e WhatsApp Web aberto. Anexe o arquivo PDF na conversa do cliente.");
     } catch (error) {
       if ((error as DOMException)?.name !== "AbortError") {
         console.error("Falha ao gerar PDF:", error);
