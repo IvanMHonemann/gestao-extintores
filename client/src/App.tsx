@@ -8,6 +8,8 @@ import Home from "./pages/Home";
 import PrintOrderPage from "./pages/PrintOrderPage";
 import LoginPage from "./pages/LoginPage";
 import AdminUsersPage from "./pages/AdminUsersPage";
+import BackupPage from "./pages/BackupPage";
+import { PwaStatusBar } from "./components/PwaStatusBar";
 import { useAuth } from "./_core/hooks/useAuth";
 import { Loader2 } from "lucide-react";
 
@@ -24,6 +26,7 @@ function Router() {
       <Route path="/login" component={LoginPage} />
       <Route path="/"><Protected><Home /></Protected></Route>
       <Route path="/admin/usuarios"><Protected><AdminUsersPage /></Protected></Route>
+      <Route path="/backup"><Protected><BackupPage /></Protected></Route>
       <Route path="/os/:id"><Protected><PrintOrderPage /></Protected></Route>
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
@@ -37,6 +40,7 @@ function App() {
       <ThemeProvider defaultTheme="light">
         <TooltipProvider>
           <Toaster />
+          <PwaStatusBar />
           <Router />
         </TooltipProvider>
       </ThemeProvider>

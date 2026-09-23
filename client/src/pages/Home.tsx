@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
+import { useLiveQuery } from "dexie-react-hooks";
 import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
@@ -23,6 +24,7 @@ import {
   Settings,
   BellRing,
   Download,
+  HardDrive,
   ShieldCheck,
   ChevronRight,
   Users,
@@ -39,6 +41,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ServiceOrderDocument } from "@/components/ServiceOrderDocument";
 import { toast } from "sonner";
+import { useOfflineSnapshot, useOnlineStatus } from "@/offline/hooks";
+import { offlineDb, queueOfflineMutation } from "@/offline/localDb";
 
 export default function Home() {
   const { user, logout } = useAuth();
@@ -77,6 +81,29 @@ export default function Home() {
     { enabled: !!viewingOrderId }
   );
 
+  const offline = useOfflineSnapshot({
+    clients: clientsQuery.data as any,
+    orders: ordersQuery.data as any,
+    alerts: alertsQuery.data as any,
+    alertDays: alertDaysQuery.data,
+  });
+  const effectiveClients = useMemo(() => (offline.clients || []).filter((client: any) => selectedCity === "TODAS" || client.city === selectedCity), [offline.clients, selectedCity]);
+  const effectiveCities = useMemo(() => Array.from(new Set((offline.clients || []).map((client: any) => client.city).filter(Boolean))).sort(), [offline.clients]);
+  const effectiveAlerts = offline.alerts || [];
+  const effectiveOrders = offline.orders || [];
+  const effectiveStats = useMemo(() => offline.isOnline && statsQuery.data ? statsQuery.data : {
+    totalClients: effectiveClients.length,
+    totalCities: effectiveCities.length,
+    totalExtinguishers: offline.extinguishers?.length || 0,
+    nearExpirationCount: effectiveAlerts.filter((item: any) => item.alertStatus === "warning" || item.alertStatus === "urgent").length,
+    expiredCount: effectiveAlerts.filter((item: any) => item.alertStatus === "expired").length,
+    totalOrders: effectiveOrders.length,
+  }, [offline.isOnline, statsQuery.data, effectiveClients.length, effectiveCities.length, offline.extinguishers?.length, effectiveAlerts, effectiveOrders.length]);
+  const offlineOrderDetails = useMemo(() => {
+    const row = (offline.orders || []).find((item: any) => item.order?.id === viewingOrderId);
+    return row ? { ...row.order, client: row.client, items: row.order.items || [] } : undefined;
+  }, [offline.orders, viewingOrderId]);
+
   // Mutations
   const utils = trpc.useUtils();
 
@@ -92,7 +119,10 @@ export default function Home() {
         setIsOrderModalOpen(true);
       }
     },
-    onError: (err) => toast.error(err.message),
+    onError: async (err, input) => {
+      if (!offline.isOnline) { const localId = await saveOfflineClient(input); await queueOfflineMutation({ entity: "client", action: "create", payload: { ...input, localId } }); toast.success("Cliente salvo no dispositivo (offline)."); setIsClientModalOpen(false); return; }
+      toast.error(err.message);
+    },
   });
 
   const deleteClientMutation = trpc.clients.delete.useMutation({
@@ -100,6 +130,19 @@ export default function Home() {
       toast.success("Cliente excluído!");
       utils.clients.invalidate();
       utils.dashboard.stats.invalidate();
+    },
+    onError: async (err, input) => {
+      if (!offline.isOnline) {
+        await offlineDb.clients.delete(input.id);
+        const ext = await offlineDb.extinguishers.where("clientId").equals(input.id).toArray();
+        await offlineDb.extinguishers.bulkDelete(ext.map((item) => item.id));
+        const orders = (await offlineDb.orders.toArray()).filter((item) => item.order?.clientId === input.id);
+        await offlineDb.orders.bulkDelete(orders.map((item) => item.order.id));
+        await queueOfflineMutation({ entity: "client", action: "delete", payload: input });
+        toast.success("Cliente removido do dispositivo.");
+        return;
+      }
+      toast.error(err.message);
     },
   });
 
@@ -111,7 +154,10 @@ export default function Home() {
       utils.clients.invalidate();
       utils.dashboard.stats.invalidate();
     },
-    onError: (err) => toast.error(err.message),
+    onError: async (err, input) => {
+      if (!offline.isOnline) { const localId = await saveOfflineExtinguisher(input); await queueOfflineMutation({ entity: "extinguisher", action: "create", payload: { ...input, localId } }); toast.success("Extintor salvo no dispositivo (offline)."); setIsExtinguisherModalOpen(false); return; }
+      toast.error(err.message);
+    },
   });
 
   const deleteExtinguisherMutation = trpc.extinguishers.delete.useMutation({
@@ -119,6 +165,10 @@ export default function Home() {
       toast.success("Extintor removido!");
       utils.extinguishers.invalidate();
       utils.dashboard.stats.invalidate();
+    },
+    onError: async (err, input) => {
+      if (!offline.isOnline) { await offlineDb.extinguishers.delete(input.id); await offlineDb.alerts.delete(input.id); await queueOfflineMutation({ entity: "extinguisher", action: "delete", payload: input }); toast.success("Extintor removido do dispositivo."); return; }
+      toast.error(err.message);
     },
   });
 
@@ -132,7 +182,20 @@ export default function Home() {
         setViewingOrderId(res.id);
       }
     },
-    onError: (err) => toast.error(err.message),
+    onError: async (err, input) => {
+      if (!offline.isOnline) {
+        const id = offlineId();
+        const client = effectiveClients.find((item: any) => item.id === input.clientId);
+        const order = { ...input, id, orderNumber: input.orderNumber || Math.abs(id), items: input.items, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+        await offlineDb.orders.put({ order, client: client || { id: input.clientId, companyName: "Cliente offline", city: "Não informado" } });
+        await queueOfflineMutation({ entity: "order", action: "create", payload: { ...input, localId: id } });
+        toast.success("Ordem salva no dispositivo (offline).");
+        setIsOrderModalOpen(false);
+        setViewingOrderId(id);
+        return;
+      }
+      toast.error(err.message);
+    },
   });
 
   const deleteOrderMutation = trpc.orders.delete.useMutation({
@@ -141,7 +204,47 @@ export default function Home() {
       utils.orders.invalidate();
       utils.dashboard.stats.invalidate();
     },
+    onError: async (err, input) => {
+      if (!offline.isOnline) { await offlineDb.orders.delete(input.id); await queueOfflineMutation({ entity: "order", action: "delete", payload: input }); toast.success("Ordem removida do dispositivo."); return; }
+      toast.error(err.message);
+    },
   });
+
+  useEffect(() => {
+    if (!offline.isOnline) return;
+    let cancelled = false;
+    void (async () => {
+      const queued = await offlineDb.mutations.orderBy("createdAt").toArray();
+      const idMap = new Map<number, number>();
+      for (const mutation of queued) {
+        if (cancelled) return;
+        try {
+          const raw = mutation.payload || {};
+          const payload = { ...raw };
+          delete payload.localId;
+          if (payload.clientId && idMap.has(payload.clientId)) payload.clientId = idMap.get(payload.clientId);
+          if (payload.items) payload.items = payload.items.map((item: any) => ({ ...item, extinguisherId: idMap.get(item.extinguisherId) || item.extinguisherId }));
+          if (mutation.action === "create") {
+            const result = mutation.entity === "client" ? await createClientMutation.mutateAsync(payload) : mutation.entity === "extinguisher" ? await createExtinguisherMutation.mutateAsync(payload) : await createOrderMutation.mutateAsync(payload);
+            if (raw.localId && result?.id) idMap.set(raw.localId, result.id);
+          } else if (Number(payload.id) > 0) {
+            if (mutation.entity === "client") await deleteClientMutation.mutateAsync({ id: payload.id });
+            if (mutation.entity === "extinguisher") await deleteExtinguisherMutation.mutateAsync({ id: payload.id });
+            if (mutation.entity === "order") await deleteOrderMutation.mutateAsync({ id: payload.id });
+          }
+          if (mutation.id) await offlineDb.mutations.delete(mutation.id);
+        } catch {
+          toast.error("Não foi possível sincronizar os dados locais. Tentaremos novamente.");
+          return;
+        }
+      }
+      if (!cancelled && queued.length) {
+        await Promise.all([utils.clients.invalidate(), utils.extinguishers.invalidate(), utils.orders.invalidate(), utils.dashboard.stats.invalidate()]);
+        toast.success("Dados offline sincronizados com sucesso.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [offline.isOnline]);
 
   const setAlertDaysMutation = trpc.settings.setAlertDays.useMutation({
     onSuccess: () => {
@@ -246,26 +349,43 @@ export default function Home() {
   };
 
   // Se estiver visualizando a OS para impressão
-  if (viewingOrderId && orderDetailsQuery.data) {
+  const selectedOrderDetails = orderDetailsQuery.data || offlineOrderDetails;
+  if (viewingOrderId && selectedOrderDetails) {
     return (
       <ServiceOrderDocument
-        order={orderDetailsQuery.data}
-        client={orderDetailsQuery.data.client}
-        items={orderDetailsQuery.data.items}
+        order={selectedOrderDetails}
+        client={selectedOrderDetails.client}
+        items={selectedOrderDetails.items}
         onBack={() => setViewingOrderId(null)}
       />
     );
   }
 
+  const offlineId = () => -Date.now();
+  const saveOfflineClient = async (input: Partial<typeof clientForm> & { companyName: string; city: string }) => {
+    const id = offlineId();
+    await offlineDb.clients.put({ ...input, id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    return id;
+  };
+  const saveOfflineExtinguisher = async (input: Partial<typeof extinguisherForm> & { clientId: number; typeModel: string; expirationDate: string }) => {
+    const id = offlineId();
+    const expiration = new Date(`${input.expirationDate}T12:00:00`);
+    const days = Math.ceil((expiration.getTime() - new Date().setHours(12, 0, 0, 0)) / 86400000);
+    const status = days < 0 ? "expired" : days <= (offline.alertDays || 30) ? "warning" : "ok";
+    await offlineDb.extinguishers.put({ ...input, id, status, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    await offlineDb.alerts.put({ ...input, id, clientId: input.clientId, expirationDate: input.expirationDate, alertStatus: status === "expired" ? "expired" : status === "warning" ? "warning" : "ok" });
+    return id;
+  };
+
   // Filtragem dos clientes
-  const filteredClients = (clientsQuery.data || []).filter(c => {
+  const filteredClients = (effectiveClients || []).filter(c => {
     const matchSearch = searchQuery === "" || 
       c.companyName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (c.cnpj && c.cnpj.includes(searchQuery)) ||
       (c.contactName && c.contactName.toLowerCase().includes(searchQuery.toLowerCase()));
     return matchSearch;
   });
-  const visibleAlerts = (alertsQuery.data || []).filter((item) => {
+  const visibleAlerts = (effectiveAlerts || []).filter((item) => {
     if (alertFilter === "all") return true;
     return alertFilter === "expired" ? item.alertStatus === "expired" : item.alertStatus === "urgent" || item.alertStatus === "warning";
   });
@@ -315,13 +435,13 @@ export default function Home() {
                 size="sm"
                 className="text-slate-200 border-slate-700 hover:bg-slate-800 gap-1.5"
                 onClick={() => {
-                  setConfigDays(alertDaysQuery.data || 30);
+                  setConfigDays(offline.alertDays || 30);
                   setIsSettingsModalOpen(true);
                 }}
               >
                 <Settings className="w-4 h-4 text-slate-400" />
                 <span className="hidden md:inline">Antecedência Alertas:</span>
-                <span className="font-bold text-amber-400">{alertDaysQuery.data || 30} dias</span>
+                <span className="font-bold text-amber-400">{offline.alertDays || 30} dias</span>
               </Button>
             )}
 
@@ -331,8 +451,8 @@ export default function Home() {
               className="bg-red-600 hover:bg-red-700 text-white font-semibold gap-1.5 shadow"
               onClick={() => {
                 setReturnToOrderAfterClient(false);
-                if (clientsQuery.data && clientsQuery.data.length > 0) {
-                  setOrderForm(prev => ({ ...prev, clientId: clientsQuery.data[0].id }));
+                if (effectiveClients && effectiveClients.length > 0) {
+                  setOrderForm(prev => ({ ...prev, clientId: effectiveClients[0].id }));
                 }
                 setIsOrderModalOpen(true);
               }}
@@ -358,18 +478,19 @@ export default function Home() {
           <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Navegação</p>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "dashboard" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("dashboard")}><Building2 className="h-4 w-4" /> Visão Geral</Button>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "clients" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("clients")}><MapPin className="h-4 w-4" /> Clientes por Cidade</Button>
-          <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "alerts" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("alerts")}><BellRing className="h-4 w-4 text-amber-400" /> Alertas de Vencimento {(statsQuery.data?.nearExpirationCount || 0) + (statsQuery.data?.expiredCount || 0) > 0 && <span className="ml-auto rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold">{(statsQuery.data?.nearExpirationCount || 0) + (statsQuery.data?.expiredCount || 0)}</span>}</Button>
+          <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "alerts" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("alerts")}><BellRing className="h-4 w-4 text-amber-400" /> Alertas de Vencimento {(effectiveStats?.nearExpirationCount || 0) + (effectiveStats?.expiredCount || 0) > 0 && <span className="ml-auto rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold">{(effectiveStats?.nearExpirationCount || 0) + (effectiveStats?.expiredCount || 0)}</span>}</Button>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "orders" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("orders")}><FileText className="h-4 w-4" /> Ordens de Serviço</Button>
           <div className="my-4 border-t border-slate-800" />
           <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Ações rápidas</p>
           <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setIsClientModalOpen(true); setIsSidebarOpen(false); }}><Plus className="h-4 w-4" /> Cadastrar Cliente</Button>
           <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setReturnToOrderAfterClient(false); setIsOrderModalOpen(true); setIsSidebarOpen(false); }}><FileText className="h-4 w-4" /> Nova Ordem de Serviço</Button>
           {user?.role === "admin" && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/admin/usuarios"); setIsSidebarOpen(false); }}><Users className="h-4 w-4" /> Usuários</Button>}
-          {user?.role === "admin" && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setConfigDays(alertDaysQuery.data || 30); setIsSettingsModalOpen(true); setIsSidebarOpen(false); }}><Settings className="h-4 w-4" /> Antecedência: {alertDaysQuery.data || 30} dias</Button>}
+          {user?.role === "admin" && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setConfigDays(offline.alertDays || 30); setIsSettingsModalOpen(true); setIsSidebarOpen(false); }}><Settings className="h-4 w-4" /> Antecedência: {offline.alertDays || 30} dias</Button>}
+          <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/backup"); setIsSidebarOpen(false); }}><HardDrive className="h-4 w-4" /> Backup e Restauração</Button>
         </div>
         <div className="border-t border-slate-800 p-4">
           <div className="mb-3 rounded-lg bg-slate-900 px-3 py-2 text-xs text-slate-400">Cidade selecionada: <strong className="text-slate-200">{selectedCity === "TODAS" ? "Todas" : selectedCity}</strong></div>
-          <Select value={selectedCity} onValueChange={(val) => setSelectedCity(val)}><SelectTrigger className="mb-3 w-full border-slate-700 bg-slate-900 text-xs text-slate-200"><SelectValue placeholder="Filtrar cidade" /></SelectTrigger><SelectContent><SelectItem value="TODAS">Todas as Cidades</SelectItem>{(citiesQuery.data || []).map(city => <SelectItem key={city} value={city}>{city}</SelectItem>)}</SelectContent></Select>
+          <Select value={selectedCity} onValueChange={(val) => setSelectedCity(val)}><SelectTrigger className="mb-3 w-full border-slate-700 bg-slate-900 text-xs text-slate-200"><SelectValue placeholder="Filtrar cidade" /></SelectTrigger><SelectContent><SelectItem value="TODAS">Todas as Cidades</SelectItem>{(effectiveCities || []).map(city => <SelectItem key={city} value={city}>{city}</SelectItem>)}</SelectContent></Select>
           <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => logout()}><LogOut className="h-4 w-4" /> Sair</Button>
         </div>
       </aside>
@@ -397,12 +518,12 @@ export default function Home() {
                     Total Clientes
                   </CardDescription>
                   <CardTitle className="text-xl sm:text-2xl font-black text-slate-900">
-                    {statsQuery.data?.totalClients || 0}
+                    {effectiveStats?.totalClients || 0}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="text-xs text-slate-500 flex items-center gap-1">
                   <MapPin className="w-3.5 h-3.5" />
-                  Em {statsQuery.data?.totalCities || 0} cidades
+                  Em {effectiveStats?.totalCities || 0} cidades
                 </CardContent>
               </Card>
 
@@ -412,7 +533,7 @@ export default function Home() {
                     Extintores Ativos
                   </CardDescription>
                   <CardTitle className="text-xl sm:text-2xl font-black text-emerald-700">
-                    {statsQuery.data?.totalExtinguishers || 0}
+                    {effectiveStats?.totalExtinguishers || 0}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="text-xs text-slate-500 flex items-center gap-1">
@@ -427,12 +548,12 @@ export default function Home() {
                     Perto da Validade
                   </CardDescription>
                   <CardTitle className="text-xl sm:text-2xl font-black text-amber-700">
-                    {statsQuery.data?.nearExpirationCount || 0}
+                    {effectiveStats?.nearExpirationCount || 0}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="text-xs text-amber-800 flex items-center gap-1 font-medium">
                   <Clock className="w-3.5 h-3.5" />
-                  Vencem em até {alertDaysQuery.data || 30} dias
+                  Vencem em até {offline.alertDays || 30} dias
                 </CardContent>
               </Card>
 
@@ -442,7 +563,7 @@ export default function Home() {
                     Extintores Vencidos
                   </CardDescription>
                   <CardTitle className="text-xl sm:text-2xl font-black text-red-700">
-                    {statsQuery.data?.expiredCount || 0}
+                    {effectiveStats?.expiredCount || 0}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="text-xs text-red-800 flex items-center gap-1 font-semibold">
@@ -457,7 +578,7 @@ export default function Home() {
                     Ordens Geradas
                   </CardDescription>
                   <CardTitle className="text-xl sm:text-2xl font-black text-purple-700">
-                    {statsQuery.data?.totalOrders || 0}
+                    {effectiveStats?.totalOrders || 0}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="text-xs text-slate-500 flex items-center gap-1">
@@ -468,7 +589,7 @@ export default function Home() {
             </div>
 
             {/* SEÇÃO DE ALERTAS CRÍTICOS (Banner de Aviso com Antecedência) */}
-            {((statsQuery.data?.nearExpirationCount || 0) > 0 || (statsQuery.data?.expiredCount || 0) > 0) && (
+            {((effectiveStats?.nearExpirationCount || 0) > 0 || (effectiveStats?.expiredCount || 0) > 0) && (
               <div className="bg-gradient-to-r from-amber-50 to-red-50 border-2 border-amber-300 rounded-xl p-3 sm:p-5 shadow-sm">
                 <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
                   <div className="flex items-start gap-3 min-w-0">
@@ -480,7 +601,7 @@ export default function Home() {
                         Atenção aos Prazos de Validade dos Extintores!
                       </h3>
                       <p className="text-sm text-slate-700 mt-1 leading-relaxed">
-                        Existem extintores que venceram ou estão a menos de <strong>{alertDaysQuery.data || 30} dias</strong> do vencimento. 
+                        Existem extintores que venceram ou estão a menos de <strong>{offline.alertDays || 30} dias</strong> do vencimento. 
                         Revise os clientes abaixo e agende a recarga/troca.
                       </p>
                     </div>
@@ -687,7 +808,7 @@ export default function Home() {
                     Alertas de Vencimento de Extintores{alertFilter === "near" ? " — Próximos do vencimento" : alertFilter === "expired" ? " — Vencidos" : ""}
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Extintores organizados por urgência. Antecedência configurada para: <strong>{alertDaysQuery.data || 30} dias</strong>
+                    Extintores organizados por urgência. Antecedência configurada para: <strong>{offline.alertDays || 30} dias</strong>
                   </p>
                 </div>
 
@@ -834,8 +955,8 @@ export default function Home() {
               <Button
                 className="bg-red-600 hover:bg-red-700 text-white gap-2 font-semibold shadow"
                 onClick={() => {
-                  if (clientsQuery.data && clientsQuery.data.length > 0) {
-                    setOrderForm(prev => ({ ...prev, clientId: clientsQuery.data[0].id }));
+                  if (effectiveClients && effectiveClients.length > 0) {
+                    setOrderForm(prev => ({ ...prev, clientId: effectiveClients[0].id }));
                   }
                   setIsOrderModalOpen(true);
                 }}
@@ -859,7 +980,7 @@ export default function Home() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {(ordersQuery.data || []).map(({ order, client }) => (
+                  {(effectiveOrders || []).map(({ order, client }) => (
                     <tr key={order.id} className="hover:bg-slate-50 transition-colors">
                       <td className="p-3 font-mono font-bold text-slate-900">
                         #{String(order.orderNumber).padStart(5, '0')}
@@ -909,7 +1030,7 @@ export default function Home() {
                     </tr>
                   ))}
 
-                  {(ordersQuery.data || []).length === 0 && (
+                  {(effectiveOrders || []).length === 0 && (
                     <tr>
                       <td colSpan={7} className="p-8 text-center text-slate-400">
                         Nenhuma ordem de serviço cadastrada ainda.
@@ -1057,7 +1178,7 @@ export default function Home() {
                   <SelectValue placeholder="Selecione um cliente" />
                 </SelectTrigger>
                 <SelectContent>
-                  {(clientsQuery.data || []).map((c) => (
+                  {(effectiveClients || []).map((c) => (
                     <SelectItem key={c.id} value={String(c.id)}>
                       {c.companyName} ({c.city})
                     </SelectItem>
@@ -1182,7 +1303,7 @@ export default function Home() {
                   value={orderForm.clientId ? String(orderForm.clientId) : ""}
                   onValueChange={(val) => {
                     const cId = Number(val);
-                    const selected = (clientsQuery.data || []).find(c => c.id === cId);
+                    const selected = (effectiveClients || []).find(c => c.id === cId);
                     setOrderForm({
                       ...orderForm,
                       clientId: cId,
@@ -1193,9 +1314,9 @@ export default function Home() {
                   }}
                 >
                   <SelectTrigger className="w-full"><SelectValue placeholder="Selecione um cliente já cadastrado" /></SelectTrigger>
-                  <SelectContent>{(clientsQuery.data || []).map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.companyName} ({c.city})</SelectItem>)}</SelectContent>
+                  <SelectContent>{(effectiveClients || []).map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.companyName} ({c.city})</SelectItem>)}</SelectContent>
                 </Select></div>
-                {(!clientsQuery.data || clientsQuery.data.length === 0) && <p className="mt-1 text-[11px] text-amber-700">Nenhum cliente cadastrado. Clique em “Cadastrar cliente” para continuar.</p>}
+                {(!effectiveClients || effectiveClients.length === 0) && <p className="mt-1 text-[11px] text-amber-700">Nenhum cliente cadastrado. Clique em “Cadastrar cliente” para continuar.</p>}
               </div>
 
               <div>
@@ -1498,7 +1619,10 @@ function ClientDetailCard({
   onDelete: () => void;
 }) {
   const extinguishersQuery = trpc.extinguishers.listByClient.useQuery({ clientId: client.id });
-  const visibleExtinguishers = (extinguishersQuery.data || []).filter((ext) => {
+  const isOnline = useOnlineStatus();
+  const localExtinguishers = useLiveQuery(() => offlineDb.extinguishers.where("clientId").equals(client.id).toArray(), [client.id], []);
+  const extinguisherRows = isOnline && extinguishersQuery.data ? extinguishersQuery.data : localExtinguishers;
+  const visibleExtinguishers = (extinguisherRows || []).filter((ext) => {
     if (extinguisherFilter === "all") return true;
     const expiration = new Date(ext.expirationDate);
     expiration.setHours(0, 0, 0, 0);
