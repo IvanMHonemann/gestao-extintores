@@ -26,8 +26,13 @@ import {
   ShieldCheck,
   ChevronRight,
   Users,
-  LogOut
+  LogOut,
+  Menu,
+  X,
+  PieChart as PieChartIcon,
+  BarChart3
 } from "lucide-react";
+import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from "recharts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
@@ -46,6 +51,7 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [extinguisherFilter, setExtinguisherFilter] = useState<"all" | "active">("all");
   const [alertFilter, setAlertFilter] = useState<"all" | "near" | "expired">("all");
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   
   // Visualização e Impressão de OS
   const [viewingOrderId, setViewingOrderId] = useState<number | null>(null);
@@ -266,6 +272,17 @@ export default function Home() {
     if (alertFilter === "all") return true;
     return alertFilter === "expired" ? item.alertStatus === "expired" : item.alertStatus === "urgent" || item.alertStatus === "warning";
   });
+  const validityChartData = [
+    { name: "Válidos", value: Math.max(0, (statsQuery.data?.totalExtinguishers || 0) - (statsQuery.data?.nearExpirationCount || 0) - (statsQuery.data?.expiredCount || 0)), color: "#059669" },
+    { name: "Perto da validade", value: statsQuery.data?.nearExpirationCount || 0, color: "#f59e0b" },
+    { name: "Vencidos", value: statsQuery.data?.expiredCount || 0, color: "#dc2626" },
+  ].filter((item) => item.value > 0);
+  const navigateToSection = (section: "dashboard" | "clients" | "orders" | "alerts") => {
+    if (section === "clients") setExtinguisherFilter("all");
+    if (section === "alerts") setAlertFilter("all");
+    setActiveTab(section);
+    setIsSidebarOpen(false);
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
@@ -273,6 +290,7 @@ export default function Home() {
       <header className="bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-30 shadow-md">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:h-16 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2 sm:gap-3 justify-between sm:justify-end">
+            <Button variant="outline" size="sm" className="border-slate-700 bg-slate-900 text-white hover:bg-slate-800 lg:hidden" onClick={() => setIsSidebarOpen(true)} aria-label="Abrir menu"><Menu className="h-5 w-5" /></Button>
             <div className="w-10 h-10 bg-red-600 rounded-lg flex items-center justify-center shadow-inner">
               <Flame className="w-6 h-6 text-white" />
             </div>
@@ -338,78 +356,40 @@ export default function Home() {
         </div>
       </header>
 
-      {/* SUB-MENU DE NAVEGAÇÃO */}
-      <div className="bg-white border-b border-slate-200 shadow-sm">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 flex flex-col lg:flex-row lg:justify-between lg:items-center gap-2 py-2.5">
-          <div className="flex gap-1 sm:gap-4 overflow-x-auto pb-1 -mx-1 px-1">
-            <Button
-              variant={activeTab === "dashboard" ? "default" : "ghost"}
-              size="sm"
-              onClick={() => setActiveTab("dashboard")}
-              className={`gap-2 ${activeTab === "dashboard" ? "bg-slate-900 text-white" : "text-slate-600"}`}
-            >
-              <Building2 className="w-4 h-4" />
-              <span className="sm:hidden">Início</span>
-              <span className="hidden sm:inline">Visão Geral</span>
-            </Button>
+      {isSidebarOpen && <div className="fixed inset-0 z-40 bg-slate-950/50 lg:hidden" onClick={() => setIsSidebarOpen(false)} />}
+      <aside className={`desktop-sidebar fixed inset-y-0 left-0 z-50 flex w-72 flex-col bg-slate-950 text-white shadow-2xl lg:top-16 ${isSidebarOpen ? "is-open" : ""}`}>
+        <div className="flex items-center justify-between border-b border-slate-800 px-5 py-5">
+          <div><p className="text-xs font-bold uppercase tracking-[0.18em] text-red-400">Menu principal</p><p className="mt-1 text-sm text-slate-300">Gestão de Extintores</p></div>
+          <Button variant="ghost" size="sm" className="text-slate-300 hover:bg-slate-800 hover:text-white lg:hidden" onClick={() => setIsSidebarOpen(false)} aria-label="Fechar menu"><X className="h-5 w-5" /></Button>
+        </div>
+        <div className="flex-1 space-y-1 overflow-y-auto p-4">
+          <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Navegação</p>
+          <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "dashboard" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("dashboard")}><Building2 className="h-4 w-4" /> Visão Geral</Button>
+          <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "clients" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("clients")}><MapPin className="h-4 w-4" /> Clientes por Cidade</Button>
+          <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "alerts" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("alerts")}><BellRing className="h-4 w-4 text-amber-400" /> Alertas de Vencimento {(statsQuery.data?.nearExpirationCount || 0) + (statsQuery.data?.expiredCount || 0) > 0 && <span className="ml-auto rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold">{(statsQuery.data?.nearExpirationCount || 0) + (statsQuery.data?.expiredCount || 0)}</span>}</Button>
+          <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "orders" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("orders")}><FileText className="h-4 w-4" /> Ordens de Serviço</Button>
+          <div className="my-4 border-t border-slate-800" />
+          <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Ações rápidas</p>
+          <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setIsClientModalOpen(true); setIsSidebarOpen(false); }}><Plus className="h-4 w-4" /> Cadastrar Cliente</Button>
+          <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setReturnToOrderAfterClient(false); setIsOrderModalOpen(true); setIsSidebarOpen(false); }}><FileText className="h-4 w-4" /> Nova Ordem de Serviço</Button>
+          {user?.role === "admin" && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/admin/usuarios"); setIsSidebarOpen(false); }}><Users className="h-4 w-4" /> Usuários</Button>}
+          {user?.role === "admin" && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setConfigDays(alertDaysQuery.data || 30); setIsSettingsModalOpen(true); setIsSidebarOpen(false); }}><Settings className="h-4 w-4" /> Antecedência: {alertDaysQuery.data || 30} dias</Button>}
+        </div>
+        <div className="border-t border-slate-800 p-4">
+          <div className="mb-3 rounded-lg bg-slate-900 px-3 py-2 text-xs text-slate-400">Cidade selecionada: <strong className="text-slate-200">{selectedCity === "TODAS" ? "Todas" : selectedCity}</strong></div>
+          <Select value={selectedCity} onValueChange={(val) => setSelectedCity(val)}><SelectTrigger className="mb-3 w-full border-slate-700 bg-slate-900 text-xs text-slate-200"><SelectValue placeholder="Filtrar cidade" /></SelectTrigger><SelectContent><SelectItem value="TODAS">Todas as Cidades</SelectItem>{(citiesQuery.data || []).map(city => <SelectItem key={city} value={city}>{city}</SelectItem>)}</SelectContent></Select>
+          <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => logout()}><LogOut className="h-4 w-4" /> Sair</Button>
+        </div>
+      </aside>
 
-            <Button
-              variant={activeTab === "clients" ? "default" : "ghost"}
-              size="sm"
-              onClick={() => { setExtinguisherFilter("all"); setActiveTab("clients"); }}
-              className={`gap-2 ${activeTab === "clients" ? "bg-slate-900 text-white" : "text-slate-600"}`}
-            >
-              <MapPin className="w-4 h-4" />
-              <span className="sm:hidden">Cidades</span>
-              <span className="hidden sm:inline">Clientes por Cidade</span>
-            </Button>
-
-            <Button
-              variant={activeTab === "alerts" ? "default" : "ghost"}
-              size="sm"
-              onClick={() => { setAlertFilter("all"); setActiveTab("alerts"); }}
-              className={`gap-2 relative ${activeTab === "alerts" ? "bg-slate-900 text-white" : "text-slate-600"}`}
-            >
-              <BellRing className="w-4 h-4 text-amber-500" />
-              <span className="sm:hidden">Alertas</span>
-              <span className="hidden sm:inline">Alertas de Vencimento</span>
-              {(statsQuery.data?.nearExpirationCount || 0) + (statsQuery.data?.expiredCount || 0) > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 text-xs bg-red-600 text-white font-bold rounded-full">
-                  {(statsQuery.data?.nearExpirationCount || 0) + (statsQuery.data?.expiredCount || 0)}
-                </span>
-              )}
-            </Button>
-
-            <Button
-              variant={activeTab === "orders" ? "default" : "ghost"}
-              size="sm"
-              onClick={() => setActiveTab("orders")}
-              className={`gap-2 ${activeTab === "orders" ? "bg-slate-900 text-white" : "text-slate-600"}`}
-            >
-              <FileText className="w-4 h-4" />
-              <span className="sm:hidden">OS</span>
-              <span className="hidden sm:inline">Ordens de Serviço</span>
-            </Button>
-          </div>
-
-          {/* Seletor de Cidade Global */}
-          <div className="flex items-center gap-2 w-full lg:w-auto">
-            <span className="text-xs font-semibold text-slate-500 hidden sm:inline">Filtrar Cidade:</span>
-            <Select value={selectedCity} onValueChange={(val) => setSelectedCity(val)}>
-              <SelectTrigger className="w-full lg:w-[160px] h-8 text-xs bg-slate-50">
-                <SelectValue placeholder="Todas as cidades" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="TODAS">Todas as Cidades</SelectItem>
-                {(citiesQuery.data || []).map(city => (
-                  <SelectItem key={city} value={city}>{city}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+      {/* ÁREA DE CONTEÚDO PRINCIPAL */}
+      <div className="flex-1 lg:pl-72">
+      <div className="hidden border-b border-slate-200 bg-white shadow-sm lg:block">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-2.5 sm:px-6 lg:px-8">
+          <p className="text-xs font-semibold text-slate-500">{activeTab === "dashboard" ? "Visão Geral" : activeTab === "clients" ? "Clientes por Cidade" : activeTab === "alerts" ? "Alertas de Vencimento" : "Ordens de Serviço"}</p>
+          <span className="text-xs text-slate-400">Use o menu lateral para acessar todas as funções</span>
         </div>
       </div>
-
       {/* ÁREA DE CONTEÚDO PRINCIPAL */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full">
         {/* ========================================================
@@ -494,6 +474,19 @@ export default function Home() {
                 </CardContent>
               </Card>
             </div>
+
+            <Card className="overflow-hidden border-slate-200 shadow-sm">
+              <CardHeader className="border-b border-slate-100 pb-3">
+                <CardTitle className="flex items-center gap-2 text-base font-bold text-slate-900"><PieChartIcon className="h-5 w-5 text-red-600" /> Status de validade dos extintores</CardTitle>
+                <CardDescription>Proporção entre extintores válidos, próximos do vencimento e vencidos.</CardDescription>
+              </CardHeader>
+              <CardContent className="grid items-center gap-4 p-4 sm:grid-cols-[minmax(0,1fr)_220px] sm:p-5">
+                <div className="h-[230px] min-w-0 sm:h-[260px]">
+                  {validityChartData.length > 0 ? <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={validityChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="52%" outerRadius="78%" paddingAngle={3}>{validityChartData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}</Pie><RechartsTooltip formatter={(value: number, name: string) => [`${value} extintor(es)`, name]} /><Legend verticalAlign="bottom" height={30} /></PieChart></ResponsiveContainer> : <div className="flex h-full items-center justify-center text-sm text-slate-400">Cadastre um extintor para visualizar o gráfico.</div>}
+                </div>
+                <div className="space-y-3 rounded-xl bg-slate-50 p-4"><div className="flex items-center gap-2 text-sm font-semibold text-slate-700"><BarChart3 className="h-4 w-4 text-slate-500" /> Resumo atual</div>{validityChartData.length > 0 ? validityChartData.map((item) => <div key={item.name} className="flex items-center justify-between gap-3 text-sm"><span className="flex items-center gap-2 text-slate-600"><span className="h-3 w-3 rounded-full" style={{ backgroundColor: item.color }} />{item.name}</span><strong className="text-slate-900">{item.value}</strong></div>) : <p className="text-xs text-slate-500">Ainda não há dados para exibir.</p>}</div>
+              </CardContent>
+            </Card>
 
             {/* SEÇÃO DE ALERTAS CRÍTICOS (Banner de Aviso com Antecedência) */}
             {((statsQuery.data?.nearExpirationCount || 0) > 0 || (statsQuery.data?.expiredCount || 0) > 0) && (
@@ -1504,6 +1497,7 @@ export default function Home() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      </div>
     </div>
   );
 }
