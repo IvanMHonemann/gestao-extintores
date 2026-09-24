@@ -44,8 +44,10 @@ async function startServer() {
       createContext,
     })
   );
-  // development mode uses Vite, production mode uses static files
-  if (process.env.NODE_ENV === "development") {
+  // A prévia deve usar o bundle estático validado. Isso evita que o Vite de
+  // desenvolvimento injete HMR/proxies no navegador móvel. Para trabalhar
+  // explicitamente com Vite, defina VITE_DEV_SERVER=true.
+  if (process.env.NODE_ENV === "development" && process.env.VITE_DEV_SERVER === "true") {
     await setupVite(app, server);
   } else {
     serveStatic(app);
