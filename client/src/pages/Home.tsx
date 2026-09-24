@@ -1088,22 +1088,23 @@ export default function Home() {
           <div className="space-y-3 py-2 text-xs">
             {user?.role === "platform_admin" && (
               <div>
-                <label className="font-bold block mb-1">Empresa responsável *</label>
+                <label className="font-bold block mb-1">Empresa do sistema / área de acesso *</label>
                 <Select value={selectedCompanyId ? String(selectedCompanyId) : ""} onValueChange={(value) => setSelectedCompanyId(Number(value))}>
-                  <SelectTrigger className="w-full"><SelectValue placeholder="Selecione uma empresa ativa" /></SelectTrigger>
+                  <SelectTrigger className="w-full"><SelectValue placeholder="Selecione a empresa do sistema" /></SelectTrigger>
                   <SelectContent>
                     {(companiesQuery.data ?? []).filter((company) => company.active).map((company) => (
                       <SelectItem key={company.id} value={String(company.id)}>{company.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="mt-1 text-[11px] text-slate-500">Define em qual área de membros este cliente será salvo. Não é o cliente atendido.</p>
                 {!companiesQuery.data?.some((company) => company.active) && <p className="mt-1 text-red-600">Cadastre uma empresa antes de adicionar clientes.</p>}
               </div>
             )}
             <div>
-              <label className="font-bold block mb-1">Empresa / Razão Social *</label>
+              <label className="font-bold block mb-1">Nome do cliente / Razão Social *</label>
               <Input
-                placeholder="Ex: Mercado Central Ltda"
+                placeholder="Ex: Mercado Central Ltda (cliente)"
                 value={clientForm.companyName}
                 onChange={(e) => setClientForm({ ...clientForm, companyName: e.target.value })}
               />
