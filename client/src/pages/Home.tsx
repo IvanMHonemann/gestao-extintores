@@ -1551,37 +1551,41 @@ export default function Home() {
                   <label className="font-bold block mb-1">Forma de Pagamento</label>
                   <Select
                     value={orderForm.paymentMethod}
-                    onValueChange={(val) => setOrderForm({ ...orderForm, paymentMethod: val })}
+                    onValueChange={(val) => setOrderForm({ ...orderForm, paymentMethod: val, ...(val === "A VISTA" || val === "PIX" ? { installmentsCount: 1, installmentDates: "" } : {}) })}
                   >
                     <SelectTrigger className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="A VISTA">À VISTA</SelectItem>
+                      <SelectItem value="PIX">PIX</SelectItem>
+                      <SelectItem value="CREDITO">CRÉDITO</SelectItem>
                       <SelectItem value="PARCELADO">PARCELADO</SelectItem>
                       <SelectItem value="BOLETO">BOLETO</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
-                <div>
-                  <label className="font-bold block mb-1">Nº Parcelas</label>
-                  <Input
-                    type="number"
-                    min={1}
-                    value={orderForm.installmentsCount}
-                    onChange={(e) => setOrderForm({ ...orderForm, installmentsCount: Number(e.target.value) })}
-                  />
-                </div>
+                {(["CREDITO", "PARCELADO", "BOLETO"] as string[]).includes(orderForm.paymentMethod) && <>
+                  <div>
+                    <label className="font-bold block mb-1">Nº Parcelas</label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={orderForm.installmentsCount}
+                      onChange={(e) => setOrderForm({ ...orderForm, installmentsCount: Number(e.target.value) })}
+                    />
+                  </div>
 
-                <div>
-                  <label className="font-bold block mb-1">Datas das Parcelas</label>
-                  <Input
-                    placeholder="Ex: 10/10, 10/11"
-                    value={orderForm.installmentDates}
-                    onChange={(e) => setOrderForm({ ...orderForm, installmentDates: e.target.value })}
-                  />
-                </div>
+                  <div>
+                    <label className="font-bold block mb-1">Datas das Parcelas</label>
+                    <Input
+                      placeholder="Ex: 10/10, 10/11"
+                      value={orderForm.installmentDates}
+                      onChange={(e) => setOrderForm({ ...orderForm, installmentDates: e.target.value })}
+                    />
+                  </div>
+                </>}
               </div>
             </div>
 

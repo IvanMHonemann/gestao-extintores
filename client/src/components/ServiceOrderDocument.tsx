@@ -189,8 +189,11 @@ export function ServiceOrderDocument({
   const isReserveNo = order?.leftReserve?.toUpperCase() === "NÃO";
 
   const isAVista = order?.paymentMethod?.toUpperCase().includes("VISTA");
+  const isPix = order?.paymentMethod?.toUpperCase().includes("PIX");
+  const isCredito = order?.paymentMethod?.toUpperCase().includes("CRÉDITO") || order?.paymentMethod?.toUpperCase().includes("CREDITO");
   const isParcelado = order?.paymentMethod?.toUpperCase().includes("PARCELADO");
   const isBoleto = order?.paymentMethod?.toUpperCase().includes("BOLETO");
+  const showsInstallmentDetails = isCredito || isParcelado || isBoleto;
 
   return (
     <div className="flex flex-col items-center py-3 sm:py-6 px-2 sm:px-4 bg-slate-100 min-h-screen overflow-x-hidden">
@@ -421,6 +424,12 @@ export function ServiceOrderDocument({
                   (&nbsp;{isAVista ? "X" : "\u00A0\u00A0"}&nbsp;) À VISTA
                 </span>
                 <span className="mr-6">
+                  (&nbsp;{isPix ? "X" : "\u00A0\u00A0"}&nbsp;) PIX
+                </span>
+                <span className="mr-6">
+                  (&nbsp;{isCredito ? "X" : "\u00A0\u00A0"}&nbsp;) CRÉDITO
+                </span>
+                <span className="mr-6">
                   (&nbsp;{isParcelado ? "X" : "\u00A0\u00A0"}&nbsp;) PARCELADO
                 </span>
                 <span>
@@ -428,19 +437,21 @@ export function ServiceOrderDocument({
                 </span>
               </div>
 
-              <div className="flex items-center">
-                <span className="w-48">NÚMEROS DE PARCELAS:</span>
-                <span className="border-b border-slate-700 font-normal px-2 min-w-[60px]">
-                  {order?.installmentsCount || 1}
-                </span>
-              </div>
+              {showsInstallmentDetails && <>
+                <div className="flex flex-wrap items-center gap-y-1">
+                  <span className="w-full sm:w-48">NÚMEROS DE PARCELAS:</span>
+                  <span className="border-b border-slate-700 px-2 font-normal sm:min-w-[60px]">
+                    {order?.installmentsCount || 1}
+                  </span>
+                </div>
 
-              <div className="flex items-center">
-                <span className="w-48">DATAS:</span>
-                <span className="flex-1 border-b border-slate-700 font-normal px-2">
-                  {order?.installmentDates || ""}
-                </span>
-              </div>
+                <div className="flex flex-wrap items-center gap-y-1">
+                  <span className="w-full sm:w-48">DATAS:</span>
+                  <span className="flex-1 border-b border-slate-700 px-2 font-normal">
+                    {order?.installmentDates || ""}
+                  </span>
+                </div>
+              </>}
             </div>
           </div>
 
