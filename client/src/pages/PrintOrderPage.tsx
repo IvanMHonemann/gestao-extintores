@@ -35,7 +35,8 @@ export default function PrintOrderPage() {
       client={orderQuery.data.client}
       items={orderQuery.data.items}
       onBack={() => {
-        window.location.href = "/";
+        if (window.history.length > 1) window.history.back();
+        else window.location.href = "/";
       }}
     />
   );

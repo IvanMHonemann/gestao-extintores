@@ -30,7 +30,10 @@ export function useAuth(options?: UseAuthOptions) {
   const [cachedUser, setCachedUser] = useState(readCachedUser);
 
   useEffect(() => {
-    const handleOnline = () => setIsOffline(false);
+    const handleOnline = () => {
+      setCachedUser(readCachedUser());
+      setIsOffline(false);
+    };
     const handleOffline = () => {
       setIsOffline(true);
       setCachedUser(readCachedUser());

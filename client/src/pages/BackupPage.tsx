@@ -14,6 +14,10 @@ export default function BackupPage() {
   const tenantKey = user && user.id < 0 ? String(Math.abs(user.id)) : null;
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  const goBack = () => {
+    if (window.history.length > 1) window.history.back();
+    else navigate("/");
+  };
   const lastBackup = useLiveQuery(() => tenantKey ? offlineDb.meta.get(`${tenantKey}:lastBackupExport`) : Promise.resolve(undefined), [tenantKey], undefined);
   const lastImport = useLiveQuery(() => tenantKey ? offlineDb.meta.get(`${tenantKey}:lastBackupImport`) : Promise.resolve(undefined), [tenantKey], undefined);
 
@@ -55,7 +59,7 @@ export default function BackupPage() {
   return (
     <div className="min-h-screen bg-slate-50 p-4 text-slate-900 sm:p-8">
       <div className="mx-auto max-w-3xl space-y-6">
-        <Button variant="ghost" className="gap-2" onClick={() => navigate("/")}><ArrowLeft className="h-4 w-4" /> Voltar ao painel</Button>
+        <Button variant="ghost" className="gap-2" onClick={goBack}><ArrowLeft className="h-4 w-4" /> Voltar</Button>
         <Card className="border-slate-200 shadow-sm">
           <CardHeader className="bg-slate-900 text-white"><CardTitle className="flex items-center gap-2"><HardDrive className="h-5 w-5 text-red-400" /> Backup e Restauração</CardTitle><CardDescription className="text-slate-300">Proteja somente os dados locais da empresa atual antes de limpar o navegador ou trocar de aparelho.</CardDescription></CardHeader>
           <CardContent className="space-y-6 p-5 sm:p-8">
