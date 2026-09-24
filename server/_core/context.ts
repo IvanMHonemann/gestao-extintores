@@ -1,8 +1,7 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import { parse as parseCookie } from "cookie";
-import { COOKIE_NAME, MEMBER_COOKIE_NAME } from "@shared/const";
+import { MEMBER_COOKIE_NAME } from "@shared/const";
 import type { AuthenticatedUser } from "@shared/auth";
-import { sdk } from "./sdk";
 import { getMemberBySessionToken, getPlatformAdminBySessionToken } from "../memberAuth";
 
 export type TrpcContext = {
@@ -16,6 +15,10 @@ export type TrpcContext = {
   isPlatformAdmin?: boolean;
 };
 
+/**
+ * O sistema comercial usa exclusivamente a sessão própria criada por auth.login.
+ * Não há fallback para Manus OAuth: sem o cookie próprio, a requisição é anônima.
+ */
 export async function createContext(opts: CreateExpressContextOptions): Promise<TrpcContext> {
   let user: AuthenticatedUser | null = null;
   let accountId: number | undefined;
@@ -26,50 +29,41 @@ export async function createContext(opts: CreateExpressContextOptions): Promise<
 
   const cookies = parseCookie(opts.req.headers.cookie ?? "");
   const sessionToken = cookies[MEMBER_COOKIE_NAME] ?? "";
-  const platformAdmin = await getPlatformAdminBySessionToken(sessionToken);
-  if (platformAdmin) {
-    platformAdminId = platformAdmin.id;
-    isPlatformAdmin = true;
-    user = {
-      id: platformAdmin.id,
-      openId: `platform:${platformAdmin.id}`,
-      name: platformAdmin.userName,
-      email: platformAdmin.email,
-      loginMethod: "password",
-      role: "platform_admin",
-      createdAt: platformAdmin.createdAt,
-      updatedAt: platformAdmin.updatedAt,
-      lastSignedIn: platformAdmin.createdAt,
-    };
-  } else {
-    const memberAccount = await getMemberBySessionToken(sessionToken);
-    if (memberAccount) {
-      memberAccountId = memberAccount.id;
-      accountId = memberAccount.companyId;
-      isMember = true;
+  if (sessionToken) {
+    const platformAdmin = await getPlatformAdminBySessionToken(sessionToken);
+    if (platformAdmin) {
+      platformAdminId = platformAdmin.id;
+      isPlatformAdmin = true;
       user = {
-        id: -memberAccount.id,
-        openId: `member:${memberAccount.id}`,
-        name: memberAccount.userName,
-        email: memberAccount.email,
+        id: platformAdmin.id,
+        openId: `platform:${platformAdmin.id}`,
+        name: platformAdmin.userName,
+        email: platformAdmin.email,
         loginMethod: "password",
-        role: memberAccount.role,
-        companyId: memberAccount.companyId,
-        createdAt: memberAccount.createdAt,
-        updatedAt: memberAccount.updatedAt,
-        lastSignedIn: memberAccount.createdAt,
+        role: "platform_admin",
+        createdAt: platformAdmin.createdAt,
+        updatedAt: platformAdmin.updatedAt,
+        lastSignedIn: platformAdmin.createdAt,
       };
-    }
-  }
-
-  if (!user) {
-    try {
-      const oauthUser = await sdk.authenticateRequest(opts.req);
-      user = { ...oauthUser, role: oauthUser.role, companyId: undefined };
-      isPlatformAdmin = oauthUser.role === "platform_admin";
-      platformAdminId = isPlatformAdmin ? oauthUser.id : undefined;
-    } catch {
-      user = null;
+    } else {
+      const memberAccount = await getMemberBySessionToken(sessionToken);
+      if (memberAccount) {
+        memberAccountId = memberAccount.id;
+        accountId = memberAccount.companyId;
+        isMember = true;
+        user = {
+          id: -memberAccount.id,
+          openId: `member:${memberAccount.id}`,
+          name: memberAccount.userName,
+          email: memberAccount.email,
+          loginMethod: "password",
+          role: memberAccount.role,
+          companyId: memberAccount.companyId,
+          createdAt: memberAccount.createdAt,
+          updatedAt: memberAccount.updatedAt,
+          lastSignedIn: memberAccount.createdAt,
+        };
+      }
     }
   }
 

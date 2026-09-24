@@ -1,28 +1,46 @@
-import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
 import { useCallback, useEffect, useMemo, useState } from "react";
+
+const LOCAL_SESSION_KEY = "gestao-extintores-auth-user";
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
   redirectPath?: string;
 };
 
+function readCachedUser() {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(LOCAL_SESSION_KEY);
+    if (!raw || raw === "null") return null;
+    const user = JSON.parse(raw);
+    if (!user || typeof user.id !== "number" || typeof user.role !== "string") return null;
+    if (!["platform_admin", "company_admin", "operator", "technician"].includes(user.role)) return null;
+    return user;
+  } catch {
+    return null;
+  }
+}
+
 export function useAuth(options?: UseAuthOptions) {
-  // Login is started via startLogin() in the effect below, only when we actually
-  // navigate — never during render. startLogin() mints a one-time nonce + writes
-  // the state cookie, so calling it per render would overwrite the cookie and
-  // desync it from an in-flight login's `state`.
   const { redirectOnUnauthenticated = false, redirectPath } = options ?? {};
   const utils = trpc.useUtils();
   const [isOffline, setIsOffline] = useState(() => typeof navigator !== "undefined" && !navigator.onLine);
+  const [cachedUser, setCachedUser] = useState(readCachedUser);
 
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
-    const handleOffline = () => setIsOffline(true);
+    const handleOffline = () => {
+      setIsOffline(true);
+      setCachedUser(readCachedUser());
+    };
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
-    return () => { window.removeEventListener("online", handleOnline); window.removeEventListener("offline", handleOffline); };
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
   }, []);
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
@@ -31,90 +49,49 @@ export function useAuth(options?: UseAuthOptions) {
     refetchOnWindowFocus: false,
   });
 
-  const cachedUser = useMemo(() => {
-    if (typeof window === "undefined") return null;
-    try {
-      const raw = localStorage.getItem("manus-runtime-user-info");
-      return raw && raw !== "null" ? JSON.parse(raw) : null;
-    } catch {
-      return null;
+  useEffect(() => {
+    if (meQuery.data) {
+      localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(meQuery.data));
+      setCachedUser(meQuery.data);
     }
-  }, [isOffline]);
+    if (!isOffline && !meQuery.isLoading && !meQuery.data) {
+      localStorage.removeItem(LOCAL_SESSION_KEY);
+      setCachedUser(null);
+    }
+  }, [isOffline, meQuery.data, meQuery.isLoading]);
 
   const logoutMutation = trpc.auth.logout.useMutation({
-    onSuccess: () => {
-      utils.auth.me.setData(undefined, null);
-    },
+    onSuccess: () => utils.auth.me.setData(undefined, null),
   });
 
   const logout = useCallback(async () => {
     try {
-      await logoutMutation.mutateAsync();
+      if (!isOffline) await logoutMutation.mutateAsync();
     } catch (error: unknown) {
-      if (
-        error instanceof TRPCClientError &&
-        error.data?.code === "UNAUTHORIZED"
-      ) {
-        return;
-      }
-      throw error;
+      if (!(error instanceof TRPCClientError) || error.data?.code !== "UNAUTHORIZED") throw error;
     } finally {
-      // Clear the Preview auto-login token mirrored into sessionStorage, so
-      // header-based sessions (Safari ITP / WebView) are logged out too. The
-      // backend cookie is cleared by the logout mutation.
-      try {
-        sessionStorage.removeItem("manus-cookie");
-      } catch {}
-      try { localStorage.removeItem("manus-runtime-user-info"); } catch {}
+      localStorage.removeItem(LOCAL_SESSION_KEY);
+      setCachedUser(null);
       utils.auth.me.setData(undefined, null);
-      await utils.auth.me.invalidate();
+      if (!isOffline) await utils.auth.me.invalidate();
     }
-  }, [logoutMutation, utils]);
+  }, [isOffline, logoutMutation, utils]);
 
   const state = useMemo(() => {
-    if (meQuery.data) localStorage.setItem("manus-runtime-user-info", JSON.stringify(meQuery.data));
-    const user = meQuery.data ?? cachedUser;
+    const user = meQuery.data ?? (isOffline ? cachedUser : null);
     return {
       user,
-      loading: (meQuery.isLoading && !cachedUser) || logoutMutation.isPending,
+      loading: (meQuery.isLoading && !isOffline && !cachedUser) || logoutMutation.isPending,
       error: meQuery.error ?? logoutMutation.error ?? null,
       isAuthenticated: Boolean(user),
     };
-  }, [
-    meQuery.data,
-    meQuery.error,
-    meQuery.isLoading,
-    logoutMutation.error,
-    logoutMutation.isPending,
-    cachedUser,
-  ]);
+  }, [cachedUser, isOffline, logoutMutation.error, logoutMutation.isPending, meQuery.data, meQuery.error, meQuery.isLoading]);
 
   useEffect(() => {
-    if (!redirectOnUnauthenticated) return;
-    if (isOffline) return;
-    if (meQuery.isLoading || logoutMutation.isPending) return;
-    if (state.user) return;
-    if (typeof window === "undefined") return;
+    if (!redirectOnUnauthenticated || isOffline || state.loading || state.user || typeof window === "undefined") return;
     if (redirectPath && window.location.pathname === redirectPath) return;
+    window.location.href = redirectPath || "/login";
+  }, [redirectOnUnauthenticated, isOffline, redirectPath, state.loading, state.user]);
 
-    // Navigate at this moment only. startLogin() mints the nonce + cookie itself.
-    if (redirectPath) {
-      window.location.href = redirectPath;
-    } else {
-      startLogin();
-    }
-  }, [
-    redirectOnUnauthenticated,
-    isOffline,
-    redirectPath,
-    logoutMutation.isPending,
-    meQuery.isLoading,
-    state.user,
-  ]);
-
-  return {
-    ...state,
-    refresh: () => meQuery.refetch(),
-    logout,
-  };
+  return { ...state, refresh: () => meQuery.refetch(), logout };
 }
