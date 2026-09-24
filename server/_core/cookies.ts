@@ -43,7 +43,9 @@ export function getSessionCookieOptions(
   return {
     httpOnly: true,
     path: "/",
-    sameSite: allowCrossSite ? "none" : "lax",
+    // O preview da plataforma pode abrir o site em iframe HTTPS. Nesse caso,
+    // o cookie precisa aceitar contexto cross-site; no localhost mantemos Lax.
+    sameSite: allowCrossSite && isSecureRequest(req) ? "none" : "lax",
     secure: isSecureRequest(req),
   };
 }

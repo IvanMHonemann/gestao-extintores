@@ -30,7 +30,7 @@ export const appRouter = router({
         const principal = await memberAuth.authenticateMember(input.email, input.password);
         if (!principal) throw new TRPCError({ code: "UNAUTHORIZED", message: "E-mail ou senha inválidos." });
         const session = await memberAuth.createSession(principal);
-        ctx.res.cookie(MEMBER_COOKIE_NAME, session.rawToken, { ...getSessionCookieOptions(ctx.req), maxAge: 30 * 24 * 60 * 60 * 1000 });
+        ctx.res.cookie(MEMBER_COOKIE_NAME, session.rawToken, { ...getSessionCookieOptions(ctx.req, true), maxAge: 30 * 24 * 60 * 60 * 1000 });
         return { success: true, kind: session.kind } as const;
       }),
 
@@ -59,7 +59,7 @@ export const appRouter = router({
     logout: publicProcedure.mutation(async ({ ctx }) => {
       const cookies = parseCookie(ctx.req.headers.cookie ?? "");
       await memberAuth.revokeSessions(cookies[MEMBER_COOKIE_NAME] ?? "");
-      const memberCookieOptions = getSessionCookieOptions(ctx.req);
+      const memberCookieOptions = getSessionCookieOptions(ctx.req, true);
       const oauthCookieOptions = getSessionCookieOptions(ctx.req, true);
       if (cookies[MEMBER_COOKIE_NAME]) ctx.res.clearCookie(MEMBER_COOKIE_NAME, { ...memberCookieOptions, maxAge: -1 });
       ctx.res.clearCookie(COOKIE_NAME, { ...oauthCookieOptions, maxAge: -1 });
