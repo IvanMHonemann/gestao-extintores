@@ -16,19 +16,43 @@ export function useOnlineStatus() {
 
 export function useInstallPrompt() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstalling, setIsInstalling] = useState(false);
+  const [installProgress, setInstallProgress] = useState(0);
   useEffect(() => {
     const handler = (event: Event) => { event.preventDefault(); setDeferredPrompt(event); };
     window.addEventListener("beforeinstallprompt", handler);
     return () => window.removeEventListener("beforeinstallprompt", handler);
   }, []);
+  useEffect(() => {
+    const installed = () => {
+      setIsInstalling(false);
+      setInstallProgress(100);
+      setDeferredPrompt(null);
+    };
+    window.addEventListener("appinstalled", installed);
+    return () => window.removeEventListener("appinstalled", installed);
+  }, []);
   const install = async () => {
-    if (!deferredPrompt) return false;
+    if (!deferredPrompt || isInstalling) return false;
+    setIsInstalling(true);
+    setInstallProgress(15);
+    await new Promise((resolve) => setTimeout(resolve, 180));
     await deferredPrompt.prompt();
-    await deferredPrompt.userChoice;
-    setDeferredPrompt(null);
-    return true;
+    setInstallProgress(55);
+    const choice = await deferredPrompt.userChoice;
+    if (choice.outcome === "accepted") {
+      setInstallProgress(85);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      setInstallProgress(100);
+      setDeferredPrompt(null);
+      setIsInstalling(false);
+      return true;
+    }
+    setInstallProgress(0);
+    setIsInstalling(false);
+    return false;
   };
-  return { canInstall: Boolean(deferredPrompt), install };
+  return { canInstall: Boolean(deferredPrompt), install, isInstalling, installProgress };
 }
 
 export function useOfflineSnapshot(remote: {

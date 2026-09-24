@@ -10,7 +10,28 @@ import "./index.css";
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch((error) => console.warn("Service worker não registrado", error));
+    let refreshing = false;
+    navigator.serviceWorker.register("/sw.js").then((registration) => {
+      void registration.update();
+      window.addEventListener("online", () => void registration.update());
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") void registration.update();
+      });
+      registration.addEventListener("updatefound", () => {
+        const worker = registration.installing;
+        if (!worker) return;
+        worker.addEventListener("statechange", () => {
+          if (worker.state === "installed" && navigator.serviceWorker.controller) {
+            worker.postMessage({ type: "SKIP_WAITING" });
+          }
+        });
+      });
+    }).catch((error) => console.warn("Service worker não registrado", error));
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (refreshing) return;
+      refreshing = true;
+      window.location.reload();
+    });
   });
 }
 
