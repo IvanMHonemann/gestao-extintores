@@ -57,13 +57,16 @@ export function useAuth(options?: UseAuthOptions) {
       localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(meQuery.data));
       setCachedUser(meQuery.data);
     }
-    // Só removemos a sessão local quando o servidor respondeu com sucesso e
-    // confirmou que não há usuário. Erros de rede não podem deslogar offline.
-    if (!isOffline && meQuery.isFetched && !meQuery.error && !meQuery.data) {
-      localStorage.removeItem(LOCAL_SESSION_KEY);
-      setCachedUser(null);
+    // Não apagamos a identidade local por causa de uma resposta vazia do
+    // preview. O logout explícito é o único fluxo que remove o cache; assim,
+    // uma falha de cookie, iframe ou rede não transforma o modo offline em
+    // uma tela de login.
+    const code = meQuery.error instanceof TRPCClientError ? meQuery.error.data?.code : undefined;
+    if (!isOffline && cachedUser && meQuery.error && code !== "UNAUTHORIZED") {
+      setIsOffline(true);
+      window.dispatchEvent(new Event("offline"));
     }
-  }, [isOffline, meQuery.data, meQuery.error, meQuery.isFetched]);
+  }, [cachedUser, isOffline, meQuery.data, meQuery.error, meQuery.isFetched]);
 
   const logoutMutation = trpc.auth.logout.useMutation({
     onSuccess: () => utils.auth.me.setData(undefined, null),

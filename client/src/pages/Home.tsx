@@ -30,7 +30,8 @@ import {
   Users,
   LogOut,
   Menu,
-  X
+  X,
+  ArrowLeft
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -532,7 +533,10 @@ export default function Home() {
       <div className="min-w-0 flex-1 lg:pl-72">
       <div className="hidden border-b border-slate-200 bg-white shadow-sm lg:block">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-2.5 sm:px-6 lg:px-8">
-          <p className="text-xs font-semibold text-slate-500">{activeTab === "dashboard" ? "Visão Geral" : activeTab === "clients" ? "Clientes por Cidade" : activeTab === "alerts" ? "Alertas de Vencimento" : "Ordens de Serviço"}</p>
+          <div className="flex min-w-0 items-center gap-2">
+            {activeTab !== "dashboard" && <Button variant="ghost" size="sm" className="h-8 shrink-0 gap-1 px-2 text-slate-600" onClick={() => setActiveTab("dashboard")}><ArrowLeft className="h-4 w-4" /> <span className="hidden sm:inline">Voltar</span></Button>}
+            <p className="truncate text-xs font-semibold text-slate-500">{activeTab === "dashboard" ? "Visão Geral" : activeTab === "clients" ? "Clientes por Cidade" : activeTab === "alerts" ? "Alertas de Vencimento" : "Ordens de Serviço"}</p>
+          </div>
           <span className="text-xs text-slate-400">Use o menu lateral para acessar todas as funções</span>
         </div>
       </div>
