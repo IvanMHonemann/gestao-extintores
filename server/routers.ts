@@ -82,6 +82,12 @@ export const appRouter = router({
       clients: platformProcedure.input(z.object({ companyId: z.number().int().positive().optional() }).optional()).query(({ input }) => db.getPlatformClients(input?.companyId)),
       extinguishers: platformProcedure.input(z.object({ companyId: z.number().int().positive().optional() }).optional()).query(({ input }) => db.getPlatformExtinguishers(input?.companyId)),
       orders: platformProcedure.input(z.object({ companyId: z.number().int().positive().optional() }).optional()).query(({ input }) => db.getPlatformOrders(input?.companyId)),
+      createClient: platformProcedure.input(clientInput.extend({ companyId: z.number().int().positive() })).mutation(async ({ input }) => {
+        const { companyId, ...data } = input;
+        const company = await db.getCompanyById(companyId);
+        if (!company || !company.active) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para cadastrar o cliente." });
+        return { id: await db.createClient({ ...data, accountId: companyId, cnpj: emptyToNull(data.cnpj), address: emptyToNull(data.address), cep: emptyToNull(data.cep), phone: emptyToNull(data.phone), contactName: emptyToNull(data.contactName), cpf: emptyToNull(data.cpf), birthDate: emptyToNull(data.birthDate), notes: emptyToNull(data.notes) }) };
+      }),
     }),
   }),
 

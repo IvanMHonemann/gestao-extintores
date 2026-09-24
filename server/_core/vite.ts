@@ -24,6 +24,23 @@ export async function setupVite(app: Express, server: Server) {
   });
 
   app.use(vite.middlewares);
+  // Em alguns reinícios do preview, o middleware do Vite pode delegar
+  // módulos com query string ao Express. Transforme esses recursos
+  // explicitamente antes do fallback HTML, para nunca devolver index.html
+  // como resposta de um import JavaScript/CSS.
+  app.use(async (req, res, next) => {
+    const pathname = req.path;
+    const isViteAsset = pathname.startsWith("/src/") || pathname.startsWith("/@fs/") || pathname.startsWith("/@id/") || pathname.startsWith("/@vite/");
+    if (!isViteAsset) return next();
+    try {
+      const transformed = await vite.transformRequest(req.originalUrl);
+      if (!transformed) return next();
+      const contentType = pathname.endsWith(".css") ? "text/css" : "text/javascript";
+      res.status(200).set({ "Content-Type": contentType }).end(transformed.code);
+    } catch (error) {
+      next(error);
+    }
+  });
   app.use("*", async (req, res, next) => {
     const url = req.originalUrl;
 

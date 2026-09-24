@@ -66,6 +66,7 @@ export default function Home() {
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [returnToOrderAfterClient, setReturnToOrderAfterClient] = useState(false);
+  const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
 
   // Seleções para sub-ações
   const [selectedClientIdForExtinguisher, setSelectedClientIdForExtinguisher] = useState<number | null>(null);
@@ -77,6 +78,7 @@ export default function Home() {
   const alertsQuery = trpc.extinguishers.alerts.useQuery(undefined, { enabled: Boolean(tenantKey) });
   const ordersQuery = trpc.orders.list.useQuery(undefined, { enabled: Boolean(tenantKey) });
   const alertDaysQuery = trpc.settings.getAlertDays.useQuery(undefined, { enabled: Boolean(tenantKey) });
+  const companiesQuery = trpc.platform.companies.list.useQuery(undefined, { enabled: user?.role === "platform_admin" });
   const remoteExtinguishers = useMemo(() => (alertsQuery.data || []).map((item: any) => item.extinguisher).filter(Boolean), [alertsQuery.data]);
   const orderDetailsQuery = trpc.orders.byId.useQuery(
     { id: viewingOrderId! },
@@ -111,6 +113,12 @@ export default function Home() {
   // Mutations
   const utils = trpc.useUtils();
 
+  useEffect(() => {
+    if (selectedCompanyId === null && companiesQuery.data?.length) {
+      setSelectedCompanyId(companiesQuery.data.find((company) => company.active)?.id ?? companiesQuery.data[0].id);
+    }
+  }, [companiesQuery.data, selectedCompanyId]);
+
   const createClientMutation = trpc.clients.create.useMutation({
     onSuccess: async (result) => {
       toast.success("Cliente cadastrado com sucesso!");
@@ -127,6 +135,15 @@ export default function Home() {
       if (!offline.isOnline) { const localId = await saveOfflineClient(input); await queueOfflineMutation({ tenantKey: tenantKey!, entity: "client", action: "create", payload: { ...input, localId } }); toast.success("Cliente salvo no dispositivo (offline)."); setIsClientModalOpen(false); return; }
       toast.error(err.message);
     },
+  });
+
+  const platformCreateClientMutation = trpc.platform.data.createClient.useMutation({
+    onSuccess: async () => {
+      toast.success("Cliente cadastrado com sucesso!");
+      setIsClientModalOpen(false);
+      await utils.platform.data.clients.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   const deleteClientMutation = trpc.clients.delete.useMutation({
@@ -1069,6 +1086,20 @@ export default function Home() {
             <DialogTitle className="text-lg font-bold">Cadastrar Novo Cliente</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 py-2 text-xs">
+            {user?.role === "platform_admin" && (
+              <div>
+                <label className="font-bold block mb-1">Empresa responsável *</label>
+                <Select value={selectedCompanyId ? String(selectedCompanyId) : ""} onValueChange={(value) => setSelectedCompanyId(Number(value))}>
+                  <SelectTrigger className="w-full"><SelectValue placeholder="Selecione uma empresa ativa" /></SelectTrigger>
+                  <SelectContent>
+                    {(companiesQuery.data ?? []).filter((company) => company.active).map((company) => (
+                      <SelectItem key={company.id} value={String(company.id)}>{company.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {!companiesQuery.data?.some((company) => company.active) && <p className="mt-1 text-red-600">Cadastre uma empresa antes de adicionar clientes.</p>}
+              </div>
+            )}
             <div>
               <label className="font-bold block mb-1">Empresa / Razão Social *</label>
               <Input
@@ -1165,7 +1196,15 @@ export default function Home() {
                   toast.error("Preencha o nome da empresa e a cidade!");
                   return;
                 }
-                createClientMutation.mutate(clientForm);
+                if (user?.role === "platform_admin") {
+                  if (!selectedCompanyId) {
+                    toast.error("Selecione a empresa responsável pelo cliente.");
+                    return;
+                  }
+                  platformCreateClientMutation.mutate({ ...clientForm, companyId: selectedCompanyId });
+                } else {
+                  createClientMutation.mutate(clientForm);
+                }
               }}
             >
               Salvar Cliente
