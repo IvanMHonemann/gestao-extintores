@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, decimal, date, boolean } from "drizzle-orm/mysql-core";
+import { boolean, date, decimal, index, int, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
 /** Usuários administrativos do provedor de identidade */
 export const users = mysqlTable("users", {
@@ -36,19 +36,21 @@ export type InsertMemberAccount = typeof memberAccounts.$inferInsert;
 /** Sessões próprias dos usuários comerciais */
 export const memberSessions = mysqlTable("member_sessions", {
   id: int("id").autoincrement().primaryKey(),
-  accountId: int("accountId").notNull(),
+  accountId: int("accountId").notNull().references(() => memberAccounts.id, { onDelete: "cascade" }),
   tokenHash: varchar("tokenHash", { length: 128 }).notNull().unique(),
   expiresAt: timestamp("expiresAt").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  accountExpiryIdx: index("member_sessions_account_expiry_idx").on(table.accountId, table.expiresAt),
+}));
 
 export type MemberSession = typeof memberSessions.$inferSelect;
 export type InsertMemberSession = typeof memberSessions.$inferInsert;
 
-/** Clientes pertencem à área do administrador (null) ou a um usuário comercial */
+/** Clientes pertencem obrigatoriamente a uma conta comercial */
 export const clients = mysqlTable("clients", {
   id: int("id").autoincrement().primaryKey(),
-  accountId: int("accountId"),
+  accountId: int("accountId").notNull().references(() => memberAccounts.id, { onDelete: "restrict" }),
   companyName: varchar("companyName", { length: 255 }).notNull(),
   cnpj: varchar("cnpj", { length: 30 }),
   address: text("address"),
@@ -61,14 +63,18 @@ export const clients = mysqlTable("clients", {
   notes: text("notes"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  accountIdx: index("clients_account_idx").on(table.accountId),
+  cityIdx: index("clients_account_city_idx").on(table.accountId, table.city),
+}));
 
 export type Client = typeof clients.$inferSelect;
 export type InsertClient = typeof clients.$inferInsert;
 
 export const extinguishers = mysqlTable("extinguishers", {
   id: int("id").autoincrement().primaryKey(),
-  clientId: int("clientId").notNull(),
+  accountId: int("accountId").notNull().references(() => memberAccounts.id, { onDelete: "restrict" }),
+  clientId: int("clientId").notNull().references(() => clients.id, { onDelete: "cascade" }),
   typeModel: varchar("typeModel", { length: 100 }).notNull(),
   capacity: varchar("capacity", { length: 50 }),
   serialNumber: varchar("serialNumber", { length: 100 }),
@@ -79,16 +85,21 @@ export const extinguishers = mysqlTable("extinguishers", {
   notes: text("notes"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  accountIdx: index("extinguishers_account_idx").on(table.accountId),
+  clientIdx: index("extinguishers_client_idx").on(table.clientId),
+  expirationIdx: index("extinguishers_account_expiration_idx").on(table.accountId, table.expirationDate),
+}));
 
 export type Extinguisher = typeof extinguishers.$inferSelect;
 export type InsertExtinguisher = typeof extinguishers.$inferInsert;
 
 export const serviceOrders = mysqlTable("service_orders", {
   id: int("id").autoincrement().primaryKey(),
+  accountId: int("accountId").notNull().references(() => memberAccounts.id, { onDelete: "restrict" }),
   orderNumber: int("orderNumber").notNull(),
   orderDate: date("orderDate").notNull(),
-  clientId: int("clientId").notNull(),
+  clientId: int("clientId").notNull().references(() => clients.id, { onDelete: "restrict" }),
   replacedAndDelivered: varchar("replacedAndDelivered", { length: 10 }).default("SIM"),
   leftReserve: varchar("leftReserve", { length: 10 }).default("NÃO"),
   reserveDetails: varchar("reserveDetails", { length: 255 }),
@@ -104,27 +115,38 @@ export const serviceOrders = mysqlTable("service_orders", {
   observations: text("observations"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  accountIdx: index("service_orders_account_idx").on(table.accountId),
+  clientIdx: index("service_orders_client_idx").on(table.clientId),
+  dateIdx: index("service_orders_account_date_idx").on(table.accountId, table.orderDate),
+  numberIdx: index("service_orders_account_number_idx").on(table.accountId, table.orderNumber),
+}));
 
 export type ServiceOrder = typeof serviceOrders.$inferSelect;
 export type InsertServiceOrder = typeof serviceOrders.$inferInsert;
 
 export const serviceOrderItems = mysqlTable("service_order_items", {
   id: int("id").autoincrement().primaryKey(),
-  serviceOrderId: int("serviceOrderId").notNull(),
+  serviceOrderId: int("serviceOrderId").notNull().references(() => serviceOrders.id, { onDelete: "cascade" }),
   description: varchar("description", { length: 255 }).notNull(),
   quantity: int("quantity").notNull().default(1),
   unitPrice: decimal("unitPrice", { precision: 10, scale: 2 }).default("0.00").notNull(),
   totalPrice: decimal("totalPrice", { precision: 10, scale: 2 }).default("0.00").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  orderIdx: index("service_order_items_order_idx").on(table.serviceOrderId),
+}));
 
 export type ServiceOrderItem = typeof serviceOrderItems.$inferSelect;
 export type InsertServiceOrderItem = typeof serviceOrderItems.$inferInsert;
 
 export const systemSettings = mysqlTable("system_settings", {
   id: int("id").autoincrement().primaryKey(),
-  settingKey: varchar("settingKey", { length: 100 }).notNull().unique(),
+  accountId: int("accountId").notNull().references(() => memberAccounts.id, { onDelete: "cascade" }),
+  settingKey: varchar("settingKey", { length: 100 }).notNull(),
   settingValue: text("settingValue").notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  accountKeyUnique: uniqueIndex("system_settings_account_key_unique").on(table.accountId, table.settingKey),
+  accountIdx: index("system_settings_account_idx").on(table.accountId),
+}));

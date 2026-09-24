@@ -38,8 +38,10 @@ export async function createContext(
       lastSignedIn: memberAccount.createdAt,
     };
     memberAccountId = memberAccount.id;
-    accountId = memberAccount.role === "admin" ? undefined : memberAccount.id;
-    isMember = memberAccount.role !== "admin";
+    // Administradores também possuem um tenant próprio para que nenhuma
+    // operação comercial dependa de accountId ausente ou caia em escopo global.
+    accountId = memberAccount.id;
+    isMember = true;
   }
 
   if (!user) {

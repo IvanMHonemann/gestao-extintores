@@ -57,6 +57,7 @@ export function useInstallPrompt() {
 }
 
 export function useOfflineSnapshot(remote: {
+  tenantKey: string | null;
   clients?: LocalRecord[];
   extinguishers?: LocalRecord[];
   orders?: LocalOrderRow[];
@@ -64,18 +65,17 @@ export function useOfflineSnapshot(remote: {
   alertDays?: number;
 }) {
   const isOnline = useOnlineStatus();
-  const localClients = useLiveQuery(() => offlineDb.clients.toArray(), [], [] as LocalRecord[]);
-  const localExtinguishers = useLiveQuery(() => offlineDb.extinguishers.toArray(), [], [] as LocalRecord[]);
-  const localOrders = useLiveQuery(() => offlineDb.orders.toArray(), [], [] as LocalOrderRow[]);
-  const localAlerts = useLiveQuery(() => offlineDb.alerts.toArray(), [], [] as LocalRecord[]);
-  const localAlertDays = useLiveQuery(() => offlineDb.settings.get("alertDays"), [], undefined);
+  const tenantKey = remote.tenantKey;
+  const localClients = useLiveQuery(() => tenantKey ? offlineDb.clients.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as LocalRecord[]), [tenantKey], [] as LocalRecord[]);
+  const localExtinguishers = useLiveQuery(() => tenantKey ? offlineDb.extinguishers.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as LocalRecord[]), [tenantKey], [] as LocalRecord[]);
+  const localOrders = useLiveQuery(() => tenantKey ? offlineDb.orders.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as LocalOrderRow[]), [tenantKey], [] as LocalOrderRow[]);
+  const localAlerts = useLiveQuery(() => tenantKey ? offlineDb.alerts.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as LocalRecord[]), [tenantKey], [] as LocalRecord[]);
+  const localAlertDays = useLiveQuery(() => tenantKey ? offlineDb.settings.get(`${tenantKey}:alertDays`) : Promise.resolve(undefined), [tenantKey], undefined);
 
   useEffect(() => {
-    if (!isOnline) return;
-    if (remote.clients || remote.extinguishers || remote.orders || remote.alerts) {
-      void saveOnlineSnapshot(remote);
-    }
-  }, [isOnline, remote.clients, remote.extinguishers, remote.orders, remote.alerts, remote.alertDays]);
+    if (!isOnline || !tenantKey) return;
+    if (remote.clients || remote.extinguishers || remote.orders || remote.alerts) void saveOnlineSnapshot(remote as { tenantKey: string; clients?: LocalRecord[]; extinguishers?: LocalRecord[]; orders?: LocalOrderRow[]; alerts?: LocalRecord[]; alertDays?: number });
+  }, [isOnline, tenantKey, remote.clients, remote.extinguishers, remote.orders, remote.alerts, remote.alertDays]);
 
   return useMemo(() => ({
     isOnline,
@@ -83,6 +83,6 @@ export function useOfflineSnapshot(remote: {
     extinguishers: isOnline && remote.extinguishers ? remote.extinguishers : localExtinguishers,
     orders: isOnline && remote.orders ? remote.orders : localOrders,
     alerts: isOnline && remote.alerts ? remote.alerts : localAlerts,
-    alertDays: isOnline && remote.alertDays ? remote.alertDays : (localAlertDays?.value || remote.alertDays || 30),
+    alertDays: isOnline && remote.alertDays !== undefined ? remote.alertDays : ((localAlertDays as any)?.value || remote.alertDays || 30),
   }), [isOnline, remote.clients, remote.extinguishers, remote.orders, remote.alerts, remote.alertDays, localClients, localExtinguishers, localOrders, localAlerts, localAlertDays]);
 }

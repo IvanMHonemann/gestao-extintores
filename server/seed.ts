@@ -8,8 +8,10 @@ async function runSeed() {
     return;
   }
 
-  // 1. Cliente em Sapiranga
+  const accountId = 1;
+
   const client1Id = await createClient({
+    accountId,
     companyName: "Padaria e Confeitaria Central",
     cnpj: "18.345.982/0001-44",
     address: "Av. 20 de Setembro, 1250, Centro",
@@ -22,16 +24,13 @@ async function runSeed() {
     notes: "Atendimento preferencial pela manhã",
   });
 
-  // Extintores do cliente 1
-  // Vencendo em 12 dias (alerta urgente)
   const d1 = new Date();
   d1.setDate(d1.getDate() + 12);
-
-  // Válido por 1 ano
   const d2 = new Date();
   d2.setFullYear(d2.getFullYear() + 1);
 
   await createExtinguisher({
+    accountId,
     clientId: client1Id,
     typeModel: "PQS ABC 4kg",
     capacity: "4kg",
@@ -39,9 +38,10 @@ async function runSeed() {
     locationInBuilding: "Área de Atendimento / Caixa",
     expirationDate: d1.toISOString().split("T")[0] as any,
     lastInspectionDate: new Date().toISOString().split("T")[0] as any,
-  });
+  }, accountId);
 
   await createExtinguisher({
+    accountId,
     clientId: client1Id,
     typeModel: "AP 10L (Água)",
     capacity: "10L",
@@ -49,10 +49,10 @@ async function runSeed() {
     locationInBuilding: "Cozinha Industrial / Fornos",
     expirationDate: d2.toISOString().split("T")[0] as any,
     lastInspectionDate: new Date().toISOString().split("T")[0] as any,
-  });
+  }, accountId);
 
-  // 2. Cliente em Novo Hamburgo
   const client2Id = await createClient({
+    accountId,
     companyName: "Metalúrgica Vale dos Sinos",
     cnpj: "09.123.456/0001-89",
     address: "Rua Bento Gonçalves, 3400, Pátria Nova",
@@ -64,11 +64,11 @@ async function runSeed() {
     birthDate: "05/11/1965",
   });
 
-  // Extintor vencido há 5 dias (alerta crítico)
   const dExpired = new Date();
   dExpired.setDate(dExpired.getDate() - 5);
 
   await createExtinguisher({
+    accountId,
     clientId: client2Id,
     typeModel: "CO2 6kg",
     capacity: "6kg",
@@ -76,9 +76,10 @@ async function runSeed() {
     locationInBuilding: "Quadro de Comando Elétrico",
     expirationDate: dExpired.toISOString().split("T")[0] as any,
     lastInspectionDate: "2025-09-18" as any,
-  });
+  }, accountId);
 
   await createExtinguisher({
+    accountId,
     clientId: client2Id,
     typeModel: "PQS ABC 6kg",
     capacity: "6kg",
@@ -86,10 +87,10 @@ async function runSeed() {
     locationInBuilding: "Galpão de Solda",
     expirationDate: d1.toISOString().split("T")[0] as any,
     lastInspectionDate: new Date().toISOString().split("T")[0] as any,
-  });
+  }, accountId);
 
-  // 3. Cliente em Campo Bom
   const client3Id = await createClient({
+    accountId,
     companyName: "Auto Peças Progresso",
     cnpj: "33.789.012/0001-11",
     address: "Av. Brasil, 890, Bairro Paulista",
@@ -105,6 +106,7 @@ async function runSeed() {
   dWarning.setDate(dWarning.getDate() + 25);
 
   await createExtinguisher({
+    accountId,
     clientId: client3Id,
     typeModel: "PQS BC 4kg",
     capacity: "4kg",
@@ -112,11 +114,11 @@ async function runSeed() {
     locationInBuilding: "Oficina Mecânica",
     expirationDate: dWarning.toISOString().split("T")[0] as any,
     lastInspectionDate: new Date().toISOString().split("T")[0] as any,
-  });
+  }, accountId);
 
-  // Criar uma Ordem de Serviço de Exemplo no modelo idêntico da imagem
   await createServiceOrder(
     {
+      accountId,
       orderNumber: 1001,
       orderDate: new Date().toISOString().split("T")[0] as any,
       clientId: client1Id,
@@ -135,25 +137,11 @@ async function runSeed() {
       observations: "Manutenção periódica conforme norma NBR 12962",
     },
     [
-      {
-        description: "Recarga Extintor PQS 4kg ABC",
-        quantity: 2,
-        unitPrice: "45.00" as any,
-        totalPrice: "90.00" as any,
-      },
-      {
-        description: "Recarga Extintor AP 10L Água",
-        quantity: 1,
-        unitPrice: "40.00" as any,
-        totalPrice: "40.00" as any,
-      },
-      {
-        description: "Teste Hidrostático e Troca de Válvula",
-        quantity: 1,
-        unitPrice: "65.00" as any,
-        totalPrice: "65.00" as any,
-      },
-    ]
+      { description: "Recarga Extintor PQS 4kg ABC", quantity: 2, unitPrice: "45.00" as any, totalPrice: "90.00" as any },
+      { description: "Recarga Extintor AP 10L Água", quantity: 1, unitPrice: "40.00" as any, totalPrice: "40.00" as any },
+      { description: "Teste Hidrostático e Troca de Válvula", quantity: 1, unitPrice: "65.00" as any, totalPrice: "65.00" as any },
+    ],
+    accountId,
   );
 
   console.log("Dados demonstrativos inseridos com sucesso!");

@@ -16,6 +16,9 @@ const adminUser = {
 function createCaller() {
   return appRouter.createCaller({
     user: adminUser,
+    accountId: 1,
+    memberAccountId: 1,
+    isMember: true,
     req: { protocol: "https", headers: {} } as any,
     res: { clearCookie: () => {}, cookie: () => {} } as any,
   });

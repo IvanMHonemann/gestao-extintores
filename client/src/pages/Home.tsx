@@ -47,6 +47,7 @@ import { offlineDb, queueOfflineMutation } from "@/offline/localDb";
 export default function Home() {
   const { user, logout } = useAuth();
   const [, navigate] = useLocation();
+  const tenantKey = user && user.id < 0 ? String(Math.abs(user.id)) : null;
   const [activeTab, setActiveTab] = useState<"dashboard" | "clients" | "extinguishers" | "orders" | "alerts">("dashboard");
   const [selectedCity, setSelectedCity] = useState<string>("TODAS");
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -68,21 +69,22 @@ export default function Home() {
   const [selectedClientIdForExtinguisher, setSelectedClientIdForExtinguisher] = useState<number | null>(null);
 
   // Queries
-  const statsQuery = trpc.dashboard.stats.useQuery();
-  const citiesQuery = trpc.clients.cities.useQuery();
-  const clientsQuery = trpc.clients.list.useQuery({ 
-    city: selectedCity === "TODAS" ? undefined : selectedCity 
-  });
-  const alertsQuery = trpc.extinguishers.alerts.useQuery();
-  const ordersQuery = trpc.orders.list.useQuery();
-  const alertDaysQuery = trpc.settings.getAlertDays.useQuery();
+  const statsQuery = trpc.dashboard.stats.useQuery(undefined, { enabled: Boolean(tenantKey) });
+  const citiesQuery = trpc.clients.cities.useQuery(undefined, { enabled: Boolean(tenantKey) });
+  const clientsQuery = trpc.clients.list.useQuery(undefined, { enabled: Boolean(tenantKey) });
+  const alertsQuery = trpc.extinguishers.alerts.useQuery(undefined, { enabled: Boolean(tenantKey) });
+  const ordersQuery = trpc.orders.list.useQuery(undefined, { enabled: Boolean(tenantKey) });
+  const alertDaysQuery = trpc.settings.getAlertDays.useQuery(undefined, { enabled: Boolean(tenantKey) });
+  const remoteExtinguishers = useMemo(() => (alertsQuery.data || []).map((item: any) => item.extinguisher).filter(Boolean), [alertsQuery.data]);
   const orderDetailsQuery = trpc.orders.byId.useQuery(
     { id: viewingOrderId! },
-    { enabled: !!viewingOrderId }
+    { enabled: Boolean(tenantKey && viewingOrderId) }
   );
 
   const offline = useOfflineSnapshot({
+    tenantKey,
     clients: clientsQuery.data as any,
+    extinguishers: remoteExtinguishers as any,
     orders: ordersQuery.data as any,
     alerts: alertsQuery.data as any,
     alertDays: alertDaysQuery.data,
@@ -120,7 +122,7 @@ export default function Home() {
       }
     },
     onError: async (err, input) => {
-      if (!offline.isOnline) { const localId = await saveOfflineClient(input); await queueOfflineMutation({ entity: "client", action: "create", payload: { ...input, localId } }); toast.success("Cliente salvo no dispositivo (offline)."); setIsClientModalOpen(false); return; }
+      if (!offline.isOnline) { const localId = await saveOfflineClient(input); await queueOfflineMutation({ tenantKey: tenantKey!, entity: "client", action: "create", payload: { ...input, localId } }); toast.success("Cliente salvo no dispositivo (offline)."); setIsClientModalOpen(false); return; }
       toast.error(err.message);
     },
   });
@@ -133,12 +135,14 @@ export default function Home() {
     },
     onError: async (err, input) => {
       if (!offline.isOnline) {
-        await offlineDb.clients.delete(input.id);
-        const ext = await offlineDb.extinguishers.where("clientId").equals(input.id).toArray();
+        if (!tenantKey) return;
+        const clientRows = (await offlineDb.clients.where("tenantKey").equals(tenantKey).filter((row) => row.id === input.id).toArray()).map((row) => row.id);
+        await offlineDb.clients.bulkDelete(clientRows);
+        const ext = await offlineDb.extinguishers.where("tenantKey").equals(tenantKey).filter((row) => row.clientId === input.id).toArray();
         await offlineDb.extinguishers.bulkDelete(ext.map((item) => item.id));
-        const orders = (await offlineDb.orders.toArray()).filter((item) => item.order?.clientId === input.id);
+        const orders = await offlineDb.orders.where("tenantKey").equals(tenantKey).filter((item) => item.order?.clientId === input.id).toArray();
         await offlineDb.orders.bulkDelete(orders.map((item) => item.order.id));
-        await queueOfflineMutation({ entity: "client", action: "delete", payload: input });
+        await queueOfflineMutation({ tenantKey, entity: "client", action: "delete", payload: input });
         toast.success("Cliente removido do dispositivo.");
         return;
       }
@@ -155,7 +159,7 @@ export default function Home() {
       utils.dashboard.stats.invalidate();
     },
     onError: async (err, input) => {
-      if (!offline.isOnline) { const localId = await saveOfflineExtinguisher(input); await queueOfflineMutation({ entity: "extinguisher", action: "create", payload: { ...input, localId } }); toast.success("Extintor salvo no dispositivo (offline)."); setIsExtinguisherModalOpen(false); return; }
+      if (!offline.isOnline) { const localId = await saveOfflineExtinguisher(input); await queueOfflineMutation({ tenantKey: tenantKey!, entity: "extinguisher", action: "create", payload: { ...input, localId } }); toast.success("Extintor salvo no dispositivo (offline)."); setIsExtinguisherModalOpen(false); return; }
       toast.error(err.message);
     },
   });
@@ -167,7 +171,7 @@ export default function Home() {
       utils.dashboard.stats.invalidate();
     },
     onError: async (err, input) => {
-      if (!offline.isOnline) { await offlineDb.extinguishers.delete(input.id); await offlineDb.alerts.delete(input.id); await queueOfflineMutation({ entity: "extinguisher", action: "delete", payload: input }); toast.success("Extintor removido do dispositivo."); return; }
+      if (!offline.isOnline) { if (!tenantKey) return; const ext = (await offlineDb.extinguishers.where("tenantKey").equals(tenantKey).filter((row) => row.id === input.id).toArray()).map((row) => row.id); const alerts = (await offlineDb.alerts.where("tenantKey").equals(tenantKey).filter((row) => row.id === input.id).toArray()).map((row) => row.id); await offlineDb.extinguishers.bulkDelete(ext); await offlineDb.alerts.bulkDelete(alerts); await queueOfflineMutation({ tenantKey, entity: "extinguisher", action: "delete", payload: input }); toast.success("Extintor removido do dispositivo."); return; }
       toast.error(err.message);
     },
   });
@@ -187,8 +191,10 @@ export default function Home() {
         const id = offlineId();
         const client = effectiveClients.find((item: any) => item.id === input.clientId);
         const order = { ...input, id, orderNumber: input.orderNumber || Math.abs(id), items: input.items, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-        await offlineDb.orders.put({ order, client: client || { id: input.clientId, companyName: "Cliente offline", city: "Não informado" } });
-        await queueOfflineMutation({ entity: "order", action: "create", payload: { ...input, localId: id } });
+        if (!tenantKey) return;
+        const localClient = client ? { ...client, tenantKey } : { id: input.clientId, tenantKey, companyName: "Cliente offline", city: "Não informado" };
+        await offlineDb.orders.put({ tenantKey, order: { ...order, tenantKey }, client: localClient });
+        await queueOfflineMutation({ tenantKey, entity: "order", action: "create", payload: { ...input, localId: id } });
         toast.success("Ordem salva no dispositivo (offline).");
         setIsOrderModalOpen(false);
         setViewingOrderId(id);
@@ -205,7 +211,7 @@ export default function Home() {
       utils.dashboard.stats.invalidate();
     },
     onError: async (err, input) => {
-      if (!offline.isOnline) { await offlineDb.orders.delete(input.id); await queueOfflineMutation({ entity: "order", action: "delete", payload: input }); toast.success("Ordem removida do dispositivo."); return; }
+      if (!offline.isOnline) { if (!tenantKey) return; const orders = (await offlineDb.orders.where("tenantKey").equals(tenantKey).filter((row) => row.order?.id === input.id).toArray()).map((row) => row.order.id); await offlineDb.orders.bulkDelete(orders); await queueOfflineMutation({ tenantKey, entity: "order", action: "delete", payload: input }); toast.success("Ordem removida do dispositivo."); return; }
       toast.error(err.message);
     },
   });
@@ -214,7 +220,8 @@ export default function Home() {
     if (!offline.isOnline) return;
     let cancelled = false;
     void (async () => {
-      const queued = await offlineDb.mutations.orderBy("createdAt").toArray();
+      if (!tenantKey) return;
+      const queued = await offlineDb.mutations.where("tenantKey").equals(tenantKey).sortBy("createdAt");
       const idMap = new Map<number, number>();
       for (const mutation of queued) {
         if (cancelled) return;
@@ -222,18 +229,23 @@ export default function Home() {
           const raw = mutation.payload || {};
           const payload = { ...raw };
           delete payload.localId;
+          delete payload.tenantKey;
           if (payload.clientId && idMap.has(payload.clientId)) payload.clientId = idMap.get(payload.clientId);
           if (payload.items) payload.items = payload.items.map((item: any) => ({ ...item, extinguisherId: idMap.get(item.extinguisherId) || item.extinguisherId }));
           if (mutation.action === "create") {
             const result = mutation.entity === "client" ? await createClientMutation.mutateAsync(payload) : mutation.entity === "extinguisher" ? await createExtinguisherMutation.mutateAsync(payload) : await createOrderMutation.mutateAsync(payload);
             if (raw.localId && result?.id) idMap.set(raw.localId, result.id);
-          } else if (Number(payload.id) > 0) {
-            if (mutation.entity === "client") await deleteClientMutation.mutateAsync({ id: payload.id });
-            if (mutation.entity === "extinguisher") await deleteExtinguisherMutation.mutateAsync({ id: payload.id });
-            if (mutation.entity === "order") await deleteOrderMutation.mutateAsync({ id: payload.id });
+          } else {
+            const resolvedId = idMap.get(Number(payload.id)) || Number(payload.id);
+            if (resolvedId > 0) {
+              if (mutation.entity === "client") await deleteClientMutation.mutateAsync({ id: resolvedId });
+              if (mutation.entity === "extinguisher") await deleteExtinguisherMutation.mutateAsync({ id: resolvedId });
+              if (mutation.entity === "order") await deleteOrderMutation.mutateAsync({ id: resolvedId });
+            }
           }
           if (mutation.id) await offlineDb.mutations.delete(mutation.id);
-        } catch {
+        } catch (error) {
+          if (mutation.id) await offlineDb.mutations.update(mutation.id, { state: "failed", lastError: error instanceof Error ? error.message : "Falha desconhecida" });
           toast.error("Não foi possível sincronizar os dados locais. Tentaremos novamente.");
           return;
         }
@@ -244,7 +256,7 @@ export default function Home() {
       }
     })();
     return () => { cancelled = true; };
-  }, [offline.isOnline]);
+  }, [offline.isOnline, tenantKey]);
 
   const setAlertDaysMutation = trpc.settings.setAlertDays.useMutation({
     onSuccess: () => {
@@ -361,19 +373,21 @@ export default function Home() {
     );
   }
 
-  const offlineId = () => -Date.now();
+  const offlineId = () => -(Date.now() * 1000 + Math.floor(Math.random() * 1000));
   const saveOfflineClient = async (input: Partial<typeof clientForm> & { companyName: string; city: string }) => {
+    if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
     const id = offlineId();
-    await offlineDb.clients.put({ ...input, id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    await offlineDb.clients.put({ ...input, id, tenantKey, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
     return id;
   };
   const saveOfflineExtinguisher = async (input: Partial<typeof extinguisherForm> & { clientId: number; typeModel: string; expirationDate: string }) => {
+    if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
     const id = offlineId();
     const expiration = new Date(`${input.expirationDate}T12:00:00`);
     const days = Math.ceil((expiration.getTime() - new Date().setHours(12, 0, 0, 0)) / 86400000);
     const status = days < 0 ? "expired" : days <= (offline.alertDays || 30) ? "warning" : "ok";
-    await offlineDb.extinguishers.put({ ...input, id, status, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-    await offlineDb.alerts.put({ ...input, id, clientId: input.clientId, expirationDate: input.expirationDate, alertStatus: status === "expired" ? "expired" : status === "warning" ? "warning" : "ok" });
+    await offlineDb.extinguishers.put({ ...input, id, tenantKey, status, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    await offlineDb.alerts.put({ ...input, id, tenantKey, clientId: input.clientId, expirationDate: input.expirationDate, alertStatus: status === "expired" ? "expired" : status === "warning" ? "warning" : "ok" });
     return id;
   };
 
@@ -1618,9 +1632,11 @@ function ClientDetailCard({
   onCreateOrder: () => void;
   onDelete: () => void;
 }) {
-  const extinguishersQuery = trpc.extinguishers.listByClient.useQuery({ clientId: client.id });
+  const { user } = useAuth();
+  const tenantKey = user && user.id < 0 ? String(Math.abs(user.id)) : null;
+  const extinguishersQuery = trpc.extinguishers.listByClient.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey) });
   const isOnline = useOnlineStatus();
-  const localExtinguishers = useLiveQuery(() => offlineDb.extinguishers.where("clientId").equals(client.id).toArray(), [client.id], []);
+  const localExtinguishers = useLiveQuery(() => tenantKey ? offlineDb.extinguishers.where("tenantKey").equals(tenantKey).filter((row) => row.clientId === client.id).toArray() : Promise.resolve([] as any[]), [tenantKey, client.id], [] as any[]);
   const extinguisherRows = isOnline && extinguishersQuery.data ? extinguishersQuery.data : localExtinguishers;
   const visibleExtinguishers = (extinguisherRows || []).filter((ext) => {
     if (extinguisherFilter === "all") return true;

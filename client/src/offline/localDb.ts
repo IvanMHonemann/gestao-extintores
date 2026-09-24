@@ -1,16 +1,37 @@
 import Dexie, { type Table } from "dexie";
 
-export type LocalRecord = Record<string, any> & { id: number };
-export type LocalOrderRow = { order: LocalRecord; client: LocalRecord };
-export type OfflineMutation = { id?: number; entity: "client" | "extinguisher" | "order"; action: "create" | "delete"; payload: any; createdAt: string };
+export type LocalRecord = Record<string, any> & { id: number; tenantKey: string };
+export type LocalOrderRow = { order: LocalRecord; client: LocalRecord; tenantKey: string };
+export type OfflineMutation = {
+  id?: number;
+  tenantKey: string;
+  entity: "client" | "extinguisher" | "order";
+  action: "create" | "delete";
+  payload: any;
+  createdAt: string;
+  state?: "pending" | "failed";
+  lastError?: string;
+};
+
+type OfflineSetting = { key: string; tenantKey: string; value: any };
+type OfflineMeta = { key: string; tenantKey?: string; value: any };
+
+function requireTenantKey(tenantKey: string) {
+  if (!tenantKey || tenantKey === "legacy-unassigned") throw new Error("Tenant offline inválido.");
+  return tenantKey;
+}
+
+function scopedKey(tenantKey: string, key: string) {
+  return `${requireTenantKey(tenantKey)}:${key}`;
+}
 
 class ExtintoresOfflineDB extends Dexie {
   clients!: Table<LocalRecord, number>;
   extinguishers!: Table<LocalRecord, number>;
   orders!: Table<LocalOrderRow, number>;
   alerts!: Table<LocalRecord, number>;
-  settings!: Table<{ key: string; value: any }, string>;
-  meta!: Table<{ key: string; value: any }, string>;
+  settings!: Table<OfflineSetting, string>;
+  meta!: Table<OfflineMeta, string>;
   mutations!: Table<OfflineMutation, number>;
 
   constructor() {
@@ -24,65 +45,158 @@ class ExtintoresOfflineDB extends Dexie {
       meta: "&key",
       mutations: "++id, createdAt",
     });
+    this.version(2).stores({
+      clients: "id, tenantKey, city, updatedAt",
+      extinguishers: "id, tenantKey, clientId, expirationDate, status",
+      orders: "&order.id, tenantKey, order.clientId, order.orderDate",
+      alerts: "id, tenantKey, clientId, alertStatus, expirationDate",
+      settings: "&key, tenantKey",
+      meta: "&key, tenantKey",
+      mutations: "++id, tenantKey, createdAt, state",
+    }).upgrade(async tx => {
+      for (const tableName of ["clients", "extinguishers", "orders", "alerts"] as const) {
+        const table = tx.table(tableName);
+        await table.toCollection().modify((row: any) => { row.tenantKey = "legacy-unassigned"; });
+      }
+      await tx.table("settings").toCollection().modify((row: any) => {
+        row.tenantKey = "legacy-unassigned";
+        row.key = `legacy-unassigned:${row.key}`;
+      });
+      await tx.table("meta").toCollection().modify((row: any) => { row.tenantKey = "legacy-unassigned"; });
+      await tx.table("mutations").toCollection().modify((row: any) => {
+        row.tenantKey = "legacy-unassigned";
+        row.state = row.state || "failed";
+        row.lastError = "Operação antiga sem tenant; não será sincronizada.";
+      });
+    });
   }
 }
 
 export const offlineDb = new ExtintoresOfflineDB();
 
+function withTenant<T extends Record<string, any>>(tenantKey: string, row: T): T & { tenantKey: string } {
+  return { ...row, tenantKey: requireTenantKey(tenantKey) };
+}
+
+async function deleteScopedRows(table: any, tenantKey: string) {
+  const rows = await table.where("tenantKey").equals(tenantKey).primaryKeys();
+  if (rows.length) await table.bulkDelete(rows);
+}
+
+async function replaceScopedRows(table: any, tenantKey: string, rows: any[], getId: (row: any) => number) {
+  const remoteIds = new Set(rows.map(getId).filter((id) => Number.isFinite(id)));
+  const existing = await table.where("tenantKey").equals(tenantKey).toArray();
+  const staleIds = existing
+    .filter((row: any) => Number(row.id) > 0 && !remoteIds.has(Number(row.id)))
+    .map((row: any) => row.id);
+  if (staleIds.length) await table.bulkDelete(staleIds);
+  if (rows.length) await table.bulkPut(rows);
+}
+
 export async function saveOnlineSnapshot(snapshot: {
+  tenantKey: string;
   clients?: LocalRecord[];
   extinguishers?: LocalRecord[];
   orders?: LocalOrderRow[];
   alerts?: LocalRecord[];
   alertDays?: number;
 }) {
+  const tenantKey = requireTenantKey(snapshot.tenantKey);
   await offlineDb.transaction("rw", [offlineDb.clients, offlineDb.extinguishers, offlineDb.orders, offlineDb.alerts, offlineDb.settings, offlineDb.meta], async () => {
-    if (snapshot.clients) await offlineDb.clients.bulkPut(snapshot.clients);
-    if (snapshot.extinguishers) await offlineDb.extinguishers.bulkPut(snapshot.extinguishers);
-    if (snapshot.orders) await offlineDb.orders.bulkPut(snapshot.orders);
-    if (snapshot.alerts) await offlineDb.alerts.bulkPut(snapshot.alerts);
-    if (snapshot.alertDays) await offlineDb.settings.put({ key: "alertDays", value: snapshot.alertDays });
-    await offlineDb.meta.put({ key: "lastOnlineSync", value: new Date().toISOString() });
+    if (snapshot.clients) {
+      const rows = snapshot.clients.map(row => withTenant(tenantKey, row));
+      await replaceScopedRows(offlineDb.clients, tenantKey, rows, row => row.id);
+    }
+    if (snapshot.extinguishers) {
+      const rows = snapshot.extinguishers.map(row => withTenant(tenantKey, row));
+      await replaceScopedRows(offlineDb.extinguishers, tenantKey, rows, row => row.id);
+    }
+    if (snapshot.orders) {
+      const rows = snapshot.orders.map(row => ({
+        ...row,
+        tenantKey,
+        order: withTenant(tenantKey, row.order),
+        client: withTenant(tenantKey, row.client),
+      }));
+      await replaceScopedRows(offlineDb.orders, tenantKey, rows, row => row.order.id);
+    }
+    if (snapshot.alerts) {
+      const rows = snapshot.alerts.map((row: any) => withTenant(tenantKey, {
+        ...row,
+        id: row.id ?? row.extinguisher?.id,
+        clientId: row.clientId ?? row.extinguisher?.clientId,
+        expirationDate: row.expirationDate ?? row.extinguisher?.expirationDate,
+      }));
+      await replaceScopedRows(offlineDb.alerts, tenantKey, rows, row => row.id);
+    }
+    if (snapshot.alertDays !== undefined) await offlineDb.settings.put({ key: scopedKey(tenantKey, "alertDays"), tenantKey, value: snapshot.alertDays });
+    await offlineDb.meta.put({ key: scopedKey(tenantKey, "lastOnlineSync"), tenantKey, value: new Date().toISOString() });
   });
 }
 
-export async function exportOfflineBackup() {
+export async function exportOfflineBackup(tenantKey: string) {
+  const tenant = requireTenantKey(tenantKey);
   return {
     format: "gestao-extintores-offline-backup",
-    version: 1,
+    version: 2,
+    tenantKey: tenant,
     exportedAt: new Date().toISOString(),
-    clients: await offlineDb.clients.toArray(),
-    extinguishers: await offlineDb.extinguishers.toArray(),
-    orders: await offlineDb.orders.toArray(),
-    alerts: await offlineDb.alerts.toArray(),
-    settings: await offlineDb.settings.toArray(),
-    mutations: await offlineDb.mutations.toArray(),
+    clients: await offlineDb.clients.where("tenantKey").equals(tenant).toArray(),
+    extinguishers: await offlineDb.extinguishers.where("tenantKey").equals(tenant).toArray(),
+    orders: await offlineDb.orders.where("tenantKey").equals(tenant).toArray(),
+    alerts: await offlineDb.alerts.where("tenantKey").equals(tenant).toArray(),
+    settings: await offlineDb.settings.where("tenantKey").equals(tenant).toArray(),
+    mutations: await offlineDb.mutations.where("tenantKey").equals(tenant).toArray(),
   };
 }
 
-export async function importOfflineBackup(payload: any) {
-  if (!payload || payload.format !== "gestao-extintores-offline-backup") throw new Error("Arquivo de backup inválido.");
-  await offlineDb.transaction("rw", [offlineDb.clients, offlineDb.extinguishers, offlineDb.orders, offlineDb.alerts, offlineDb.settings, offlineDb.meta], async () => {
-    await offlineDb.clients.clear();
-    await offlineDb.extinguishers.clear();
-    await offlineDb.orders.clear();
-    await offlineDb.alerts.clear();
-    await offlineDb.settings.clear();
-    await offlineDb.mutations.clear();
+function validateRows(payload: any, tenantKey: string) {
+  const arrays = ["clients", "extinguishers", "orders", "alerts", "settings", "mutations"];
+  for (const key of arrays) {
+    if (payload[key] !== undefined && !Array.isArray(payload[key])) throw new Error(`Backup inválido: ${key} não é uma lista.`);
+    for (const row of payload[key] || []) {
+      if (!row || row.tenantKey !== tenantKey) throw new Error("Backup pertence a outra empresa ou não possui tenant válido.");
+    }
+  }
+}
+
+export async function importOfflineBackup(payload: any, tenantKey: string, options: { replaceExisting: boolean }) {
+  const tenant = requireTenantKey(tenantKey);
+  if (!payload || payload.format !== "gestao-extintores-offline-backup" || payload.version !== 2) throw new Error("Arquivo de backup incompatível. Exporte um backup novo.");
+  if (payload.tenantKey !== tenant) throw new Error("Este backup pertence a outra empresa e foi bloqueado.");
+  validateRows(payload, tenant);
+  if (!options.replaceExisting) throw new Error("A restauração exige confirmação explícita para substituir dados locais.");
+
+  await offlineDb.transaction("rw", [offlineDb.clients, offlineDb.extinguishers, offlineDb.orders, offlineDb.alerts, offlineDb.settings, offlineDb.meta, offlineDb.mutations], async () => {
+    await deleteScopedRows(offlineDb.clients, tenant);
+    await deleteScopedRows(offlineDb.extinguishers, tenant);
+    await deleteScopedRows(offlineDb.orders, tenant);
+    await deleteScopedRows(offlineDb.alerts, tenant);
+    await deleteScopedRows(offlineDb.settings, tenant);
+    await deleteScopedRows(offlineDb.mutations, tenant);
     if (Array.isArray(payload.clients)) await offlineDb.clients.bulkPut(payload.clients);
     if (Array.isArray(payload.extinguishers)) await offlineDb.extinguishers.bulkPut(payload.extinguishers);
     if (Array.isArray(payload.orders)) await offlineDb.orders.bulkPut(payload.orders);
     if (Array.isArray(payload.alerts)) await offlineDb.alerts.bulkPut(payload.alerts);
     if (Array.isArray(payload.settings)) await offlineDb.settings.bulkPut(payload.settings);
     if (Array.isArray(payload.mutations)) await offlineDb.mutations.bulkPut(payload.mutations);
-    await offlineDb.meta.put({ key: "lastBackupImport", value: new Date().toISOString() });
+    await offlineDb.meta.put({ key: scopedKey(tenant, "lastBackupImport"), tenantKey: tenant, value: new Date().toISOString() });
   });
 }
 
-export async function clearOfflineData() {
-  await Promise.all([offlineDb.clients.clear(), offlineDb.extinguishers.clear(), offlineDb.orders.clear(), offlineDb.alerts.clear(), offlineDb.settings.clear(), offlineDb.mutations.clear()]);
+export async function clearOfflineData(tenantKey: string) {
+  const tenant = requireTenantKey(tenantKey);
+  await offlineDb.transaction("rw", [offlineDb.clients, offlineDb.extinguishers, offlineDb.orders, offlineDb.alerts, offlineDb.settings, offlineDb.mutations], async () => {
+    await deleteScopedRows(offlineDb.clients, tenant);
+    await deleteScopedRows(offlineDb.extinguishers, tenant);
+    await deleteScopedRows(offlineDb.orders, tenant);
+    await deleteScopedRows(offlineDb.alerts, tenant);
+    await deleteScopedRows(offlineDb.settings, tenant);
+    await deleteScopedRows(offlineDb.mutations, tenant);
+  });
 }
 
-export async function queueOfflineMutation(mutation: Omit<OfflineMutation, "createdAt">) {
-  await offlineDb.mutations.add({ ...mutation, createdAt: new Date().toISOString() });
+export async function queueOfflineMutation(mutation: Omit<OfflineMutation, "createdAt" | "state">) {
+  const tenantKey = requireTenantKey(mutation.tenantKey);
+  await offlineDb.mutations.add({ ...mutation, tenantKey, state: "pending", createdAt: new Date().toISOString() });
 }
