@@ -152,7 +152,9 @@ function vitePluginManusDebugCollector(): Plugin {
 // O runtime de host injeta um proxy HTML com o cliente HMR e tenta conectar
 // em localhost:5173 no preview HTTPS. O aplicativo não depende dele para
 // funcionar; mantemos somente os plugins necessários ao produto.
-const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusDebugCollector()];
+// O coletor de debug pertence apenas ao ambiente de desenvolvimento e injeta
+// o overlay "Console Error" no visualizador embutido. Não faz parte do app.
+const plugins = [react(), tailwindcss(), jsxLocPlugin()];
 
 export default defineConfig({
   plugins,
