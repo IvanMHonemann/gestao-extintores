@@ -28,6 +28,7 @@ export function useInstallPrompt() {
       setIsInstalling(false);
       setInstallProgress(100);
       setDeferredPrompt(null);
+      window.setTimeout(() => window.location.replace("/"), 700);
     };
     window.addEventListener("appinstalled", installed);
     return () => window.removeEventListener("appinstalled", installed);

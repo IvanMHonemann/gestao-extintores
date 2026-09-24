@@ -170,6 +170,9 @@ export default defineConfig({
   },
   server: {
     host: true,
+    hmr: {
+      clientPort: 443,
+    },
     allowedHosts: [
       ".manuspre.computer",
       ".manus.computer",
