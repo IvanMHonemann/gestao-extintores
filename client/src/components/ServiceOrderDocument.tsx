@@ -276,41 +276,41 @@ export function ServiceOrderDocument({
                 <span className="flex-1 text-slate-900">{client?.address || "—"}</span>
               </div>
 
-              <div className="flex border-b border-slate-300 pb-1">
+              <div className="flex flex-col gap-1 border-b border-slate-300 pb-1 sm:flex-row">
                 <div className="flex-1 flex">
                   <span className="font-bold w-24">CIDADE:</span>
                   <span className="font-semibold text-slate-950 uppercase">{client?.city || "—"}</span>
                 </div>
-                <div className="w-48 flex justify-end">
+                <div className="flex w-full justify-start sm:w-48 sm:justify-end">
                   <span className="font-bold mr-2">CEP:</span>
                   <span>{client?.cep || "—"}</span>
                 </div>
               </div>
 
-              <div className="flex border-b border-slate-300 pb-1">
+              <div className="flex flex-col gap-1 border-b border-slate-300 pb-1 sm:flex-row">
                 <div className="flex-1 flex">
                   <span className="font-bold w-24">CNPJ:</span>
                   <span className="font-mono">{client?.cnpj || "—"}</span>
                 </div>
-                <div className="w-56 flex justify-end">
+                <div className="flex w-full justify-start sm:w-56 sm:justify-end">
                   <span className="font-bold mr-2">FONE:</span>
                   <span className="font-mono">{client?.phone || "—"}</span>
                 </div>
               </div>
 
-              <div className="flex border-b border-slate-300 pb-1">
-                <span className="font-bold w-64">NOME DO PROPRITARIO OU RESPONSAVEL:</span>
+              <div className="flex flex-col gap-1 border-b border-slate-300 pb-1 sm:flex-row">
+                <span className="w-full font-bold sm:w-64">NOME DO PROPRITARIO OU RESPONSAVEL:</span>
                 <span className="flex-1 text-slate-950 uppercase font-semibold">
                   {order?.responsibleName || client?.contactName || "—"}
                 </span>
               </div>
 
-              <div className="flex">
+              <div className="flex flex-col gap-1 sm:flex-row">
                 <div className="flex-1 flex">
                   <span className="font-bold w-24">CPF:</span>
                   <span className="font-mono">{order?.responsibleCpf || client?.cpf || "—"}</span>
                 </div>
-                <div className="w-64 flex justify-end">
+                <div className="flex w-full justify-start sm:w-64 sm:justify-end">
                   <span className="font-bold mr-2">DATA DE NASCIMENTO:</span>
                   <span>{order?.responsibleBirthDate || client?.birthDate || "—"}</span>
                 </div>
@@ -324,7 +324,7 @@ export function ServiceOrderDocument({
               SERVIÇOS PRESTADO
             </div>
 
-            <table className="w-full text-left border-collapse text-[10px] sm:text-xs">
+            <table className="w-full table-fixed text-left border-collapse text-[10px] sm:text-xs">
               <thead>
                 <tr className="border-b-2 border-slate-800 font-bold bg-slate-100 text-center">
                   <th className="p-1.5 border-r-2 border-slate-800 w-[55%] text-left pl-3">DESCRIÇÃO</th>
@@ -340,7 +340,7 @@ export function ServiceOrderDocument({
                     className="border-b border-slate-400 min-h-[24px] text-slate-900"
                     style={{ height: "26px" }}
                   >
-                    <td className="p-1.5 border-r-2 border-slate-800 pl-3 font-medium">
+                    <td className="break-words p-1.5 border-r-2 border-slate-800 pl-3 font-medium">
                       {item.description}
                     </td>
                     <td className="p-1.5 border-r-2 border-slate-800 text-center font-semibold">
@@ -360,8 +360,8 @@ export function ServiceOrderDocument({
 
           {/* CAMPOS DE STATUS DA ENTREGA & VENCIMENTOS */}
           <div className="border-2 border-slate-800 mb-3 p-2 text-xs space-y-1.5 font-bold">
-            <div className="flex items-center">
-              <span className="w-52">TROCADO E ENTREGUE:</span>
+            <div className="flex flex-wrap items-center gap-y-1">
+              <span className="w-full sm:w-52">TROCADO E ENTREGUE:</span>
               <span className="mr-6">
                 (&nbsp;{isReplacedYes ? "X" : "\u00A0\u00A0"}&nbsp;) SIM
               </span>
@@ -386,15 +386,15 @@ export function ServiceOrderDocument({
               </div>
             </div>
 
-            <div className="flex items-center">
-              <span className="w-52">VENCIMENTO DO EXTINTOR:</span>
+            <div className="flex flex-wrap items-center gap-y-1">
+              <span className="w-full sm:w-52">VENCIMENTO DO EXTINTOR:</span>
               <span className="flex-1 border-b border-slate-700 font-semibold px-2 text-red-700">
                 {order?.extinguisherExpiration || ""}
               </span>
             </div>
 
-            <div className="flex items-center">
-              <span className="w-52">VENCIMENTO DO ALVARÁ:</span>
+            <div className="flex flex-wrap items-center gap-y-1">
+              <span className="w-full sm:w-52">VENCIMENTO DO ALVARÁ:</span>
               <span className="flex-1 border-b border-slate-700 font-semibold px-2">
                 {order?.licenseExpiration || ""}
               </span>
@@ -415,8 +415,8 @@ export function ServiceOrderDocument({
                 </span>
               </div>
 
-              <div className="flex items-center pt-1">
-                <span className="w-48">FORMA DE PAGAMENTO:</span>
+              <div className="flex flex-wrap items-center gap-y-1 pt-1">
+                <span className="w-full sm:w-48">FORMA DE PAGAMENTO:</span>
                 <span className="mr-6">
                   (&nbsp;{isAVista ? "X" : "\u00A0\u00A0"}&nbsp;) À VISTA
                 </span>

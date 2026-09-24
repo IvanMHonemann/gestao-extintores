@@ -430,7 +430,7 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
+    <div className="min-h-screen min-w-0 overflow-x-hidden bg-slate-50 text-slate-900 flex flex-col">
       {/* CABEÇALHO PRINCIPAL */}
       <header className="bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-30 shadow-md">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:h-16 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
@@ -529,7 +529,7 @@ export default function Home() {
       </aside>
 
       {/* ÁREA DE CONTEÚDO PRINCIPAL */}
-      <div className="flex-1 lg:pl-72">
+      <div className="min-w-0 flex-1 lg:pl-72">
       <div className="hidden border-b border-slate-200 bg-white shadow-sm lg:block">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-2.5 sm:px-6 lg:px-8">
           <p className="text-xs font-semibold text-slate-500">{activeTab === "dashboard" ? "Visão Geral" : activeTab === "clients" ? "Clientes por Cidade" : activeTab === "alerts" ? "Alertas de Vencimento" : "Ordens de Serviço"}</p>
@@ -537,7 +537,7 @@ export default function Home() {
         </div>
       </div>
       {/* ÁREA DE CONTEÚDO PRINCIPAL */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full">
+      <main className="mx-auto flex min-w-0 w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
         {/* ========================================================
             ABA: DASHBOARD GERAL
         ======================================================== */}
@@ -975,9 +975,9 @@ export default function Home() {
         ======================================================== */}
         {activeTab === "orders" && (
           <div className="space-y-6">
-            <div className="flex justify-between items-center">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h2 className="text-xl font-bold text-slate-900">
+                <h2 className="break-words text-xl font-bold text-slate-900">
                   Ordens de Serviço Emitidas
                 </h2>
                 <p className="text-xs text-slate-500">
@@ -986,7 +986,7 @@ export default function Home() {
               </div>
 
               <Button
-                className="bg-red-600 hover:bg-red-700 text-white gap-2 font-semibold shadow"
+                className="w-full bg-red-600 hover:bg-red-700 text-white gap-2 font-semibold shadow sm:w-auto"
                 onClick={() => {
                   if (effectiveClients && effectiveClients.length > 0) {
                     setOrderForm(prev => ({ ...prev, clientId: effectiveClients[0].id }));
@@ -999,8 +999,32 @@ export default function Home() {
               </Button>
             </div>
 
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
-              <table className="w-full text-left border-collapse text-xs">
+            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <div className="divide-y divide-slate-100 md:hidden">
+                {(effectiveOrders || []).map(({ order, client }) => (
+                  <article key={order.id} className="space-y-3 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-mono text-sm font-bold text-slate-900">#{String(order.orderNumber).padStart(5, "0")}</p>
+                        <p className="mt-1 break-words font-semibold text-slate-900">{client.companyName}</p>
+                      </div>
+                      <Badge variant="outline" className="shrink-0 text-[10px]">{client.city}</Badge>
+                    </div>
+                    <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                      <div><dt className="text-slate-400">Data</dt><dd className="font-medium text-slate-700">{new Date(order.orderDate).toLocaleDateString("pt-BR")}</dd></div>
+                      <div><dt className="text-slate-400">Pagamento</dt><dd className="break-words font-medium text-slate-700">{order.paymentMethod}</dd></div>
+                      <div><dt className="text-slate-400">Valor total</dt><dd className="font-mono font-bold text-slate-900">R$ {Number(order.totalAmount).toFixed(2)}</dd></div>
+                    </dl>
+                    <div className="flex flex-col gap-2 pt-1 min-[420px]:flex-row">
+                      <Button variant="outline" size="sm" className="h-9 w-full gap-1 text-xs font-semibold text-slate-800 hover:text-red-700 min-[420px]:flex-1" onClick={() => setViewingOrderId(order.id)}><Printer className="h-3.5 w-3.5 text-red-600" /> Visualizar / Imprimir</Button>
+                      <Button variant="ghost" size="sm" className="h-9 w-full text-slate-400 hover:text-red-600 min-[420px]:w-9" aria-label={`Excluir OS ${order.orderNumber}`} onClick={() => { if (confirm(`Excluir a OS #${order.orderNumber}?`)) deleteOrderMutation.mutate({ id: order.id }); }}><Trash2 className="h-3.5 w-3.5" /><span className="min-[420px]:sr-only">Excluir</span></Button>
+                    </div>
+                  </article>
+                ))}
+                {(effectiveOrders || []).length === 0 && <div className="p-8 text-center text-slate-400">Nenhuma ordem de serviço cadastrada ainda.</div>}
+              </div>
+              <div className="hidden overflow-x-auto md:block">
+              <table className="w-full min-w-[760px] text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-100 border-b border-slate-200 text-slate-700 font-bold uppercase tracking-wider">
                     <th className="p-3">Nº OS</th>
@@ -1072,6 +1096,7 @@ export default function Home() {
                   )}
                 </tbody>
               </table>
+              </div>
             </div>
           </div>
         )}
