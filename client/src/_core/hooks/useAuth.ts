@@ -79,7 +79,10 @@ export function useAuth(options?: UseAuthOptions) {
 
   const state = useMemo(() => {
     const user = meQuery.data ?? (isOffline ? cachedUser : null);
-    const authReady = isOffline || meQuery.isFetched;
+    // A sessão própria em cache é suficiente para abrir a aplicação enquanto
+    // a confirmação online ocorre em segundo plano. Isso evita tela vazia ou
+    // spinner prolongado em previews móveis e mantém o acesso offline-first.
+    const authReady = isOffline || Boolean(cachedUser) || meQuery.isFetched;
     return {
       user,
       // Mesmo com usuário em cache, não mostre LoginPage enquanto a sessão
