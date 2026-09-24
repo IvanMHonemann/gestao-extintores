@@ -33,7 +33,6 @@ function RootRoute() {
   const { user, loading } = useAuth();
   if (loading) return <LoadingScreen />;
   if (!user || user.role === "oauth_user") return <LoginPage />;
-  if (user.role === "platform_admin") return <AdminUsersPage />;
   return <Home />;
 }
 
