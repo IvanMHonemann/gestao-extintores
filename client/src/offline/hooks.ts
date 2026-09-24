@@ -28,7 +28,20 @@ export function useInstallPrompt() {
       setIsInstalling(false);
       setInstallProgress(100);
       setDeferredPrompt(null);
-      window.setTimeout(() => window.location.replace("/"), 700);
+      // O evento é disparado pelo navegador após a instalação. Reabrimos a
+      // rota inicial imediatamente; em navegadores que permitem foco de
+      // janela, reutilizamos a janela do app em vez de deixar o usuário na
+      // tela de instalação.
+      window.setTimeout(() => {
+        const appUrl = `${window.location.origin}/`;
+        const appWindow = window.open(appUrl, "gestao-extintores-app");
+        if (appWindow) {
+          appWindow.focus();
+          window.close();
+        } else {
+          window.location.replace(appUrl);
+        }
+      }, 250);
     };
     window.addEventListener("appinstalled", installed);
     return () => window.removeEventListener("appinstalled", installed);

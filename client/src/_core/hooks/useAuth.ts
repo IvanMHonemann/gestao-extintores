@@ -79,13 +79,17 @@ export function useAuth(options?: UseAuthOptions) {
 
   const state = useMemo(() => {
     const user = meQuery.data ?? (isOffline ? cachedUser : null);
+    const authReady = isOffline || meQuery.isFetched;
     return {
       user,
-      loading: (meQuery.isLoading && !isOffline && !cachedUser) || logoutMutation.isPending,
+      // Mesmo com usuário em cache, não mostre LoginPage enquanto a sessão
+      // própria online ainda está sendo confirmada. Isso evita a piscada no
+      // primeiro carregamento e ao atualizar a página.
+      loading: !authReady || logoutMutation.isPending,
       error: meQuery.error ?? logoutMutation.error ?? null,
       isAuthenticated: Boolean(user),
     };
-  }, [cachedUser, isOffline, logoutMutation.error, logoutMutation.isPending, meQuery.data, meQuery.error, meQuery.isLoading]);
+  }, [cachedUser, isOffline, logoutMutation.error, logoutMutation.isPending, meQuery.data, meQuery.error, meQuery.isFetched]);
 
   useEffect(() => {
     if (!redirectOnUnauthenticated || isOffline || state.loading || state.user || typeof window === "undefined") return;
