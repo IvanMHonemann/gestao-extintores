@@ -9,7 +9,10 @@ import viteConfig from "../../vite.config";
 export async function setupVite(app: Express, server: Server) {
   const serverOptions = {
     middlewareMode: true,
-    hmr: { server },
+    // A prévia é acessada por HTTPS público, mas o Vite tenta anunciar o
+    // WebSocket interno localhost:5173 em alguns celulares. HMR não é
+    // necessário para o usuário final e esse anúncio abre o painel de erro.
+    hmr: false,
     allowedHosts: true as const,
   };
 
@@ -39,7 +42,10 @@ export async function setupVite(app: Express, server: Server) {
         `src="/src/main.tsx?v=${nanoid()}"`
       );
       const page = await vite.transformIndexHtml(url, template);
-      res.status(200).set({ "Content-Type": "text/html" }).end(page);
+      // O preview público não precisa do cliente HMR. Remova-o para que
+      // celulares não tentem abrir localhost:5173 e exibam o overlay de erro.
+      const pageWithoutHmr = page.replace(/<script[^>]+src="\/\@vite\/client"[^>]*><\/script>/g, "");
+      res.status(200).set({ "Content-Type": "text/html" }).end(pageWithoutHmr);
     } catch (e) {
       vite.ssrFixStacktrace(e as Error);
       next(e);
