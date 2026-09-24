@@ -3,7 +3,7 @@ import { appRouter } from "./routers";
 
 const now = new Date();
 
-function user(id: number, role: "user" | "admin" = "user") {
+function user(id: number, role: "company_admin" | "operator" = "company_admin") {
   return {
     id: -id,
     openId: `member:${id}`,
@@ -11,6 +11,7 @@ function user(id: number, role: "user" | "admin" = "user") {
     email: `tenant-${id}@test.local`,
     loginMethod: "password",
     role,
+    companyId: id,
     createdAt: now,
     updatedAt: now,
     lastSignedIn: now,
@@ -24,6 +25,7 @@ function caller(accountId?: number) {
     accountId,
     memberAccountId: accountId,
     isMember: Boolean(accountId),
+    isPlatformAdmin: false,
     req: { protocol: "https", headers: {} } as any,
     res: { clearCookie: () => {}, cookie: () => {} } as any,
   });

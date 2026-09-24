@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 import { appRouter } from "./routers";
 
 const adminUser = {
-  id: 1,
-  openId: "test-admin",
+  id: -1,
+  openId: "member:1",
   name: "Administrador de Teste",
   email: "admin@test.local",
   loginMethod: "test",
-  role: "admin" as const,
+  role: "company_admin" as const,
+  companyId: 1,
   createdAt: new Date(),
   updatedAt: new Date(),
   lastSignedIn: new Date(),
@@ -19,6 +20,7 @@ function createCaller() {
     accountId: 1,
     memberAccountId: 1,
     isMember: true,
+    isPlatformAdmin: false,
     req: { protocol: "https", headers: {} } as any,
     res: { clearCookie: () => {}, cookie: () => {} } as any,
   });

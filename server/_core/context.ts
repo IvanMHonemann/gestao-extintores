@@ -1,64 +1,77 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
-import type { User } from "../../drizzle/schema";
 import { parse as parseCookie } from "cookie";
 import { COOKIE_NAME, MEMBER_COOKIE_NAME } from "@shared/const";
+import type { AuthenticatedUser } from "@shared/auth";
 import { sdk } from "./sdk";
-import { getMemberBySessionToken } from "../memberAuth";
+import { getMemberBySessionToken, getPlatformAdminBySessionToken } from "../memberAuth";
 
 export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
   res: CreateExpressContextOptions["res"];
-  user: User | null;
+  user: AuthenticatedUser | null;
   accountId?: number;
   memberAccountId?: number;
+  platformAdminId?: number;
   isMember?: boolean;
+  isPlatformAdmin?: boolean;
 };
 
-export async function createContext(
-  opts: CreateExpressContextOptions
-): Promise<TrpcContext> {
-  let user: User | null = null;
+export async function createContext(opts: CreateExpressContextOptions): Promise<TrpcContext> {
+  let user: AuthenticatedUser | null = null;
   let accountId: number | undefined;
   let memberAccountId: number | undefined;
+  let platformAdminId: number | undefined;
   let isMember = false;
+  let isPlatformAdmin = false;
 
   const cookies = parseCookie(opts.req.headers.cookie ?? "");
-  const memberAccount = await getMemberBySessionToken(cookies[MEMBER_COOKIE_NAME] ?? "");
-
-  if (memberAccount) {
+  const sessionToken = cookies[MEMBER_COOKIE_NAME] ?? "";
+  const platformAdmin = await getPlatformAdminBySessionToken(sessionToken);
+  if (platformAdmin) {
+    platformAdminId = platformAdmin.id;
+    isPlatformAdmin = true;
     user = {
-      id: -memberAccount.id,
-      openId: `member:${memberAccount.id}`,
-      name: memberAccount.userName,
-      email: memberAccount.email,
+      id: platformAdmin.id,
+      openId: `platform:${platformAdmin.id}`,
+      name: platformAdmin.userName,
+      email: platformAdmin.email,
       loginMethod: "password",
-      role: memberAccount.role,
-      createdAt: memberAccount.createdAt,
-      updatedAt: memberAccount.updatedAt,
-      lastSignedIn: memberAccount.createdAt,
+      role: "platform_admin",
+      createdAt: platformAdmin.createdAt,
+      updatedAt: platformAdmin.updatedAt,
+      lastSignedIn: platformAdmin.createdAt,
     };
-    memberAccountId = memberAccount.id;
-    // Administradores também possuem um tenant próprio para que nenhuma
-    // operação comercial dependa de accountId ausente ou caia em escopo global.
-    accountId = memberAccount.id;
-    isMember = true;
+  } else {
+    const memberAccount = await getMemberBySessionToken(sessionToken);
+    if (memberAccount) {
+      memberAccountId = memberAccount.id;
+      accountId = memberAccount.companyId;
+      isMember = true;
+      user = {
+        id: -memberAccount.id,
+        openId: `member:${memberAccount.id}`,
+        name: memberAccount.userName,
+        email: memberAccount.email,
+        loginMethod: "password",
+        role: memberAccount.role,
+        companyId: memberAccount.companyId,
+        createdAt: memberAccount.createdAt,
+        updatedAt: memberAccount.updatedAt,
+        lastSignedIn: memberAccount.createdAt,
+      };
+    }
   }
 
   if (!user) {
     try {
-      user = await sdk.authenticateRequest(opts.req);
-    } catch (error) {
-      // Authentication is optional for public procedures.
+      const oauthUser = await sdk.authenticateRequest(opts.req);
+      user = { ...oauthUser, role: oauthUser.role, companyId: undefined };
+      isPlatformAdmin = oauthUser.role === "platform_admin";
+      platformAdminId = isPlatformAdmin ? oauthUser.id : undefined;
+    } catch {
       user = null;
     }
   }
 
-  return {
-    req: opts.req,
-    res: opts.res,
-    user,
-    accountId,
-    memberAccountId,
-    isMember,
-  };
+  return { req: opts.req, res: opts.res, user, accountId, memberAccountId, platformAdminId, isMember, isPlatformAdmin };
 }

@@ -1,13 +1,13 @@
 import { boolean, date, decimal, index, int, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
-/** Usuários administrativos do provedor de identidade */
+/** Identidades OAuth do provedor; somente a identidade do proprietário pode ser platform_admin. */
 export const users = mysqlTable("users", {
   id: int("id").autoincrement().primaryKey(),
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
-  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+  role: mysqlEnum("role", ["oauth_user", "platform_admin"]).default("oauth_user").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -16,41 +16,88 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
-/** Empresas/usuários comerciais criados pelo administrador */
-export const memberAccounts = mysqlTable("member_accounts", {
+/** Empresas clientes; esta entidade representa o tenant dos dados comerciais. */
+export const companies = mysqlTable("companies", {
   id: int("id").autoincrement().primaryKey(),
-  companyName: varchar("companyName", { length: 255 }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  active: boolean("active").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  activeIdx: index("companies_active_idx").on(table.active),
+  nameIdx: index("companies_name_idx").on(table.name),
+}));
+
+export type Company = typeof companies.$inferSelect;
+export type InsertCompany = typeof companies.$inferInsert;
+
+/** Administradores globais da plataforma. Nunca possuem companyId/accountId. */
+export const platformAdmins = mysqlTable("platform_admins", {
+  id: int("id").autoincrement().primaryKey(),
   userName: varchar("userName", { length: 255 }).notNull(),
   email: varchar("email", { length: 320 }).notNull().unique(),
   passwordHash: varchar("passwordHash", { length: 255 }).notNull(),
   recoveryCodeHash: varchar("recoveryCodeHash", { length: 255 }),
-  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
   active: boolean("active").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+export type PlatformAdmin = typeof platformAdmins.$inferSelect;
+export type InsertPlatformAdmin = typeof platformAdmins.$inferInsert;
+
+/** Usuários que pertencem a uma empresa. O papel nunca pode ser platform_admin. */
+export const memberAccounts = mysqlTable("member_accounts", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull().references(() => companies.id, { onDelete: "restrict" }),
+  userName: varchar("userName", { length: 255 }).notNull(),
+  email: varchar("email", { length: 320 }).notNull().unique(),
+  passwordHash: varchar("passwordHash", { length: 255 }).notNull(),
+  recoveryCodeHash: varchar("recoveryCodeHash", { length: 255 }),
+  role: mysqlEnum("role", ["company_admin", "operator", "technician"]).default("operator").notNull(),
+  active: boolean("active").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  companyIdx: index("member_accounts_company_idx").on(table.companyId),
+  companyRoleIdx: index("member_accounts_company_role_idx").on(table.companyId, table.role),
+}));
+
 export type MemberAccount = typeof memberAccounts.$inferSelect;
 export type InsertMemberAccount = typeof memberAccounts.$inferInsert;
 
-/** Sessões próprias dos usuários comerciais */
+/** Sessões de usuários de empresas. */
 export const memberSessions = mysqlTable("member_sessions", {
   id: int("id").autoincrement().primaryKey(),
-  accountId: int("accountId").notNull().references(() => memberAccounts.id, { onDelete: "cascade" }),
+  memberAccountId: int("memberAccountId").notNull().references(() => memberAccounts.id, { onDelete: "cascade" }),
   tokenHash: varchar("tokenHash", { length: 128 }).notNull().unique(),
   expiresAt: timestamp("expiresAt").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => ({
-  accountExpiryIdx: index("member_sessions_account_expiry_idx").on(table.accountId, table.expiresAt),
+  accountExpiryIdx: index("member_sessions_account_expiry_idx").on(table.memberAccountId, table.expiresAt),
 }));
 
 export type MemberSession = typeof memberSessions.$inferSelect;
 export type InsertMemberSession = typeof memberSessions.$inferInsert;
 
-/** Clientes pertencem obrigatoriamente a uma conta comercial */
+/** Sessões do administrador da plataforma. Nunca apontam para uma empresa. */
+export const platformSessions = mysqlTable("platform_sessions", {
+  id: int("id").autoincrement().primaryKey(),
+  platformAdminId: int("platformAdminId").notNull().references(() => platformAdmins.id, { onDelete: "cascade" }),
+  tokenHash: varchar("tokenHash", { length: 128 }).notNull().unique(),
+  expiresAt: timestamp("expiresAt").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({
+  adminExpiryIdx: index("platform_sessions_admin_expiry_idx").on(table.platformAdminId, table.expiresAt),
+}));
+
+export type PlatformSession = typeof platformSessions.$inferSelect;
+export type InsertPlatformSession = typeof platformSessions.$inferInsert;
+
+/** Clientes pertencem obrigatoriamente a uma empresa, nunca à plataforma. */
 export const clients = mysqlTable("clients", {
   id: int("id").autoincrement().primaryKey(),
-  accountId: int("accountId").notNull().references(() => memberAccounts.id, { onDelete: "restrict" }),
+  accountId: int("accountId").notNull().references(() => companies.id, { onDelete: "restrict" }),
   companyName: varchar("companyName", { length: 255 }).notNull(),
   cnpj: varchar("cnpj", { length: 30 }),
   address: text("address"),
@@ -73,7 +120,7 @@ export type InsertClient = typeof clients.$inferInsert;
 
 export const extinguishers = mysqlTable("extinguishers", {
   id: int("id").autoincrement().primaryKey(),
-  accountId: int("accountId").notNull().references(() => memberAccounts.id, { onDelete: "restrict" }),
+  accountId: int("accountId").notNull().references(() => companies.id, { onDelete: "restrict" }),
   clientId: int("clientId").notNull().references(() => clients.id, { onDelete: "cascade" }),
   typeModel: varchar("typeModel", { length: 100 }).notNull(),
   capacity: varchar("capacity", { length: 50 }),
@@ -96,7 +143,7 @@ export type InsertExtinguisher = typeof extinguishers.$inferInsert;
 
 export const serviceOrders = mysqlTable("service_orders", {
   id: int("id").autoincrement().primaryKey(),
-  accountId: int("accountId").notNull().references(() => memberAccounts.id, { onDelete: "restrict" }),
+  accountId: int("accountId").notNull().references(() => companies.id, { onDelete: "restrict" }),
   orderNumber: int("orderNumber").notNull(),
   orderDate: date("orderDate").notNull(),
   clientId: int("clientId").notNull().references(() => clients.id, { onDelete: "restrict" }),
@@ -142,7 +189,7 @@ export type InsertServiceOrderItem = typeof serviceOrderItems.$inferInsert;
 
 export const systemSettings = mysqlTable("system_settings", {
   id: int("id").autoincrement().primaryKey(),
-  accountId: int("accountId").notNull().references(() => memberAccounts.id, { onDelete: "cascade" }),
+  accountId: int("accountId").notNull().references(() => companies.id, { onDelete: "cascade" }),
   settingKey: varchar("settingKey", { length: 100 }).notNull(),
   settingValue: text("settingValue").notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

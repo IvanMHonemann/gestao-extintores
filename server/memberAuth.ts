@@ -1,12 +1,13 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { and, eq, gt, lte } from "drizzle-orm";
-import { memberAccounts, memberSessions } from "../drizzle/schema";
+import { companies, memberAccounts, memberSessions, platformAdmins, platformSessions } from "../drizzle/schema";
 import { getDb } from "./db";
 
 const SESSION_DAYS = 30;
 const RATE_WINDOW_MS = 15 * 60 * 1000;
 const RATE_LIMIT = 5;
 const BLOCK_MS = 15 * 60 * 1000;
+
 type RateEntry = { failures: number; windowStartedAt: number; blockedUntil: number };
 const authRate = new Map<string, RateEntry>();
 
@@ -47,122 +48,52 @@ export function verifyPassword(password: string, encoded: string) {
   return expected.length === derived.length && timingSafeEqual(expected, derived);
 }
 
-export async function changeMemberPassword(accountId: number, currentPassword: string, newPassword: string) {
-  const key = `change:${accountId}`;
-  if (isRateLimited(key)) return false;
-  const db = await getDb();
-  if (!db) throw new Error("Database not connected");
-  const result = await db.select().from(memberAccounts).where(eq(memberAccounts.id, accountId)).limit(1);
-  const account = result[0];
-  if (!account || !verifyPassword(currentPassword, account.passwordHash)) {
-    registerFailure(key);
-    return false;
-  }
-  clearRateLimit(key);
-  await db.update(memberAccounts).set({ passwordHash: hashPassword(newPassword) }).where(eq(memberAccounts.id, accountId));
-  await db.delete(memberSessions).where(eq(memberSessions.accountId, accountId));
-  return true;
-}
-
-export async function resetMemberPassword(accountId: number, newPassword: string) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not connected");
-  await db.update(memberAccounts).set({ passwordHash: hashPassword(newPassword) }).where(eq(memberAccounts.id, accountId));
-  await db.delete(memberSessions).where(eq(memberSessions.accountId, accountId));
-  clearRateLimit(`login:${accountId}`);
-}
-
-export async function setRecoveryCode(accountId: number, recoveryCode: string) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not connected");
-  await db.update(memberAccounts).set({ recoveryCodeHash: hashPassword(recoveryCode) }).where(eq(memberAccounts.id, accountId));
-}
-
-export async function recoverMemberPassword(email: string, recoveryCode: string, newPassword: string) {
-  const normalizedEmail = email.toLowerCase();
-  const key = `recover:${normalizedEmail}`;
-  if (isRateLimited(key)) return false;
-  const db = await getDb();
-  if (!db) throw new Error("Database not connected");
-  const result = await db.select().from(memberAccounts).where(eq(memberAccounts.email, normalizedEmail)).limit(1);
-  const account = result[0];
-  if (!account?.active || !account.recoveryCodeHash || !verifyPassword(recoveryCode, account.recoveryCodeHash)) {
-    registerFailure(key);
-    return false;
-  }
-  const nextRecoveryCode = `EXT-${randomBytes(12).toString("base64url")}`;
-  await db.update(memberAccounts).set({ passwordHash: hashPassword(newPassword), recoveryCodeHash: hashPassword(nextRecoveryCode) }).where(eq(memberAccounts.id, account.id));
-  await db.delete(memberSessions).where(eq(memberSessions.accountId, account.id));
-  clearRateLimit(key);
-  return { recoveryCode: nextRecoveryCode };
-}
-
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export async function authenticateMember(email: string, password: string) {
-  const normalizedEmail = email.toLowerCase();
+export type LoginPrincipal =
+  | { kind: "platform"; account: typeof platformAdmins.$inferSelect }
+  | { kind: "company"; account: typeof memberAccounts.$inferSelect };
+
+export async function authenticateMember(email: string, password: string): Promise<LoginPrincipal | null> {
+  const normalizedEmail = email.trim().toLowerCase();
   const key = `login:${normalizedEmail}`;
   if (isRateLimited(key)) return null;
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  const result = await db.select().from(memberAccounts).where(eq(memberAccounts.email, normalizedEmail)).limit(1);
-  const account = result[0];
-  if (!account || !account.active || !verifyPassword(password, account.passwordHash)) {
-    registerFailure(key);
-    return null;
+
+  const platformResult = await db.select().from(platformAdmins).where(eq(platformAdmins.email, normalizedEmail)).limit(1);
+  const platform = platformResult[0];
+  if (platform && platform.active && verifyPassword(password, platform.passwordHash)) {
+    clearRateLimit(key);
+    return { kind: "platform", account: platform };
   }
-  clearRateLimit(key);
-  return account;
+
+  const memberResult = await db.select().from(memberAccounts).where(eq(memberAccounts.email, normalizedEmail)).limit(1);
+  const member = memberResult[0];
+  if (member && member.active && verifyPassword(password, member.passwordHash)) {
+    clearRateLimit(key);
+    return { kind: "company", account: member };
+  }
+
+  registerFailure(key);
+  return null;
 }
 
-export async function createMemberAccount(input: { companyName: string; userName: string; email: string; password: string }, role: "user" | "admin" = "user") {
+export async function createSession(principal: LoginPrincipal) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  const recoveryCode = `EXT-${randomBytes(12).toString("base64url")}`;
-  const result = await db.insert(memberAccounts).values({
-    companyName: input.companyName,
-    userName: input.userName,
-    email: input.email.toLowerCase(),
-    passwordHash: hashPassword(input.password),
-    recoveryCodeHash: hashPassword(recoveryCode),
-    role,
-  });
-  return { id: Number(result[0].insertId), recoveryCode };
-}
-
-export async function listMemberAccounts() {
-  const db = await getDb();
-  if (!db) return [];
-  return await db.select({
-    id: memberAccounts.id,
-    companyName: memberAccounts.companyName,
-    userName: memberAccounts.userName,
-    email: memberAccounts.email,
-    role: memberAccounts.role,
-    active: memberAccounts.active,
-    createdAt: memberAccounts.createdAt,
-  }).from(memberAccounts).orderBy(memberAccounts.companyName);
-}
-
-export async function setMemberActive(id: number, active: boolean) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not connected");
-  const account = await db.select({ role: memberAccounts.role }).from(memberAccounts).where(eq(memberAccounts.id, id)).limit(1);
-  if (account[0]?.role === "admin" && !active) throw new Error("A conta administrativa não pode ser bloqueada.");
-  await db.update(memberAccounts).set({ active }).where(eq(memberAccounts.id, id));
-  if (!active) await db.delete(memberSessions).where(eq(memberSessions.accountId, id));
-}
-
-export async function createMemberSession(accountId: number) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not connected");
-  await db.delete(memberSessions).where(and(eq(memberSessions.accountId, accountId), lte(memberSessions.expiresAt, new Date())));
   const rawToken = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
-  await db.insert(memberSessions).values({ accountId, tokenHash: hashToken(rawToken), expiresAt });
-  return { rawToken, expiresAt };
+  if (principal.kind === "platform") {
+    await db.delete(platformSessions).where(and(eq(platformSessions.platformAdminId, principal.account.id), lte(platformSessions.expiresAt, new Date())));
+    await db.insert(platformSessions).values({ platformAdminId: principal.account.id, tokenHash: hashToken(rawToken), expiresAt });
+    return { rawToken, expiresAt, kind: "platform" as const };
+  }
+  await db.delete(memberSessions).where(and(eq(memberSessions.memberAccountId, principal.account.id), lte(memberSessions.expiresAt, new Date())));
+  await db.insert(memberSessions).values({ memberAccountId: principal.account.id, tokenHash: hashToken(rawToken), expiresAt });
+  return { rawToken, expiresAt, kind: "company" as const };
 }
 
 export async function getMemberBySessionToken(rawToken: string) {
@@ -170,16 +101,171 @@ export async function getMemberBySessionToken(rawToken: string) {
   if (!db || !rawToken) return null;
   const now = new Date();
   const result = await db.select({ account: memberAccounts, session: memberSessions }).from(memberSessions)
-    .innerJoin(memberAccounts, eq(memberSessions.accountId, memberAccounts.id))
+    .innerJoin(memberAccounts, eq(memberSessions.memberAccountId, memberAccounts.id))
     .where(and(eq(memberSessions.tokenHash, hashToken(rawToken)), gt(memberSessions.expiresAt, now), eq(memberAccounts.active, true)))
     .limit(1);
-  // Limpeza oportunística evita crescimento indefinido de sessões expiradas.
   await db.delete(memberSessions).where(lte(memberSessions.expiresAt, now));
   return result[0]?.account ?? null;
 }
 
-export async function revokeMemberSession(rawToken: string) {
+export async function getPlatformAdminBySessionToken(rawToken: string) {
+  const db = await getDb();
+  if (!db || !rawToken) return null;
+  const now = new Date();
+  const result = await db.select({ account: platformAdmins, session: platformSessions }).from(platformSessions)
+    .innerJoin(platformAdmins, eq(platformSessions.platformAdminId, platformAdmins.id))
+    .where(and(eq(platformSessions.tokenHash, hashToken(rawToken)), gt(platformSessions.expiresAt, now), eq(platformAdmins.active, true)))
+    .limit(1);
+  await db.delete(platformSessions).where(lte(platformSessions.expiresAt, now));
+  return result[0]?.account ?? null;
+}
+
+export async function revokeSessions(rawToken: string) {
   const db = await getDb();
   if (!db || !rawToken) return;
-  await db.delete(memberSessions).where(eq(memberSessions.tokenHash, hashToken(rawToken)));
+  const tokenHash = hashToken(rawToken);
+  await db.delete(memberSessions).where(eq(memberSessions.tokenHash, tokenHash));
+  await db.delete(platformSessions).where(eq(platformSessions.tokenHash, tokenHash));
+}
+
+export async function changeMemberPassword(memberAccountId: number, currentPassword: string, newPassword: string) {
+  const key = `change:member:${memberAccountId}`;
+  if (isRateLimited(key)) return false;
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const result = await db.select().from(memberAccounts).where(eq(memberAccounts.id, memberAccountId)).limit(1);
+  const account = result[0];
+  if (!account || !verifyPassword(currentPassword, account.passwordHash)) {
+    registerFailure(key);
+    return false;
+  }
+  clearRateLimit(key);
+  await db.update(memberAccounts).set({ passwordHash: hashPassword(newPassword) }).where(eq(memberAccounts.id, memberAccountId));
+  await db.delete(memberSessions).where(eq(memberSessions.memberAccountId, memberAccountId));
+  return true;
+}
+
+export async function changePlatformPassword(platformAdminId: number, currentPassword: string, newPassword: string) {
+  const key = `change:platform:${platformAdminId}`;
+  if (isRateLimited(key)) return false;
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const result = await db.select().from(platformAdmins).where(eq(platformAdmins.id, platformAdminId)).limit(1);
+  const account = result[0];
+  if (!account || !verifyPassword(currentPassword, account.passwordHash)) {
+    registerFailure(key);
+    return false;
+  }
+  clearRateLimit(key);
+  await db.update(platformAdmins).set({ passwordHash: hashPassword(newPassword) }).where(eq(platformAdmins.id, platformAdminId));
+  await db.delete(platformSessions).where(eq(platformSessions.platformAdminId, platformAdminId));
+  return true;
+}
+
+export async function resetMemberPassword(memberAccountId: number, newPassword: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  await db.update(memberAccounts).set({ passwordHash: hashPassword(newPassword) }).where(eq(memberAccounts.id, memberAccountId));
+  await db.delete(memberSessions).where(eq(memberSessions.memberAccountId, memberAccountId));
+  clearRateLimit(`login:${memberAccountId}`);
+}
+
+export async function recoverPassword(email: string, recoveryCode: string, newPassword: string) {
+  const normalizedEmail = email.trim().toLowerCase();
+  const key = `recover:${normalizedEmail}`;
+  if (isRateLimited(key)) return false;
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const nextRecoveryCode = `EXT-${randomBytes(12).toString("base64url")}`;
+
+  const platformResult = await db.select().from(platformAdmins).where(eq(platformAdmins.email, normalizedEmail)).limit(1);
+  const platform = platformResult[0];
+  if (platform?.active && platform.recoveryCodeHash && verifyPassword(recoveryCode, platform.recoveryCodeHash)) {
+    await db.update(platformAdmins).set({ passwordHash: hashPassword(newPassword), recoveryCodeHash: hashPassword(nextRecoveryCode) }).where(eq(platformAdmins.id, platform.id));
+    await db.delete(platformSessions).where(eq(platformSessions.platformAdminId, platform.id));
+    clearRateLimit(key);
+    return { recoveryCode: nextRecoveryCode, kind: "platform" as const };
+  }
+
+  const memberResult = await db.select().from(memberAccounts).where(eq(memberAccounts.email, normalizedEmail)).limit(1);
+  const member = memberResult[0];
+  if (member?.active && member.recoveryCodeHash && verifyPassword(recoveryCode, member.recoveryCodeHash)) {
+    await db.update(memberAccounts).set({ passwordHash: hashPassword(newPassword), recoveryCodeHash: hashPassword(nextRecoveryCode) }).where(eq(memberAccounts.id, member.id));
+    await db.delete(memberSessions).where(eq(memberSessions.memberAccountId, member.id));
+    clearRateLimit(key);
+    return { recoveryCode: nextRecoveryCode, kind: "company" as const };
+  }
+
+  registerFailure(key);
+  return false;
+}
+
+export async function createCompanyWithAdmin(input: { companyName: string; userName: string; email: string; password: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const recoveryCode = `EXT-${randomBytes(12).toString("base64url")}`;
+  const normalizedEmail = input.email.trim().toLowerCase();
+  return await db.transaction(async (tx) => {
+    const companyResult = await tx.insert(companies).values({ name: input.companyName.trim(), active: true });
+    const companyId = Number(companyResult[0].insertId);
+    const accountResult = await tx.insert(memberAccounts).values({
+      companyId,
+      userName: input.userName.trim(),
+      email: normalizedEmail,
+      passwordHash: hashPassword(input.password),
+      recoveryCodeHash: hashPassword(recoveryCode),
+      role: "company_admin",
+      active: true,
+    });
+    return { companyId, accountId: Number(accountResult[0].insertId), recoveryCode };
+  });
+}
+
+export async function createCompanyUser(input: { companyId: number; userName: string; email: string; password: string; role: "operator" | "technician" | "company_admin" }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const recoveryCode = `EXT-${randomBytes(12).toString("base64url")}`;
+  const result = await db.insert(memberAccounts).values({
+    companyId: input.companyId,
+    userName: input.userName.trim(),
+    email: input.email.trim().toLowerCase(),
+    passwordHash: hashPassword(input.password),
+    recoveryCodeHash: hashPassword(recoveryCode),
+    role: input.role,
+    active: true,
+  });
+  return { accountId: Number(result[0].insertId), recoveryCode };
+}
+
+export async function listMemberAccounts(companyId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const query = db.select({ id: memberAccounts.id, companyId: memberAccounts.companyId, userName: memberAccounts.userName, email: memberAccounts.email, role: memberAccounts.role, active: memberAccounts.active, createdAt: memberAccounts.createdAt }).from(memberAccounts);
+  return companyId ? await query.where(eq(memberAccounts.companyId, companyId)) : await query;
+}
+
+export async function updateCompanyUser(accountId: number, companyId: number, data: { userName?: string; email?: string; role?: "operator" | "technician" | "company_admin" }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  await db.update(memberAccounts).set({ ...data, email: data.email?.trim().toLowerCase() }).where(and(eq(memberAccounts.id, accountId), eq(memberAccounts.companyId, companyId)));
+}
+
+export async function setMemberActive(id: number, active: boolean, companyId?: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const conditions = companyId === undefined ? eq(memberAccounts.id, id) : and(eq(memberAccounts.id, id), eq(memberAccounts.companyId, companyId));
+  const account = await db.select({ role: memberAccounts.role }).from(memberAccounts).where(conditions).limit(1);
+  if (account[0]?.role === "company_admin" && !active) {
+    const adminCount = await db.select({ id: memberAccounts.id }).from(memberAccounts).where(and(eq(memberAccounts.companyId, companyId ?? 0), eq(memberAccounts.role, "company_admin"), eq(memberAccounts.active, true))).limit(2);
+    if (adminCount.length <= 1) throw new Error("A empresa precisa manter pelo menos um administrador ativo.");
+  }
+  await db.update(memberAccounts).set({ active }).where(conditions);
+  if (!active) await db.delete(memberSessions).where(eq(memberSessions.memberAccountId, id));
+}
+
+export async function setPlatformAdminActive(id: number, active: boolean) {
+  if (!active) throw new Error("A conta do administrador da plataforma não pode ser desativada nesta operação.");
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  await db.update(platformAdmins).set({ active }).where(eq(platformAdmins.id, id));
 }

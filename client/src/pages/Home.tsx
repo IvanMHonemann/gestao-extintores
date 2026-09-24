@@ -48,6 +48,7 @@ export default function Home() {
   const { user, logout } = useAuth();
   const [, navigate] = useLocation();
   const tenantKey = user && user.id < 0 ? String(Math.abs(user.id)) : null;
+  const isCompanyAdmin = user?.role === "company_admin";
   const [activeTab, setActiveTab] = useState<"dashboard" | "clients" | "extinguishers" | "orders" | "alerts">("dashboard");
   const [selectedCity, setSelectedCity] = useState<string>("TODAS");
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -431,7 +432,7 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3 justify-between sm:justify-end">
-            {user?.role === "admin" && (
+            {isCompanyAdmin && (
               <Button
                 variant="outline"
                 size="sm"
@@ -442,8 +443,8 @@ export default function Home() {
                 <span className="hidden sm:inline">Usuários</span>
               </Button>
             )}
-            {/* Botão Configurar Dias de Alerta — somente administrador */}
-            {user?.role === "admin" && (
+            {/* Botão Configurar Dias de Alerta — somente administrador da empresa */}
+            {isCompanyAdmin && (
               <Button
                 variant="outline"
                 size="sm"
@@ -498,8 +499,8 @@ export default function Home() {
           <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Ações rápidas</p>
           <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setIsClientModalOpen(true); setIsSidebarOpen(false); }}><Plus className="h-4 w-4" /> Cadastrar Cliente</Button>
           <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setReturnToOrderAfterClient(false); setIsOrderModalOpen(true); setIsSidebarOpen(false); }}><FileText className="h-4 w-4" /> Nova Ordem de Serviço</Button>
-          {user?.role === "admin" && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/admin/usuarios"); setIsSidebarOpen(false); }}><Users className="h-4 w-4" /> Usuários</Button>}
-          {user?.role === "admin" && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setConfigDays(offline.alertDays || 30); setIsSettingsModalOpen(true); setIsSidebarOpen(false); }}><Settings className="h-4 w-4" /> Antecedência: {offline.alertDays || 30} dias</Button>}
+          {isCompanyAdmin && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/admin/usuarios"); setIsSidebarOpen(false); }}><Users className="h-4 w-4" /> Usuários</Button>}
+          {isCompanyAdmin && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setConfigDays(offline.alertDays || 30); setIsSettingsModalOpen(true); setIsSidebarOpen(false); }}><Settings className="h-4 w-4" /> Antecedência: {offline.alertDays || 30} dias</Button>}
           <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/backup"); setIsSidebarOpen(false); }}><HardDrive className="h-4 w-4" /> Backup e Restauração</Button>
         </div>
         <div className="border-t border-slate-800 p-4">

@@ -1,7 +1,8 @@
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   clients,
+  companies,
   extinguishers,
   serviceOrders,
   serviceOrderItems,
@@ -52,7 +53,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     updateSet.lastSignedIn = user.lastSignedIn;
   }
   if (user.role !== undefined || user.openId === ENV.ownerOpenId) {
-    values.role = user.role ?? "admin";
+    values.role = user.openId === ENV.ownerOpenId ? "platform_admin" : (user.role ?? "oauth_user");
     updateSet.role = values.role;
   }
   if (!values.lastSignedIn) values.lastSignedIn = new Date();
@@ -65,6 +66,52 @@ export async function getUserByOpenId(openId: string) {
   if (!db) return undefined;
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   return result[0];
+}
+
+/* Plataforma */
+export async function listCompanies() {
+  const db = await getDb();
+  if (!db) return [];
+  return await db.select().from(companies).orderBy(companies.name);
+}
+
+export async function getCompanyById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(companies).where(eq(companies.id, id)).limit(1);
+  return result[0];
+}
+
+export async function createCompany(name: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const result = await db.insert(companies).values({ name: name.trim(), active: true });
+  return Number(result[0].insertId);
+}
+
+export async function updateCompany(id: number, data: { name?: string; active?: boolean }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  await db.update(companies).set({ ...data, name: data.name?.trim() }).where(eq(companies.id, id));
+}
+
+export async function getPlatformClients(companyId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return companyId ? await db.select().from(clients).where(eq(clients.accountId, companyId)).orderBy(desc(clients.createdAt)) : await db.select().from(clients).orderBy(desc(clients.createdAt));
+}
+
+export async function getPlatformExtinguishers(companyId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return companyId ? await db.select().from(extinguishers).where(eq(extinguishers.accountId, companyId)).orderBy(extinguishers.expirationDate) : await db.select().from(extinguishers).orderBy(extinguishers.expirationDate);
+}
+
+export async function getPlatformOrders(companyId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const query = db.select({ order: serviceOrders, client: clients }).from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id));
+  return companyId ? await query.where(eq(serviceOrders.accountId, companyId)).orderBy(desc(serviceOrders.createdAt)) : await query.orderBy(desc(serviceOrders.createdAt));
 }
 
 /* Clientes */
@@ -135,9 +182,7 @@ export async function getExtinguishersByClient(clientId: number, accountId: numb
   const db = await getDb();
   if (!db) return [];
   if (!(await getClientById(clientId, tenant))) return [];
-  return await db.select().from(extinguishers)
-    .where(and(eq(extinguishers.clientId, clientId), eq(extinguishers.accountId, tenant)))
-    .orderBy(extinguishers.expirationDate);
+  return await db.select().from(extinguishers).where(and(eq(extinguishers.clientId, clientId), eq(extinguishers.accountId, tenant))).orderBy(extinguishers.expirationDate);
 }
 
 export async function createExtinguisher(data: InsertExtinguisher, accountId: number) {
@@ -174,11 +219,7 @@ export async function getExpiringExtinguishers(daysAhead: number, accountId: num
   const tenant = requireAccountId(accountId);
   const db = await getDb();
   if (!db) return [];
-  const result = await db.select({ extinguisher: extinguishers, client: clients })
-    .from(extinguishers)
-    .innerJoin(clients, and(eq(extinguishers.clientId, clients.id), eq(extinguishers.accountId, clients.accountId)))
-    .where(and(eq(extinguishers.accountId, tenant), eq(clients.accountId, tenant)))
-    .orderBy(extinguishers.expirationDate);
+  const result = await db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).innerJoin(clients, and(eq(extinguishers.clientId, clients.id), eq(extinguishers.accountId, clients.accountId))).where(and(eq(extinguishers.accountId, tenant), eq(clients.accountId, tenant))).orderBy(extinguishers.expirationDate);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return result.map(item => {
@@ -187,16 +228,9 @@ export async function getExpiringExtinguishers(daysAhead: number, accountId: num
     const diffDays = Math.ceil((expDate.getTime() - today.getTime()) / 86400000);
     let alertStatus: "expired" | "urgent" | "warning" | "ok" = "ok";
     let alertMessage = "";
-    if (diffDays < 0) {
-      alertStatus = "expired";
-      alertMessage = `VENCIDO há ${Math.abs(diffDays)} dia(s)!`;
-    } else if (diffDays <= 15) {
-      alertStatus = "urgent";
-      alertMessage = diffDays === 0 ? "VENCE HOJE!" : `Vence em ${diffDays} dia(s) (Urgente)`;
-    } else if (diffDays <= daysAhead) {
-      alertStatus = "warning";
-      alertMessage = `Vence em ${diffDays} dia(s) (Alerta prévio)`;
-    }
+    if (diffDays < 0) { alertStatus = "expired"; alertMessage = `VENCIDO há ${Math.abs(diffDays)} dia(s)!`; }
+    else if (diffDays <= 15) { alertStatus = "urgent"; alertMessage = diffDays === 0 ? "VENCE HOJE!" : `Vence em ${diffDays} dia(s) (Urgente)`; }
+    else if (diffDays <= daysAhead) { alertStatus = "warning"; alertMessage = `Vence em ${diffDays} dia(s) (Alerta prévio)`; }
     return { ...item, diffDays, alertStatus, alertMessage, isNearExpiration: diffDays <= daysAhead };
   });
 }
@@ -206,8 +240,7 @@ export async function getNextOrderNumber(accountId: number) {
   const tenant = requireAccountId(accountId);
   const db = await getDb();
   if (!db) return 1001;
-  const result = await db.select({ maxNum: sql<number>`MAX(${serviceOrders.orderNumber})` })
-    .from(serviceOrders).where(eq(serviceOrders.accountId, tenant));
+  const result = await db.select({ maxNum: sql<number>`MAX(${serviceOrders.orderNumber})` }).from(serviceOrders).where(eq(serviceOrders.accountId, tenant));
   return result[0]?.maxNum ? Number(result[0].maxNum) + 1 : 1001;
 }
 
@@ -227,9 +260,7 @@ export async function getServiceOrderById(id: number, accountId: number) {
   const tenant = requireAccountId(accountId);
   const db = await getDb();
   if (!db) return null;
-  const orderResult = await db.select({ order: serviceOrders, client: clients })
-    .from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id))
-    .where(and(eq(serviceOrders.id, id), eq(serviceOrders.accountId, tenant), eq(clients.accountId, tenant))).limit(1);
+  const orderResult = await db.select({ order: serviceOrders, client: clients }).from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id)).where(and(eq(serviceOrders.id, id), eq(serviceOrders.accountId, tenant), eq(clients.accountId, tenant))).limit(1);
   if (!orderResult[0]) return null;
   const items = await db.select().from(serviceOrderItems).where(eq(serviceOrderItems.serviceOrderId, id));
   return { ...orderResult[0].order, client: orderResult[0].client, items };
@@ -241,8 +272,7 @@ export async function getServiceOrders(clientId: number | undefined, accountId: 
   if (!db) return [];
   const conditions = [eq(serviceOrders.accountId, tenant), eq(clients.accountId, tenant)];
   if (clientId) conditions.push(eq(serviceOrders.clientId, clientId));
-  const query = db.select({ order: serviceOrders, client: clients })
-    .from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id));
+  const query = db.select({ order: serviceOrders, client: clients }).from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id));
   return await query.where(and(...conditions)).orderBy(desc(serviceOrders.createdAt));
 }
 
@@ -279,8 +309,7 @@ export async function getDashboardStats(accountId: number) {
   const daysAhead = parseInt(await getSetting("alert_days_ahead", tenant, "30"), 10) || 30;
   const allClients = await getClients(undefined, tenant);
   const cityCount = new Set(allClients.map(client => client.city)).size;
-  const extinguisherResult = await db.select({ extinguisher: extinguishers })
-    .from(extinguishers).where(eq(extinguishers.accountId, tenant));
+  const extinguisherResult = await db.select({ extinguisher: extinguishers }).from(extinguishers).where(eq(extinguishers.accountId, tenant));
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   let nearExpirationCount = 0;

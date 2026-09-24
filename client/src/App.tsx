@@ -13,24 +13,38 @@ import { PwaStatusBar } from "./components/PwaStatusBar";
 import { useAuth } from "./_core/hooks/useAuth";
 import { Loader2 } from "lucide-react";
 
-function Protected({ children }: { children: React.ReactNode }) {
+function LoadingScreen() { return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white"><Loader2 className="h-7 w-7 animate-spin text-red-500" /></div>; }
+
+function CommercialProtected({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white"><Loader2 className="h-7 w-7 animate-spin text-red-500" /></div>;
-  // O dashboard comercial só aceita a sessão própria de membro (IDs negativos
-  // no contexto). OAuth/Manus não possui tenant comercial e não deve acessar
-  // sequer a casca da aplicação de negócio.
-  if (!user || user.id > 0) return <LoginPage />;
+  if (loading) return <LoadingScreen />;
+  if (!user || user.role === "oauth_user" || user.role === "platform_admin" || !user.companyId) return <LoginPage />;
   return <>{children}</>;
+}
+
+function AdminProtected({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+  if (loading) return <LoadingScreen />;
+  if (!user || user.role === "oauth_user") return <LoginPage />;
+  return <>{children}</>;
+}
+
+function RootRoute() {
+  const { user, loading } = useAuth();
+  if (loading) return <LoadingScreen />;
+  if (!user || user.role === "oauth_user") return <LoginPage />;
+  if (user.role === "platform_admin") return <AdminUsersPage />;
+  return <Home />;
 }
 
 function Router() {
   return (
     <Switch>
       <Route path="/login" component={LoginPage} />
-      <Route path="/"><Protected><Home /></Protected></Route>
-      <Route path="/admin/usuarios"><Protected><AdminUsersPage /></Protected></Route>
-      <Route path="/backup"><Protected><BackupPage /></Protected></Route>
-      <Route path="/os/:id"><Protected><PrintOrderPage /></Protected></Route>
+      <Route path="/"><RootRoute /></Route>
+      <Route path="/admin/usuarios"><AdminProtected><AdminUsersPage /></AdminProtected></Route>
+      <Route path="/backup"><CommercialProtected><BackupPage /></CommercialProtected></Route>
+      <Route path="/os/:id"><CommercialProtected><PrintOrderPage /></CommercialProtected></Route>
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>
