@@ -541,7 +541,15 @@ export default function Home() {
         </div>
       </div>
       {/* ÁREA DE CONTEÚDO PRINCIPAL */}
-      <main className="mx-auto flex min-w-0 w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
+      <main className="mx-auto flex min-w-0 w-full max-w-7xl flex-1 flex-col px-4 py-6 sm:px-6 lg:px-8">
+        {activeTab !== "dashboard" && (
+          <div className="mb-4 flex items-center gap-2 border-b border-slate-200 pb-3 lg:hidden">
+            <Button variant="outline" size="sm" className="h-9 gap-1.5 border-slate-300 bg-white font-semibold text-slate-700" onClick={() => setActiveTab("dashboard")}>
+              <ArrowLeft className="h-4 w-4" />
+              Voltar para o painel
+            </Button>
+          </div>
+        )}
         {/* ========================================================
             ABA: DASHBOARD GERAL
         ======================================================== */}
