@@ -1,4 +1,4 @@
-const CACHE_NAME = "gestao-extintores-shell-v2";
+const CACHE_NAME = "gestao-extintores-shell-v3";
 const APP_SHELL = ["/", "/manifest.json", "/icon-192.svg", "/icon-512.svg"];
 
 self.addEventListener("install", (event) => {
