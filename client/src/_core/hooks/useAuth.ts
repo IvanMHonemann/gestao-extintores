@@ -38,11 +38,14 @@ export function useAuth(options?: UseAuthOptions) {
       setIsOffline(true);
       setCachedUser(readCachedUser());
     };
+    const handleAuthLogout = () => setCachedUser(null);
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
+    window.addEventListener("gestao-extintores:logout", handleAuthLogout);
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("gestao-extintores:logout", handleAuthLogout);
     };
   }, []);
 
@@ -81,6 +84,7 @@ export function useAuth(options?: UseAuthOptions) {
       localStorage.removeItem(LOCAL_SESSION_KEY);
       setCachedUser(null);
       utils.auth.me.setData(undefined, null);
+      window.dispatchEvent(new Event("gestao-extintores:logout"));
       if (!isOffline) await utils.auth.me.invalidate();
     }
   }, [isOffline, logoutMutation, utils]);
@@ -89,7 +93,11 @@ export function useAuth(options?: UseAuthOptions) {
     // O cache é a identidade imediata enquanto auth.me confirma a sessão.
     // Isso evita a piscada online e mantém o acesso quando a rede caiu, mesmo
     // que navigator.onLine ainda esteja true.
-    const user = meQuery.data ?? cachedUser;
+    // Quando o logout atualiza o cache tRPC para null, esse valor explícito
+    // deve prevalecer sobre o usuário local antigo em todas as instâncias do
+    // hook. Em modo offline, auth.me fica undefined e o cache local continua
+    // sendo usado normalmente.
+    const user = meQuery.data !== undefined ? meQuery.data : cachedUser;
     // A sessão própria em cache é suficiente para abrir a aplicação enquanto
     // a confirmação online ocorre em segundo plano. Isso evita tela vazia ou
     // spinner prolongado em previews móveis e mantém o acesso offline-first.
