@@ -150,6 +150,60 @@ export async function exportOfflineBackup(tenantKey: string) {
   };
 }
 
+function textValue(value: any) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function appendTextSection(lines: string[], title: string, rows: any[], fields: string[]) {
+  lines.push("", "=".repeat(78), title, "=".repeat(78));
+  if (!rows.length) {
+    lines.push("Nenhum registro encontrado.");
+    return;
+  }
+  rows.forEach((row, index) => {
+    lines.push("", `Registro ${index + 1}`);
+    fields.forEach(field => lines.push(`${field}: ${textValue(row[field])}`));
+  });
+}
+
+export function formatOfflineBackupAsText(backup: Awaited<ReturnType<typeof exportOfflineBackup>>) {
+  const lines = [
+    "GESTÃO DE EXTINTORES — EXPORTAÇÃO DE DADOS",
+    "=".repeat(78),
+    `Empresa/tenant offline: ${backup.tenantKey}`,
+    `Arquivo gerado em: ${new Date(backup.exportedAt).toLocaleString("pt-BR")}`,
+    "",
+    "Este arquivo é uma cópia legível dos dados locais desta empresa.",
+    "Guarde-o em local seguro. Para restauração automática, mantenha também o arquivo JSON.",
+    "",
+    `Resumo: ${backup.clients.length} cliente(s), ${backup.extinguishers.length} extintor(es), ${backup.orders.length} ordem(ns) de serviço, ${backup.alerts.length} alerta(s), ${backup.mutations.length} operação(ões) pendente(s).`,
+  ];
+
+  appendTextSection(lines, "CLIENTES", backup.clients, ["id", "companyName", "cnpj", "address", "city", "cep", "phone", "contactName", "cpf", "birthDate", "notes", "createdAt", "updatedAt"]);
+  appendTextSection(lines, "EXTINTORES", backup.extinguishers, ["id", "clientId", "typeModel", "capacity", "serialNumber", "locationInBuilding", "expirationDate", "lastInspectionDate", "status", "notes", "createdAt", "updatedAt"]);
+
+  lines.push("", "=".repeat(78), "ORDENS DE SERVIÇO", "=".repeat(78));
+  if (!backup.orders.length) lines.push("Nenhuma ordem de serviço encontrada.");
+  backup.orders.forEach((row, index) => {
+    lines.push("", `Ordem ${index + 1}`);
+    ["id", "orderNumber", "orderDate", "clientId", "replacedAndDelivered", "leftReserve", "reserveDetails", "extinguisherExpiration", "licenseExpiration", "totalAmount", "paymentMethod", "installmentsCount", "installmentDates", "responsibleName", "responsibleCpf", "responsibleBirthDate", "observations", "createdAt", "updatedAt"].forEach(field => lines.push(`${field}: ${textValue(row.order?.[field])}`));
+    lines.push("Cliente vinculado:");
+    ["id", "companyName", "cnpj", "address", "city", "phone", "contactName"].forEach(field => lines.push(`  ${field}: ${textValue(row.client?.[field])}`));
+    if (Array.isArray((row as any).items)) {
+      lines.push("Itens da ordem:");
+      (row as any).items.forEach((item: any, itemIndex: number) => lines.push(`  ${itemIndex + 1}. ${textValue(item.description)} | quantidade: ${textValue(item.quantity)} | unitário: ${textValue(item.unitPrice)} | total: ${textValue(item.totalPrice)}`));
+    }
+  });
+
+  appendTextSection(lines, "ALERTAS DE VALIDADE", backup.alerts, ["id", "clientId", "expirationDate", "alertStatus", "diffDays", "alertMessage", "createdAt", "updatedAt"]);
+  appendTextSection(lines, "CONFIGURAÇÕES", backup.settings, ["key", "value"]);
+  appendTextSection(lines, "OPERAÇÕES OFFLINE PENDENTES", backup.mutations, ["id", "entity", "action", "state", "createdAt", "lastError", "payload"]);
+  lines.push("", "=".repeat(78), "FIM DA EXPORTAÇÃO", "=".repeat(78), "");
+  return lines.join("\n");
+}
+
 function validateRows(payload: any, tenantKey: string) {
   const arrays = ["clients", "extinguishers", "orders", "alerts", "settings", "mutations"];
   for (const key of arrays) {
