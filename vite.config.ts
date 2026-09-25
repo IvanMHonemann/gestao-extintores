@@ -1,4 +1,3 @@
-import { jsxLocPlugin } from "@builder.io/vite-plugin-jsx-loc";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import fs from "node:fs";
@@ -154,7 +153,7 @@ function vitePluginManusDebugCollector(): Plugin {
 // funcionar; mantemos somente os plugins necessários ao produto.
 // O coletor de debug pertence apenas ao ambiente de desenvolvimento e injeta
 // o overlay "Console Error" no visualizador embutido. Não faz parte do app.
-const plugins = [react(), tailwindcss(), jsxLocPlugin()];
+const plugins = [react(), tailwindcss()];
 
 export default defineConfig({
   plugins,

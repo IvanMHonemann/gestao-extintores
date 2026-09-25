@@ -1,0 +1,31 @@
+# Gestão de Extintores
+
+Sistema full-stack para gestão multiempresa de clientes, extintores, alertas e ordens de serviço.
+
+## Executar localmente
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+cp config/env.example .env
+# preencha EXTERNAL_DATABASE_URL e JWT_SECRET
+pnpm run check
+pnpm run build
+pnpm start
+```
+
+Para usar Docker, consulte `docker-compose.yml`. Para migrar para outra IA, conta ou hospedagem, comece por `PORTABILITY.md`, `HANDOFF.md` e `OPERATIONS.md`.
+
+## Banco de dados
+
+O runtime prioriza `EXTERNAL_DATABASE_URL` e usa `DATABASE_URL` apenas como fallback. O schema vive em `drizzle/schema.ts`; as migrações futuras devem ser geradas e revisadas com Drizzle.
+
+Antes de mudanças de infraestrutura, faça um backup:
+
+```bash
+pnpm backup:db -- --output=backups/pre-change.json
+```
+
+## Segurança
+
+Não versionar `.env`, URLs de banco, chaves S3 ou tokens. A senha do banco compartilhada durante a configuração deve ser rotacionada. Fora da Manus, mantenha `MANUS_INTEGRATIONS=false`.
