@@ -16,6 +16,8 @@ pnpm start
 
 Para usar Docker, consulte `docker-compose.yml`. Para migrar para outra IA, conta ou hospedagem, comece por `PORTABILITY.md`, `HANDOFF.md` e `OPERATIONS.md`.
 
+Para conectar este código a outra conta ou repositório GitHub sem expor tokens, autentique a GitHub CLI e execute `./scripts/git-connect.sh OWNER/REPOSITORY --private`. Para validar antes do push, execute `./scripts/ci-local.sh`. O guia completo para outra IA está em `AI_HANDOFF.md`.
+
 ## Banco de dados
 
 O runtime prioriza `EXTERNAL_DATABASE_URL` e usa `DATABASE_URL` apenas como fallback. O schema vive em `drizzle/schema.ts`; as migrações futuras devem ser geradas e revisadas com Drizzle.
