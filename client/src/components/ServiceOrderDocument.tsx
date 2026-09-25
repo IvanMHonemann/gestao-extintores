@@ -54,6 +54,15 @@ export function ServiceOrderDocument({
         pdf.text(pdf.splitTextToSize(value, width - 38), x + 38, y);
         y += lineHeight;
       };
+      const paragraph = (label: string, value: string) => {
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(8);
+        pdf.text(label, margin + 3, y);
+        pdf.setFont("helvetica", "normal");
+        const lines = pdf.splitTextToSize(value, contentWidth - 48);
+        pdf.text(lines, margin + 48, y);
+        y += Math.max(1, lines.length) * lineHeight + 2;
+      };
 
       pdf.setDrawColor(15, 23, 42);
       pdf.setLineWidth(0.6);
@@ -106,15 +115,21 @@ export function ServiceOrderDocument({
 
       section("STATUS E VENCIMENTOS");
       row("TROCADO E ENTREGUE:", `${text(order?.replacedAndDelivered)}    DEIXOU RESERVA: ${text(order?.leftReserve)}`);
-      row("VENCIMENTO DO EXTINTOR:", formatDateBR(order?.extinguisherExpirationDate));
-      row("VENCIMENTO DO ALVARÁ:", formatDateBR(order?.permitExpirationDate));
+      row("VENCIMENTO DO EXTINTOR:", formatDateBR(order?.extinguisherExpiration));
+      row("VENCIMENTO DO ALVARÁ:", formatDateBR(order?.licenseExpiration));
       y += 3;
+
+      section("OBSERVAÇÕES");
+      paragraph("OBSERVAÇÕES:", text(order?.observations || "Nenhuma observação registrada."));
+      y += 2;
 
       section("FORMA DE PAGAMENTO");
       row("VALOR TOTAL:", money(order?.totalAmount));
       row("FORMA DE PAGAMENTO:", text(order?.paymentMethod));
-      row("NÚMERO DE PARCELAS:", text(order?.installments));
-      row("DATAS:", text(order?.paymentDates));
+      if (showsInstallmentDetails) {
+        row("NÚMERO DE PARCELAS:", text(order?.installmentsCount || 1));
+        row("DATAS:", text(order?.installmentDates));
+      }
       y += 13;
       pdf.line(margin, y, margin + 78, y);
       pdf.line(pageWidth - margin - 78, y, pageWidth - margin, y);
@@ -362,7 +377,8 @@ export function ServiceOrderDocument({
           </div>
 
           {/* CAMPOS DE STATUS DA ENTREGA & VENCIMENTOS */}
-          <div className="border-2 border-slate-800 mb-3 p-2 text-xs space-y-1.5 font-bold">
+          <div className="border-2 border-slate-800 mb-3 p-2 text-[10px] sm:text-xs space-y-1.5 font-bold">
+            <div className="bg-slate-200 border-b-2 border-slate-800 py-1 text-center font-bold tracking-wider">STATUS E VENCIMENTOS</div>
             <div className="flex flex-wrap items-center gap-y-1">
               <span className="w-full sm:w-52">TROCADO E ENTREGUE:</span>
               <span className="mr-6">
@@ -401,6 +417,14 @@ export function ServiceOrderDocument({
               <span className="flex-1 border-b border-slate-700 font-semibold px-2">
                 {order?.licenseExpiration || ""}
               </span>
+            </div>
+          </div>
+
+          {/* OBSERVAÇÕES */}
+          <div className="mb-3 border-2 border-slate-800 text-[10px] sm:text-xs">
+            <div className="bg-slate-200 border-b-2 border-slate-800 py-1 text-center font-bold tracking-wider">OBSERVAÇÕES</div>
+            <div className="min-h-[42px] whitespace-pre-wrap break-words p-2 leading-relaxed text-slate-900">
+              {order?.observations || "Nenhuma observação registrada."}
             </div>
           </div>
 

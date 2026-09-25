@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
@@ -1620,6 +1621,18 @@ export default function Home() {
                   onChange={(e) => setOrderForm({ ...orderForm, responsibleBirthDate: e.target.value })}
                 />
               </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <label className="mb-1 block font-bold">Observações da Ordem de Serviço</label>
+              <Textarea
+                rows={4}
+                placeholder="Descreva informações adicionais, recomendações ou pendências desta OS."
+                value={orderForm.observations}
+                onChange={(e) => setOrderForm({ ...orderForm, observations: e.target.value })}
+                className="min-h-[96px] resize-y bg-white"
+              />
+              <p className="mt-1 text-xs text-slate-500">Esse texto será exibido no documento e no PDF da ordem.</p>
             </div>
           </div>
 
