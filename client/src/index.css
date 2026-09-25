@@ -175,3 +175,17 @@
     }
   }
 }
+
+.desktop-sidebar {
+  transform: translateX(0) !important;
+}
+
+@media (max-width: 1023px) {
+  .desktop-sidebar {
+    transform: translateX(-100%) !important;
+  }
+
+  .desktop-sidebar.is-open {
+    transform: translateX(0) !important;
+  }
+}

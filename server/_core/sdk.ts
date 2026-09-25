@@ -329,7 +329,7 @@ export type AuthenticatedUser = User & {
 };
 
 function buildCronUser(
-  userInfo: GetUserInfoWithJwtResponse
+  userInfo: GetUserInfoWithJwtResponse,
 ): AuthenticatedUser {
   const now = new Date();
   return {
@@ -338,7 +338,7 @@ function buildCronUser(
     name: userInfo.name || "Manus Scheduled Task",
     email: null,
     loginMethod: null,
-    role: "user",
+    role: "oauth_user",
     createdAt: now,
     updatedAt: now,
     lastSignedIn: now,

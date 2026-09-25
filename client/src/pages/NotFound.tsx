@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { AlertCircle, Home } from "lucide-react";
+import { AlertCircle, ArrowLeft, Home } from "lucide-react";
 import { useLocation } from "wouter";
 
 export default function NotFound() {
@@ -8,6 +8,11 @@ export default function NotFound() {
 
   const handleGoHome = () => {
     setLocation("/");
+  };
+
+  const handleGoBack = () => {
+    if (window.history.length > 1) window.history.back();
+    else setLocation("/");
   };
 
   return (
@@ -43,6 +48,10 @@ export default function NotFound() {
             >
               <Home className="w-4 h-4 mr-2" />
               Go Home
+            </Button>
+            <Button onClick={handleGoBack} variant="outline" className="px-6 py-2.5 rounded-lg">
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Voltar
             </Button>
           </div>
         </CardContent>
