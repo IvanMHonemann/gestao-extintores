@@ -1,5 +1,5 @@
 import { useLiveQuery } from "dexie-react-hooks";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { offlineDb, saveOnlineSnapshot, type LocalOrderRow, type LocalRecord } from "./localDb";
 
 export function useOnlineStatus() {
@@ -18,6 +18,24 @@ export function useInstallPrompt() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstalling, setIsInstalling] = useState(false);
   const [installProgress, setInstallProgress] = useState(0);
+  const launchStarted = useRef(false);
+
+  const openInstalledApp = useCallback(() => {
+    if (launchStarted.current) return;
+    launchStarted.current = true;
+    const appUrl = `${window.location.origin}/`;
+    const appWindow = window.open(appUrl, "gestao-extintores-app");
+    if (appWindow) {
+      appWindow.focus();
+      window.setTimeout(() => { if (!window.matchMedia("(display-mode: standalone)").matches) window.close(); }, 150);
+    } else {
+      // Alguns navegadores bloqueiam uma nova janela após o prompt; nesse
+      // caso, navegar para a URL inicial ainda permite que o sistema abra o
+      // PWA instalado conforme o suporte do dispositivo.
+      window.location.replace(appUrl);
+    }
+  }, []);
+
   useEffect(() => {
     const handler = (event: Event) => { event.preventDefault(); setDeferredPrompt(event); };
     window.addEventListener("beforeinstallprompt", handler);
@@ -28,24 +46,11 @@ export function useInstallPrompt() {
       setIsInstalling(false);
       setInstallProgress(100);
       setDeferredPrompt(null);
-      // O evento é disparado pelo navegador após a instalação. Reabrimos a
-      // rota inicial imediatamente; em navegadores que permitem foco de
-      // janela, reutilizamos a janela do app em vez de deixar o usuário na
-      // tela de instalação.
-      window.setTimeout(() => {
-        const appUrl = `${window.location.origin}/`;
-        const appWindow = window.open(appUrl, "gestao-extintores-app");
-        if (appWindow) {
-          appWindow.focus();
-          window.close();
-        } else {
-          window.location.replace(appUrl);
-        }
-      }, 250);
+      window.setTimeout(openInstalledApp, 250);
     };
     window.addEventListener("appinstalled", installed);
     return () => window.removeEventListener("appinstalled", installed);
-  }, []);
+  }, [openInstalledApp]);
   const install = async () => {
     if (!deferredPrompt || isInstalling) return false;
     setIsInstalling(true);
@@ -60,6 +65,9 @@ export function useInstallPrompt() {
       setInstallProgress(100);
       setDeferredPrompt(null);
       setIsInstalling(false);
+      // appinstalled é o caminho principal; este fallback cobre WebViews e
+      // navegadores que concluem a instalação sem emitir esse evento.
+      window.setTimeout(openInstalledApp, 900);
       return true;
     }
     setInstallProgress(0);
