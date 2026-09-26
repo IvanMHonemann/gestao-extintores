@@ -115,9 +115,30 @@ export default function Home() {
   const allClients = useMemo(() => isPlatformAdmin ? (platformClientsQuery.data || []) : (offline.clients || []), [isPlatformAdmin, platformClientsQuery.data, offline.clients]);
   const effectiveClients = useMemo(() => allClients.filter((client: any) => selectedCity === "TODAS" || client.city === selectedCity), [allClients, selectedCity]);
   const effectiveCities = useMemo(() => Array.from(new Set(allClients.map((client: any) => client.city).filter(Boolean))).sort(), [allClients]);
-  const effectiveAlerts = offline.alerts || [];
   const effectiveExtinguishers = useMemo(() => isPlatformAdmin ? (platformExtinguishersQuery.data || []) : (offline.extinguishers || []), [isPlatformAdmin, platformExtinguishersQuery.data, offline.extinguishers]);
   const effectiveOrders = useMemo(() => isPlatformAdmin ? (platformOrdersQuery.data || []) : (offline.orders || []), [isPlatformAdmin, platformOrdersQuery.data, offline.orders]);
+  const effectiveAlerts = useMemo(() => {
+    if (!isPlatformAdmin) return offline.alerts || [];
+    const clientsById = new Map((platformClientsQuery.data || []).map((client: any) => [client.id, client]));
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const daysAhead = alertDaysQuery.data || 30;
+    return effectiveExtinguishers.map((extinguisher: any) => {
+      const expiration = new Date(extinguisher.expirationDate);
+      expiration.setHours(0, 0, 0, 0);
+      const diffDays = Math.ceil((expiration.getTime() - today.getTime()) / 86400000);
+      const alertStatus = diffDays < 0 ? "expired" : diffDays <= 15 ? "urgent" : diffDays <= daysAhead ? "warning" : "ok";
+      const alertMessage = diffDays < 0 ? `VENCIDO há ${Math.abs(diffDays)} dia(s)!` : diffDays === 0 ? "VENCE HOJE!" : diffDays <= 15 ? `Vence em ${diffDays} dia(s) (Urgente)` : diffDays <= daysAhead ? `Vence em ${diffDays} dia(s) (Alerta prévio)` : "Dentro da validade";
+      return {
+        extinguisher,
+        client: clientsById.get(extinguisher.clientId) || { companyName: "Cliente não encontrado", city: "", phone: "" },
+        diffDays,
+        alertStatus,
+        alertMessage,
+        isNearExpiration: diffDays <= daysAhead,
+      };
+    });
+  }, [isPlatformAdmin, offline.alerts, platformClientsQuery.data, effectiveExtinguishers, alertDaysQuery.data]);
   const platformExpirationStats = useMemo(() => {
     if (!isPlatformAdmin) return { near: 0, expired: 0 };
     const today = new Date();
