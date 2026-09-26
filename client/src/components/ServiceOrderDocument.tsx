@@ -149,6 +149,23 @@ export function ServiceOrderDocument({
       };
 
       const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      if (isMobile) {
+        if (!navigator.share) {
+          toast.error("Este navegador não oferece compartilhamento direto de arquivos. Abra o site no Chrome ou Safari atualizado.");
+          return;
+        }
+        try {
+          await navigator.share(shareData);
+          toast.success("Selecione o WhatsApp para enviar a Ordem de Serviço.");
+        } catch (shareError) {
+          if ((shareError as DOMException)?.name !== "AbortError") {
+            console.error("Falha no compartilhamento nativo do PDF:", shareError);
+            toast.error("O celular não aceitou compartilhar o PDF. Tente pelo Chrome ou Safari atualizado.");
+          }
+        }
+        return;
+      }
+
       if (navigator.share && navigator.canShare?.({ files: [file] })) {
         try {
           await navigator.share(shareData);
@@ -170,19 +187,6 @@ export function ServiceOrderDocument({
       link.click();
       link.remove();
       URL.revokeObjectURL(downloadUrl);
-      if (isMobile) {
-        if (navigator.share) {
-          try {
-            await navigator.share({ title: `Ordem de Serviço ${orderNumber}`, text: `O PDF da Ordem de Serviço ${orderNumber} foi baixado. Anexe-o na conversa do WhatsApp.` });
-            toast.success("PDF baixado. Escolha o WhatsApp na tela de compartilhamento para anexá-lo.");
-            return;
-          } catch (shareError) {
-            if ((shareError as DOMException)?.name === "AbortError") return;
-          }
-        }
-        toast.success("PDF baixado no celular. Abra o WhatsApp manualmente e anexe o arquivo na conversa.");
-        return;
-      }
       window.open("https://web.whatsapp.com/", "_blank", "noopener,noreferrer");
       toast.success("PDF baixado e WhatsApp Web aberto. Anexe o arquivo PDF na conversa do cliente.");
     } catch (error) {
