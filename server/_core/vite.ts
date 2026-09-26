@@ -3,10 +3,28 @@ import fs from "fs";
 import { type Server } from "http";
 import { nanoid } from "nanoid";
 import path from "path";
-import { createServer as createViteServer } from "vite";
-import viteConfig from "../../vite.config";
 
 export async function setupVite(app: Express, server: Server) {
+  // Carregue o Vite somente no modo de desenvolvimento. O bundle de produção
+  // deve iniciar sem instalar dependências de desenvolvimento.
+  const [{ createServer: createViteServer }, { default: react }, { default: tailwindcss }] = await Promise.all([
+    import("vite"),
+    import("@vitejs/plugin-react"),
+    import("@tailwindcss/vite"),
+  ]);
+  const viteConfig = {
+    plugins: [react(), tailwindcss()],
+    resolve: {
+      alias: {
+        "@": path.resolve(import.meta.dirname, "../../client/src"),
+        "@shared": path.resolve(import.meta.dirname, "../../shared"),
+        "@assets": path.resolve(import.meta.dirname, "../../attached_assets"),
+      },
+    },
+    envDir: path.resolve(import.meta.dirname, "../.."),
+    root: path.resolve(import.meta.dirname, "../../client"),
+    publicDir: path.resolve(import.meta.dirname, "../../client/public"),
+  };
   const serverOptions = {
     middlewareMode: true,
     // A prévia é acessada por HTTPS público, mas o Vite tenta anunciar o

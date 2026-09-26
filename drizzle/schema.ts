@@ -146,6 +146,7 @@ export const serviceOrders = mysqlTable("service_orders", {
   accountId: int("accountId").notNull().references(() => companies.id, { onDelete: "restrict" }),
   orderNumber: int("orderNumber").notNull(),
   orderDate: date("orderDate").notNull(),
+  createdByName: varchar("createdByName", { length: 255 }),
   clientId: int("clientId").notNull().references(() => clients.id, { onDelete: "restrict" }),
   replacedAndDelivered: varchar("replacedAndDelivered", { length: 10 }).default("SIM"),
   leftReserve: varchar("leftReserve", { length: 10 }).default("NÃO"),
@@ -186,6 +187,24 @@ export const serviceOrderItems = mysqlTable("service_order_items", {
 
 export type ServiceOrderItem = typeof serviceOrderItems.$inferSelect;
 export type InsertServiceOrderItem = typeof serviceOrderItems.$inferInsert;
+
+/** Lixeira de segurança: mantém um snapshot por 24 horas antes da expiração. */
+export const trashItems = mysqlTable("trash_items", {
+  id: int("id").autoincrement().primaryKey(),
+  accountId: int("accountId").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  itemType: varchar("itemType", { length: 40 }).notNull(),
+  originalId: int("originalId").notNull(),
+  label: varchar("label", { length: 255 }).notNull(),
+  snapshot: text("snapshot").notNull(),
+  deletedAt: timestamp("deletedAt").defaultNow().notNull(),
+  expiresAt: timestamp("expiresAt").notNull(),
+}, (table) => ({
+  accountExpiryIdx: index("trash_items_account_expiry_idx").on(table.accountId, table.expiresAt),
+  accountDeletedIdx: index("trash_items_account_deleted_idx").on(table.accountId, table.deletedAt),
+}));
+
+export type TrashItem = typeof trashItems.$inferSelect;
+export type InsertTrashItem = typeof trashItems.$inferInsert;
 
 export const systemSettings = mysqlTable("system_settings", {
   id: int("id").autoincrement().primaryKey(),

@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   clients,
@@ -6,6 +6,7 @@ import {
   extinguishers,
   serviceOrders,
   serviceOrderItems,
+  trashItems,
   systemSettings,
   users,
   type InsertClient,
@@ -19,9 +20,10 @@ import { ENV } from "./_core/env";
 let _db: ReturnType<typeof drizzle> | null = null;
 
 export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
+  const databaseUrl = process.env.EXTERNAL_DATABASE_URL ?? process.env.DATABASE_URL;
+  if (!_db && databaseUrl) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      _db = drizzle(databaseUrl);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
@@ -157,9 +159,14 @@ export async function deleteClient(id: number, accountId: number) {
   if (!db) throw new Error("Database not connected");
   const client = await getClientById(id, tenant);
   if (!client) throw new Error("Cliente não encontrado ou sem permissão");
-  const tenantOrders = await db.select({ id: serviceOrders.id }).from(serviceOrders).where(and(eq(serviceOrders.clientId, id), eq(serviceOrders.accountId, tenant)));
+  const clientOrders = await db.select().from(serviceOrders).where(and(eq(serviceOrders.clientId, id), eq(serviceOrders.accountId, tenant)));
+  const orderIds = clientOrders.map((order) => order.id);
+  const clientExtinguishers = await db.select().from(extinguishers).where(and(eq(extinguishers.clientId, id), eq(extinguishers.accountId, tenant)));
+  const orderItems = orderIds.length ? await db.select().from(serviceOrderItems).where(inArray(serviceOrderItems.serviceOrderId, orderIds)) : [];
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
   await db.transaction(async (tx) => {
-    for (const order of tenantOrders) {
+    await tx.insert(trashItems).values({ accountId: tenant, itemType: "client", originalId: id, label: client.companyName, snapshot: JSON.stringify({ client, orders: clientOrders, items: orderItems, extinguishers: clientExtinguishers }), expiresAt });
+    for (const order of clientOrders) {
       await tx.delete(serviceOrderItems).where(eq(serviceOrderItems.serviceOrderId, order.id));
       await tx.delete(serviceOrders).where(and(eq(serviceOrders.id, order.id), eq(serviceOrders.accountId, tenant)));
     }
@@ -210,9 +217,12 @@ export async function deleteExtinguisher(id: number, accountId: number) {
   const tenant = requireAccountId(accountId);
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  const existing = await db.select({ id: extinguishers.id }).from(extinguishers).where(and(eq(extinguishers.id, id), eq(extinguishers.accountId, tenant))).limit(1);
+  const existing = await db.select().from(extinguishers).where(and(eq(extinguishers.id, id), eq(extinguishers.accountId, tenant))).limit(1);
   if (!existing[0]) throw new Error("Extintor sem permissão");
-  await db.delete(extinguishers).where(and(eq(extinguishers.id, id), eq(extinguishers.accountId, tenant)));
+  await db.transaction(async (tx) => {
+    await tx.insert(trashItems).values({ accountId: tenant, itemType: "extinguisher", originalId: id, label: `${existing[0].typeModel} — ${existing[0].serialNumber || "sem selo"}`, snapshot: JSON.stringify(existing[0]), expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) });
+    await tx.delete(extinguishers).where(and(eq(extinguishers.id, id), eq(extinguishers.accountId, tenant)));
+  });
 }
 
 export async function getExpiringExtinguishers(daysAhead: number, accountId: number) {
@@ -273,7 +283,34 @@ export async function getServiceOrders(clientId: number | undefined, accountId: 
   const conditions = [eq(serviceOrders.accountId, tenant), eq(clients.accountId, tenant)];
   if (clientId) conditions.push(eq(serviceOrders.clientId, clientId));
   const query = db.select({ order: serviceOrders, client: clients }).from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id));
-  return await query.where(and(...conditions)).orderBy(desc(serviceOrders.createdAt));
+  // O histórico deve seguir a data do atendimento informada na OS, não a data
+  // técnica em que o registro foi criado ou posteriormente editado.
+  return await query.where(and(...conditions)).orderBy(desc(serviceOrders.orderDate), desc(serviceOrders.createdAt));
+}
+
+export async function getServiceOrderHistory(clientId: number, accountId: number) {
+  const orders = await getServiceOrders(clientId, accountId);
+  const db = await getDb();
+  if (!db) return [];
+  const ids = orders.map(({ order }) => order.id);
+  const items = ids.length ? await db.select().from(serviceOrderItems).where(inArray(serviceOrderItems.serviceOrderId, ids)) : [];
+  return orders.map((entry) => ({ ...entry, items: items.filter((item) => item.serviceOrderId === entry.order.id) }));
+}
+
+export async function updateServiceOrder(id: number, order: Partial<InsertServiceOrder>, items: Omit<InsertServiceOrderItem, "serviceOrderId">[], accountId: number) {
+  const tenant = requireAccountId(accountId);
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const existing = await getServiceOrderById(id, tenant);
+  if (!existing) throw new Error("Ordem não encontrada ou sem permissão");
+  if (order.clientId && !(await getClientById(order.clientId, tenant))) throw new Error("Cliente sem permissão");
+  const { accountId: ignoredAccountId, orderNumber: ignoredOrderNumber, ...safeOrder } = order;
+  void ignoredAccountId; void ignoredOrderNumber;
+  await db.transaction(async (tx) => {
+    await tx.update(serviceOrders).set(safeOrder).where(and(eq(serviceOrders.id, id), eq(serviceOrders.accountId, tenant)));
+    await tx.delete(serviceOrderItems).where(eq(serviceOrderItems.serviceOrderId, id));
+    if (items.length) await tx.insert(serviceOrderItems).values(items.map(item => ({ ...item, serviceOrderId: id })));
+  });
 }
 
 export async function deleteServiceOrder(id: number, accountId: number) {
@@ -282,8 +319,19 @@ export async function deleteServiceOrder(id: number, accountId: number) {
   if (!db) throw new Error("Database not connected");
   const order = await getServiceOrderById(id, tenant);
   if (!order) throw new Error("Ordem não encontrada ou sem permissão");
-  await db.delete(serviceOrderItems).where(eq(serviceOrderItems.serviceOrderId, id));
-  await db.delete(serviceOrders).where(and(eq(serviceOrders.id, id), eq(serviceOrders.accountId, tenant)));
+  await db.transaction(async (tx) => {
+    await tx.insert(trashItems).values({ accountId: tenant, itemType: "order", originalId: id, label: `OS #${order.orderNumber}`, snapshot: JSON.stringify({ order, items: order.items }), expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) });
+    await tx.delete(serviceOrderItems).where(eq(serviceOrderItems.serviceOrderId, id));
+    await tx.delete(serviceOrders).where(and(eq(serviceOrders.id, id), eq(serviceOrders.accountId, tenant)));
+  });
+}
+
+export async function listTrash(accountId: number) {
+  const tenant = requireAccountId(accountId);
+  const db = await getDb();
+  if (!db) return [];
+  await db.delete(trashItems).where(and(eq(trashItems.accountId, tenant), sql`${trashItems.expiresAt} <= NOW()`));
+  return await db.select().from(trashItems).where(and(eq(trashItems.accountId, tenant), sql`${trashItems.expiresAt} > NOW()`)).orderBy(desc(trashItems.deletedAt));
 }
 
 /* Configuração por empresa */

@@ -31,35 +31,48 @@ export function ServiceOrderDocument({
       const pdf = new jsPDF("p", "mm", "a4");
       const margin = 12;
       const pageWidth = 210;
+      const pageHeight = 297;
       const contentWidth = pageWidth - margin * 2;
       let y = 14;
-      const lineHeight = 5;
+      const lineHeight = 4.5;
+      const ensureSpace = (height: number) => {
+        if (y + height > pageHeight - margin) {
+          pdf.addPage();
+          y = margin;
+        }
+      };
       const text = (value: unknown) => String(value ?? "—");
       const money = (value: unknown) => value === undefined || value === null || value === "" ? "" : `R$ ${Number(value).toFixed(2)}`;
       const section = (title: string) => {
+        // Reserve espaço entre a faixa do título e o primeiro campo para que
+        // o texto nunca seja desenhado sobre a borda ou sobre o cabeçalho.
+        ensureSpace(12);
         pdf.setFillColor(226, 232, 240);
-        pdf.rect(margin, y, contentWidth, 7, "F");
+        pdf.rect(margin, y, contentWidth, 8, "F");
         pdf.setDrawColor(30, 41, 59);
-        pdf.rect(margin, y, contentWidth, 7);
+        pdf.rect(margin, y, contentWidth, 8);
         pdf.setFont("helvetica", "bold");
-        pdf.setFontSize(9);
-        pdf.text(title, pageWidth / 2, y + 4.8, { align: "center" });
-        y += 7;
+        pdf.setFontSize(8.5);
+        pdf.text(title, pageWidth / 2, y + 5.3, { align: "center" });
+        y += 11;
       };
       const row = (label: string, value: string, x = margin + 3, width = contentWidth - 6) => {
+        const lines = pdf.splitTextToSize(value, width - 42);
+        ensureSpace(Math.max(1, lines.length) * lineHeight + 1);
         pdf.setFont("helvetica", "bold");
         pdf.setFontSize(8);
         pdf.text(label, x, y);
         pdf.setFont("helvetica", "normal");
-        pdf.text(pdf.splitTextToSize(value, width - 38), x + 38, y);
-        y += lineHeight;
+        pdf.text(lines, x + 42, y);
+        y += Math.max(1, lines.length) * lineHeight + 1;
       };
       const paragraph = (label: string, value: string) => {
+        const lines = pdf.splitTextToSize(value, contentWidth - 48);
+        ensureSpace(Math.max(1, lines.length) * lineHeight + 3);
         pdf.setFont("helvetica", "bold");
         pdf.setFontSize(8);
         pdf.text(label, margin + 3, y);
         pdf.setFont("helvetica", "normal");
-        const lines = pdf.splitTextToSize(value, contentWidth - 48);
         pdf.text(lines, margin + 48, y);
         y += Math.max(1, lines.length) * lineHeight + 2;
       };
@@ -80,7 +93,6 @@ export function ServiceOrderDocument({
       pdf.line(margin, y, pageWidth - margin, y);
       y += 4;
 
-      pdf.rect(margin, y, contentWidth, 35);
       section("DADOS DO CLIENTE");
       row("EMPRESA:", text(client?.companyName));
       row("ENDEREÇO:", text(client?.address));
@@ -99,14 +111,17 @@ export function ServiceOrderDocument({
       ["DESCRIÇÃO", "QTD.", "VALOR UNID.", "VALOR TOTAL"].forEach((label, i) => pdf.text(label, col[i] + (i === 0 ? 3 : (col[i + 1] - col[i]) / 2), y + 5, { align: i === 0 ? "left" : "center" }));
       y += 8;
       displayItems.forEach((item) => {
-        pdf.rect(margin, y, contentWidth, 7);
+        const descriptionLines = item.description ? pdf.splitTextToSize(text(item.description), 84) : [""];
+        const rowHeight = Math.max(7, descriptionLines.length * 4 + 3);
+        ensureSpace(rowHeight);
+        pdf.rect(margin, y, contentWidth, rowHeight);
         pdf.setFont("helvetica", "normal");
-        pdf.text(text(item.description), margin + 3, y + 4.5, { maxWidth: 88 });
-        pdf.text(text(item.quantity), col[1] + 11, y + 4.5, { align: "center" });
-        pdf.text(money(item.unitPrice), col[2] + 17, y + 4.5, { align: "right" });
-        pdf.text(money(item.totalPrice), col[3] + 27, y + 4.5, { align: "right" });
-        col.slice(1, -1).forEach((x) => pdf.line(x, y, x, y + 7));
-        y += 7;
+        pdf.text(descriptionLines, margin + 3, y + 4);
+        pdf.text(text(item.quantity), col[1] + 11, y + 4, { align: "center" });
+        pdf.text(money(item.unitPrice), col[2] + 17, y + 4, { align: "right" });
+        pdf.text(money(item.totalPrice), col[3] + 27, y + 4, { align: "right" });
+        col.slice(1, -1).forEach((x) => pdf.line(x, y, x, y + rowHeight));
+        y += rowHeight;
       });
       pdf.line(col[1], tableTop, col[1], y);
       pdf.line(col[2], tableTop, col[2], y);
@@ -114,6 +129,7 @@ export function ServiceOrderDocument({
       y += 5;
 
       section("STATUS E VENCIMENTOS");
+      row("CRIADA POR:", text(order?.createdByName || "Usuário não registrado (OS antiga)"));
       row("TROCADO E ENTREGUE:", `${text(order?.replacedAndDelivered)}    DEIXOU RESERVA: ${text(order?.leftReserve)}`);
       row("VENCIMENTO DO EXTINTOR:", formatDateBR(order?.extinguisherExpiration));
       row("VENCIMENTO DO ALVARÁ:", formatDateBR(order?.licenseExpiration));
@@ -131,6 +147,7 @@ export function ServiceOrderDocument({
         row("DATAS:", text(order?.installmentDates));
       }
       y += 13;
+      ensureSpace(28);
       pdf.line(margin, y, margin + 78, y);
       pdf.line(pageWidth - margin - 78, y, pageWidth - margin, y);
       pdf.setFontSize(8);
@@ -148,10 +165,33 @@ export function ServiceOrderDocument({
         files: [file],
       };
 
-      if (navigator.share && navigator.canShare?.({ files: [file] })) {
-        await navigator.share(shareData);
-        toast.success("PDF pronto para ser enviado. Selecione o WhatsApp na tela de compartilhamento.");
+      const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      if (isMobile) {
+        if (!navigator.share) {
+          toast.error("Este navegador não oferece compartilhamento direto de arquivos. Abra o site no Chrome ou Safari atualizado.");
+          return;
+        }
+        try {
+          await navigator.share(shareData);
+          toast.success("Selecione o WhatsApp para enviar a Ordem de Serviço.");
+        } catch (shareError) {
+          if ((shareError as DOMException)?.name !== "AbortError") {
+            console.error("Falha no compartilhamento nativo do PDF:", shareError);
+            toast.error("O celular não aceitou compartilhar o PDF. Tente pelo Chrome ou Safari atualizado.");
+          }
+        }
         return;
+      }
+
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+        try {
+          await navigator.share(shareData);
+          toast.success("PDF pronto para ser enviado. Selecione o WhatsApp na tela de compartilhamento.");
+          return;
+        } catch (shareError) {
+          if ((shareError as DOMException)?.name === "AbortError") return;
+          console.warn("O navegador não aceitou compartilhar o PDF como anexo; usando fallback.", shareError);
+        }
       }
 
       // No PC, os navegadores bloqueiam anexar automaticamente um arquivo local ao WhatsApp Web.
@@ -242,7 +282,7 @@ export function ServiceOrderDocument({
       {/* DOCUMENTO IMPRESSO (Página A4 Exata) */}
       <div
         ref={componentRef}
-        className="w-[calc(100vw-16px)] sm:w-[210mm] max-w-[210mm] min-h-0 sm:min-h-[297mm] bg-white p-3 sm:p-[10mm] text-slate-900 shadow-xl border border-slate-300 print:shadow-none print:border-none print:p-0 print:w-full print:m-0 flex flex-col justify-between"
+        className="w-[calc(100vw-16px)] sm:w-[210mm] max-w-[210mm] min-h-0 sm:min-h-[297mm] overflow-hidden bg-white p-3 sm:p-[10mm] text-slate-900 shadow-xl border border-slate-300 print:shadow-none print:border-none print:p-0 print:w-full print:m-0 flex flex-col justify-between"
         style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
       >
         <div>
@@ -271,8 +311,11 @@ export function ServiceOrderDocument({
               <div className="text-sm font-bold mt-1 text-slate-800">
                 Nº: <span className="font-mono text-base">{String(order?.orderNumber || 1001).padStart(5, '0')}</span>
               </div>
-              <div className="text-xs font-semibold mt-1">
+            <div className="text-xs font-semibold mt-1">
                 DATA: <span className="font-bold underline decoration-slate-400">{formatDateBR(order?.orderDate)}</span>
+              </div>
+              <div className="text-[10px] font-semibold mt-1 text-slate-600">
+                CRIADA POR: <span className="font-bold">{order?.createdByName || "Usuário não registrado (OS antiga)"}</span>
               </div>
             </div>
           </div>
@@ -286,12 +329,12 @@ export function ServiceOrderDocument({
             <div className="p-2 space-y-1.5 font-medium leading-tight">
               <div className="flex border-b border-slate-300 pb-1">
                 <span className="font-bold w-24">EMPRESA:</span>
-                <span className="flex-1 font-semibold text-slate-950 uppercase">{client?.companyName || "—"}</span>
+                <span className="min-w-0 flex-1 break-words font-semibold text-slate-950 uppercase">{client?.companyName || "—"}</span>
               </div>
 
               <div className="flex border-b border-slate-300 pb-1">
                 <span className="font-bold w-24">ENDEREÇO:</span>
-                <span className="flex-1 text-slate-900">{client?.address || "—"}</span>
+                <span className="min-w-0 flex-1 break-words text-slate-900">{client?.address || "—"}</span>
               </div>
 
               <div className="flex flex-col gap-1 border-b border-slate-300 pb-1 sm:flex-row">
@@ -318,7 +361,7 @@ export function ServiceOrderDocument({
 
               <div className="flex flex-col gap-1 border-b border-slate-300 pb-1 sm:flex-row">
                 <span className="w-full font-bold sm:w-64">NOME DO PROPRITARIO OU RESPONSAVEL:</span>
-                <span className="flex-1 text-slate-950 uppercase font-semibold">
+                <span className="min-w-0 flex-1 break-words text-slate-950 uppercase font-semibold">
                   {order?.responsibleName || client?.contactName || "—"}
                 </span>
               </div>
@@ -355,19 +398,18 @@ export function ServiceOrderDocument({
                 {displayItems.map((item, idx) => (
                   <tr
                     key={item.id || idx}
-                    className="border-b border-slate-400 min-h-[24px] text-slate-900"
-                    style={{ height: "26px" }}
+                    className="h-auto min-h-[26px] align-top border-b border-slate-400 text-slate-900"
                   >
-                    <td className="break-words p-1.5 border-r-2 border-slate-800 pl-3 font-medium">
+                    <td className="min-w-0 break-words whitespace-normal p-1.5 align-top border-r-2 border-slate-800 pl-3 font-medium">
                       {item.description}
                     </td>
-                    <td className="p-1.5 border-r-2 border-slate-800 text-center font-semibold">
+                    <td className="p-1.5 align-top border-r-2 border-slate-800 text-center font-semibold">
                       {item.quantity}
                     </td>
-                    <td className="p-1.5 border-r-2 border-slate-800 text-right pr-2 font-mono">
+                    <td className="p-1.5 align-top border-r-2 border-slate-800 text-right pr-2 font-mono">
                       {item.unitPrice ? `R$ ${Number(item.unitPrice).toFixed(2)}` : ""}
                     </td>
-                    <td className="p-1.5 text-right pr-2 font-mono font-semibold">
+                    <td className="p-1.5 align-top text-right pr-2 font-mono font-semibold">
                       {item.totalPrice ? `R$ ${Number(item.totalPrice).toFixed(2)}` : ""}
                     </td>
                   </tr>

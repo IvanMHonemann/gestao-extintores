@@ -63,5 +63,23 @@ describe("Business Logic - Extintores e Ordens de Serviço", () => {
     expect(orderDetail?.items).toBeInstanceOf(Array);
     expect(orderDetail?.items.length).toBeGreaterThanOrEqual(1);
     expect(orderDetail?.client).toBeDefined();
+    expect(orderDetail).toHaveProperty("observations");
+  });
+
+  it("deve retornar o histórico do cliente com os serviços e itens da OS", async () => {
+    const caller = createCaller();
+    const clients = await caller.clients.list();
+    const history = await caller.orders.history({ clientId: clients[0].id });
+    expect(history).toBeInstanceOf(Array);
+    expect(history.every((entry) => Array.isArray(entry.items))).toBe(true);
+    for (let index = 1; index < history.length; index += 1) {
+      expect(new Date(history[index - 1].order.orderDate).getTime()).toBeGreaterThanOrEqual(new Date(history[index].order.orderDate).getTime());
+    }
+  });
+
+  it("deve consultar somente a lixeira da empresa autenticada", async () => {
+    const trash = await createCaller().trash.list();
+    expect(trash).toBeInstanceOf(Array);
+    expect(trash.every((item) => item.accountId === 1)).toBe(true);
   });
 });

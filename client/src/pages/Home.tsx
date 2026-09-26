@@ -20,6 +20,7 @@ import {
   DollarSign, 
   CheckCircle2, 
   Clock, 
+  History,
   Phone, 
   Settings,
   BellRing,
@@ -50,9 +51,10 @@ export default function Home() {
   const { user, logout } = useAuth();
   const [, navigate] = useLocation();
   const tenantKey = user && user.id < 0 ? String(Math.abs(user.id)) : null;
+  const isPlatformAdmin = user?.role === "platform_admin";
   const isCompanyAdmin = user?.role === "company_admin";
-  const canManageUsers = isCompanyAdmin || user?.role === "platform_admin";
-  const [activeTab, setActiveTab] = useState<"dashboard" | "clients" | "extinguishers" | "orders" | "alerts">("dashboard");
+  const canManageUsers = isCompanyAdmin || isPlatformAdmin;
+  const [activeTab, setActiveTab] = useState<"dashboard" | "clients" | "extinguishers" | "orders" | "alerts" | "trash">("dashboard");
   const [selectedCity, setSelectedCity] = useState<string>("TODAS");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [extinguisherFilter, setExtinguisherFilter] = useState<"all" | "active">("all");
@@ -61,14 +63,21 @@ export default function Home() {
   
   // Visualização e Impressão de OS
   const [viewingOrderId, setViewingOrderId] = useState<number | null>(null);
+  const [platformOrderPreview, setPlatformOrderPreview] = useState<any>(null);
 
   // Modais de Criação
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
   const [isExtinguisherModalOpen, setIsExtinguisherModalOpen] = useState(false);
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isTrashModalOpen, setIsTrashModalOpen] = useState(false);
+  const [editingClientId, setEditingClientId] = useState<number | null>(null);
+  const [editingClientCompanyId, setEditingClientCompanyId] = useState<number | null>(null);
+  const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
+  const [editingOrderCompanyId, setEditingOrderCompanyId] = useState<number | null>(null);
   const [returnToOrderAfterClient, setReturnToOrderAfterClient] = useState(false);
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
+  const platformClientsInput = useMemo(() => selectedCompanyId ? { companyId: selectedCompanyId } : undefined, [selectedCompanyId]);
 
   // Seleções para sub-ações
   const [selectedClientIdForExtinguisher, setSelectedClientIdForExtinguisher] = useState<number | null>(null);
@@ -80,7 +89,11 @@ export default function Home() {
   const alertsQuery = trpc.extinguishers.alerts.useQuery(undefined, { enabled: Boolean(tenantKey) });
   const ordersQuery = trpc.orders.list.useQuery(undefined, { enabled: Boolean(tenantKey) });
   const alertDaysQuery = trpc.settings.getAlertDays.useQuery(undefined, { enabled: Boolean(tenantKey) });
-  const companiesQuery = trpc.platform.companies.list.useQuery(undefined, { enabled: user?.role === "platform_admin" });
+  const companiesQuery = trpc.platform.companies.list.useQuery(undefined, { enabled: isPlatformAdmin });
+  const platformClientsQuery = trpc.platform.data.clients.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
+  const platformExtinguishersQuery = trpc.platform.data.extinguishers.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
+  const platformOrdersQuery = trpc.platform.data.orders.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
+  const trashQuery = trpc.trash.list.useQuery(undefined, { enabled: Boolean(tenantKey && isCompanyAdmin) });
   const remoteExtinguishers = useMemo(() => (alertsQuery.data || []).map((item: any) => item.extinguisher).filter(Boolean), [alertsQuery.data]);
   const orderDetailsQuery = trpc.orders.byId.useQuery(
     { id: viewingOrderId! },
@@ -95,18 +108,34 @@ export default function Home() {
     alerts: alertsQuery.data as any,
     alertDays: alertDaysQuery.data,
   });
-  const effectiveClients = useMemo(() => (offline.clients || []).filter((client: any) => selectedCity === "TODAS" || client.city === selectedCity), [offline.clients, selectedCity]);
-  const effectiveCities = useMemo(() => Array.from(new Set((offline.clients || []).map((client: any) => client.city).filter(Boolean))).sort(), [offline.clients]);
+  const allClients = useMemo(() => isPlatformAdmin ? (platformClientsQuery.data || []) : (offline.clients || []), [isPlatformAdmin, platformClientsQuery.data, offline.clients]);
+  const effectiveClients = useMemo(() => allClients.filter((client: any) => selectedCity === "TODAS" || client.city === selectedCity), [allClients, selectedCity]);
+  const effectiveCities = useMemo(() => Array.from(new Set(allClients.map((client: any) => client.city).filter(Boolean))).sort(), [allClients]);
   const effectiveAlerts = offline.alerts || [];
-  const effectiveOrders = offline.orders || [];
+  const effectiveExtinguishers = useMemo(() => isPlatformAdmin ? (platformExtinguishersQuery.data || []) : (offline.extinguishers || []), [isPlatformAdmin, platformExtinguishersQuery.data, offline.extinguishers]);
+  const effectiveOrders = useMemo(() => isPlatformAdmin ? (platformOrdersQuery.data || []) : (offline.orders || []), [isPlatformAdmin, platformOrdersQuery.data, offline.orders]);
+  const platformExpirationStats = useMemo(() => {
+    if (!isPlatformAdmin) return { near: 0, expired: 0 };
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const limit = new Date(today);
+    limit.setDate(limit.getDate() + (alertDaysQuery.data || 30));
+    return effectiveExtinguishers.reduce((result: { near: number; expired: number }, extinguisher: any) => {
+      const expiration = new Date(extinguisher.expirationDate);
+      expiration.setHours(0, 0, 0, 0);
+      if (expiration < today) result.expired += 1;
+      else if (expiration <= limit) result.near += 1;
+      return result;
+    }, { near: 0, expired: 0 });
+  }, [isPlatformAdmin, effectiveExtinguishers, alertDaysQuery.data]);
   const effectiveStats = useMemo(() => offline.isOnline && statsQuery.data ? statsQuery.data : {
     totalClients: effectiveClients.length,
     totalCities: effectiveCities.length,
-    totalExtinguishers: offline.extinguishers?.length || 0,
-    nearExpirationCount: effectiveAlerts.filter((item: any) => item.alertStatus === "warning" || item.alertStatus === "urgent").length,
-    expiredCount: effectiveAlerts.filter((item: any) => item.alertStatus === "expired").length,
+    totalExtinguishers: effectiveExtinguishers.length,
+    nearExpirationCount: isPlatformAdmin ? platformExpirationStats.near : effectiveAlerts.filter((item: any) => item.alertStatus === "warning" || item.alertStatus === "urgent").length,
+    expiredCount: isPlatformAdmin ? platformExpirationStats.expired : effectiveAlerts.filter((item: any) => item.alertStatus === "expired").length,
     totalOrders: effectiveOrders.length,
-  }, [offline.isOnline, statsQuery.data, effectiveClients.length, effectiveCities.length, offline.extinguishers?.length, effectiveAlerts, effectiveOrders.length]);
+  }, [offline.isOnline, statsQuery.data, effectiveClients.length, effectiveCities.length, effectiveExtinguishers.length, effectiveAlerts, effectiveOrders.length, isPlatformAdmin, platformExpirationStats]);
   const offlineOrderDetails = useMemo(() => {
     const row = (offline.orders || []).find((item: any) => item.order?.id === viewingOrderId);
     return row ? { ...row.order, client: row.client, items: row.order.items || [] } : undefined;
@@ -125,6 +154,14 @@ export default function Home() {
     onSuccess: async (result) => {
       toast.success("Cliente cadastrado com sucesso!");
       setIsClientModalOpen(false);
+      const savedClient = {
+        ...clientForm,
+        id: result.id,
+        accountId: Number(tenantKey),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      utils.clients.list.setData(undefined, (current) => [savedClient as any, ...((current || []) as any[]).filter((client) => client.id !== result.id)]);
       await utils.clients.invalidate();
       utils.dashboard.stats.invalidate();
       if (returnToOrderAfterClient) {
@@ -140,10 +177,28 @@ export default function Home() {
   });
 
   const platformCreateClientMutation = trpc.platform.data.createClient.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (result, input) => {
       toast.success("Cliente cadastrado com sucesso!");
       setIsClientModalOpen(false);
+      const savedClient = {
+        ...input,
+        id: result.id,
+        accountId: input.companyId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      utils.platform.data.clients.setData({ companyId: input.companyId }, (current) => [savedClient as any, ...((current || []) as any[]).filter((client) => client.id !== result.id)]);
       await utils.platform.data.clients.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const updateClientMutation = trpc.clients.update.useMutation({
+    onSuccess: async () => {
+      toast.success("Dados do cliente atualizados!");
+      setEditingClientId(null);
+      setIsClientModalOpen(false);
+      await utils.clients.invalidate();
     },
     onError: (err) => toast.error(err.message),
   });
@@ -184,6 +239,15 @@ export default function Home() {
       toast.error(err.message);
     },
   });
+  const platformCreateExtinguisherMutation = trpc.platform.data.createExtinguisher.useMutation({
+    onSuccess: async () => {
+      toast.success("Extintor registrado com sucesso!");
+      setIsExtinguisherModalOpen(false);
+      if (selectedCompanyId) await utils.platform.data.extinguishers.invalidate({ companyId: selectedCompanyId });
+      if (selectedCompanyId) await utils.platform.data.clients.invalidate({ companyId: selectedCompanyId });
+    },
+    onError: (err) => toast.error(err.message),
+  });
 
   const deleteExtinguisherMutation = trpc.extinguishers.delete.useMutation({
     onSuccess: () => {
@@ -204,13 +268,14 @@ export default function Home() {
       utils.orders.invalidate();
       utils.dashboard.stats.invalidate();
       if (res?.id) {
+        setPlatformOrderPreview(null);
         setViewingOrderId(res.id);
       }
     },
     onError: async (err, input) => {
       if (!offline.isOnline) {
         const id = offlineId();
-        const client = effectiveClients.find((item: any) => item.id === input.clientId);
+        const client = allClients.find((item: any) => item.id === input.clientId);
         const order = { ...input, id, orderNumber: input.orderNumber || Math.abs(id), items: input.items, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
         if (!tenantKey) return;
         const localClient = client ? { ...client, tenantKey } : { id: input.clientId, tenantKey, companyName: "Cliente offline", city: "Não informado" };
@@ -224,6 +289,28 @@ export default function Home() {
       toast.error(err.message);
     },
   });
+  const platformCreateOrderMutation = trpc.platform.data.createOrder.useMutation({
+    onSuccess: (result, input) => {
+      toast.success("Ordem de serviço criada com sucesso!");
+      setIsOrderModalOpen(false);
+      if (selectedCompanyId) void utils.platform.data.orders.invalidate({ companyId: selectedCompanyId });
+      const client = allClients.find((item: any) => item.id === input.clientId);
+      setPlatformOrderPreview({ ...input, id: result.id, orderNumber: result.orderNumber, client, items: input.items });
+      setViewingOrderId(result.id);
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const updateOrderMutation = trpc.orders.update.useMutation({
+    onSuccess: async (_, input) => {
+      toast.success("Ordem de serviço atualizada!");
+      setEditingOrderId(null);
+      setIsOrderModalOpen(false);
+      await utils.orders.invalidate();
+      setViewingOrderId(input.id);
+    },
+    onError: (err) => toast.error(err.message),
+  });
 
   const deleteOrderMutation = trpc.orders.delete.useMutation({
     onSuccess: () => {
@@ -235,6 +322,42 @@ export default function Home() {
       if (!offline.isOnline) { if (!tenantKey) return; const orders = (await offlineDb.orders.where("tenantKey").equals(tenantKey).filter((row) => row.order?.id === input.id).toArray()).map((row) => row.order.id); await offlineDb.orders.bulkDelete(orders); await queueOfflineMutation({ tenantKey, entity: "order", action: "delete", payload: input }); toast.success("Ordem removida do dispositivo."); return; }
       toast.error(err.message);
     },
+  });
+
+  const platformDeleteOrderMutation = trpc.platform.data.deleteOrder.useMutation({
+    onSuccess: async () => {
+      toast.success("Ordem de serviço excluída e enviada para a lixeira!");
+      if (selectedCompanyId) await utils.platform.data.orders.invalidate({ companyId: selectedCompanyId });
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const platformDeleteClientMutation = trpc.platform.data.deleteClient.useMutation({
+    onSuccess: async () => {
+      toast.success("Cliente excluído e enviado para a lixeira!");
+      if (selectedCompanyId) await utils.platform.data.clients.invalidate({ companyId: selectedCompanyId });
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const platformUpdateClientMutation = trpc.platform.data.updateClient.useMutation({
+    onSuccess: async () => {
+      toast.success("Dados do cliente atualizados!");
+      setEditingClientId(null);
+      setEditingClientCompanyId(null);
+      setIsClientModalOpen(false);
+      if (selectedCompanyId) await utils.platform.data.clients.invalidate({ companyId: selectedCompanyId });
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const platformUpdateOrderMutation = trpc.platform.data.updateOrder.useMutation({
+    onSuccess: async () => {
+      toast.success("Ordem de serviço atualizada!");
+      setEditingOrderId(null);
+      setEditingOrderCompanyId(null);
+      setIsOrderModalOpen(false);
+      if (selectedCompanyId) await utils.platform.data.orders.invalidate({ companyId: selectedCompanyId });
+      setPlatformOrderPreview(null);
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   useEffect(() => {
@@ -382,14 +505,17 @@ export default function Home() {
   };
 
   // Se estiver visualizando a OS para impressão
-  const selectedOrderDetails = orderDetailsQuery.data || offlineOrderDetails;
+  const selectedOrderDetails = (platformOrderPreview?.id === viewingOrderId ? platformOrderPreview : undefined) || orderDetailsQuery.data || offlineOrderDetails;
   if (viewingOrderId && selectedOrderDetails) {
     return (
       <ServiceOrderDocument
         order={selectedOrderDetails}
         client={selectedOrderDetails.client}
         items={selectedOrderDetails.items}
-        onBack={() => setViewingOrderId(null)}
+        onBack={() => {
+          setViewingOrderId(null);
+          setPlatformOrderPreview(null);
+        }}
       />
     );
   }
@@ -424,7 +550,82 @@ export default function Home() {
     if (alertFilter === "all") return true;
     return alertFilter === "expired" ? item.alertStatus === "expired" : item.alertStatus === "urgent" || item.alertStatus === "warning";
   });
-  const navigateToSection = (section: "dashboard" | "clients" | "orders" | "alerts") => {
+  const openClientEditor = (client: any) => {
+    setEditingClientId(client.id);
+    setEditingClientCompanyId(client.accountId || selectedCompanyId);
+    setClientForm({
+      companyName: client.companyName || "",
+      cnpj: client.cnpj || "",
+      address: client.address || "",
+      city: client.city || "",
+      cep: client.cep || "",
+      phone: client.phone || "",
+      contactName: client.contactName || "",
+      cpf: client.cpf || "",
+      birthDate: client.birthDate || "",
+      notes: client.notes || "",
+    });
+    setIsClientModalOpen(true);
+  };
+
+  const openOrderEditor = async (id: number) => {
+    try {
+      const listedOrder = (effectiveOrders || []).find((entry: any) => entry.order.id === id)?.order;
+      const detail: any = isPlatformAdmin
+        ? (await utils.platform.data.history.fetch({ companyId: listedOrder?.accountId, clientId: listedOrder?.clientId })).find((entry: any) => entry.order.id === id)
+        : await utils.orders.byId.fetch({ id });
+      if (!detail) throw new Error("OS não encontrada");
+      const order = isPlatformAdmin ? detail.order : detail;
+      const orderClient = isPlatformAdmin ? detail.client : detail.client;
+      setEditingOrderId(id);
+      setEditingOrderCompanyId(order.accountId || selectedCompanyId);
+      setOrderForm({
+        clientId: order.clientId,
+        orderDate: order.orderDate instanceof Date ? order.orderDate.toISOString().slice(0, 10) : String(order.orderDate).slice(0, 10),
+        replacedAndDelivered: order.replacedAndDelivered || "SIM",
+        leftReserve: order.leftReserve || "NÃO",
+        reserveDetails: order.reserveDetails || "",
+        extinguisherExpiration: order.extinguisherExpiration || "",
+        licenseExpiration: order.licenseExpiration || "",
+        paymentMethod: order.paymentMethod || "A VISTA",
+        installmentsCount: order.installmentsCount || 1,
+        installmentDates: order.installmentDates || "",
+        responsibleName: order.responsibleName || orderClient?.contactName || "",
+        responsibleCpf: order.responsibleCpf || orderClient?.cpf || "",
+        responsibleBirthDate: order.responsibleBirthDate || orderClient?.birthDate || "",
+        observations: order.observations || "",
+        items: (isPlatformAdmin ? detail.items : detail.items || []).map((item: any) => ({
+          description: item.description,
+          quantity: Number(item.quantity) || 1,
+          unitPrice: String(item.unitPrice || "0.00"),
+          totalPrice: String(item.totalPrice || "0.00"),
+        })),
+      });
+      setIsOrderModalOpen(true);
+    } catch (error: any) {
+      toast.error(error?.message || "Não foi possível carregar a OS para edição.");
+    }
+  };
+
+  const requestOrderDeletion = (order: any) => {
+    if (!confirm(`Tem certeza que deseja excluir a OS #${order.orderNumber}? Ela ficará na lixeira por 24 horas.`)) return;
+    if (isPlatformAdmin) {
+      platformDeleteOrderMutation.mutate({ companyId: order.accountId, id: order.id });
+    } else {
+      deleteOrderMutation.mutate({ id: order.id });
+    }
+  };
+
+  const requestClientDeletion = (client: any) => {
+    if (!confirm(`Tem certeza que deseja excluir o cliente ${client.companyName}? Todo o histórico dele ficará na lixeira por 24 horas.`)) return;
+    if (isPlatformAdmin) {
+      platformDeleteClientMutation.mutate({ companyId: client.accountId, id: client.id });
+    } else {
+      deleteClientMutation.mutate({ id: client.id });
+    }
+  };
+
+  const navigateToSection = (section: "dashboard" | "clients" | "orders" | "alerts" | "trash") => {
     if (section === "clients") setExtinguisherFilter("all");
     if (section === "alerts") setAlertFilter("all");
     setActiveTab(section);
@@ -515,6 +716,7 @@ export default function Home() {
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "clients" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("clients")}><MapPin className="h-4 w-4" /> Clientes por Cidade</Button>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "alerts" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("alerts")}><BellRing className="h-4 w-4 text-amber-400" /> Alertas de Vencimento {(effectiveStats?.nearExpirationCount || 0) + (effectiveStats?.expiredCount || 0) > 0 && <span className="ml-auto rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold">{(effectiveStats?.nearExpirationCount || 0) + (effectiveStats?.expiredCount || 0)}</span>}</Button>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "orders" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("orders")}><FileText className="h-4 w-4" /> Ordens de Serviço</Button>
+          {isCompanyAdmin && <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "trash" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("trash")}><Trash2 className="h-4 w-4" /> Lixeira <span className="ml-auto rounded-full bg-slate-700 px-2 py-0.5 text-[10px]">24h</span></Button>}
           <div className="my-4 border-t border-slate-800" />
           <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Ações rápidas</p>
           <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setIsClientModalOpen(true); setIsSidebarOpen(false); }}><Plus className="h-4 w-4" /> Cadastrar Cliente</Button>
@@ -536,7 +738,7 @@ export default function Home() {
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-2.5 sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-2">
             {activeTab !== "dashboard" && <Button variant="ghost" size="sm" className="h-8 shrink-0 gap-1 px-2 text-slate-600" onClick={() => setActiveTab("dashboard")}><ArrowLeft className="h-4 w-4" /> <span className="hidden sm:inline">Voltar</span></Button>}
-            <p className="truncate text-xs font-semibold text-slate-500">{activeTab === "dashboard" ? "Visão Geral" : activeTab === "clients" ? "Clientes por Cidade" : activeTab === "alerts" ? "Alertas de Vencimento" : "Ordens de Serviço"}</p>
+            <p className="truncate text-xs font-semibold text-slate-500">{activeTab === "dashboard" ? "Visão Geral" : activeTab === "clients" ? "Clientes por Cidade" : activeTab === "alerts" ? "Alertas de Vencimento" : activeTab === "trash" ? "Lixeira — retenção de 24 horas" : "Ordens de Serviço"}</p>
           </div>
           <span className="text-xs text-slate-400">Use o menu lateral para acessar todas as funções</span>
         </div>
@@ -557,7 +759,7 @@ export default function Home() {
         {activeTab === "dashboard" && (
           <div className="space-y-6">
             {/* CARDS DE RESUMO */}
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+            <div className="dashboard-overview-grid grid grid-cols-2 items-start gap-3 sm:gap-4 lg:grid-cols-5">
               <Card role="button" tabIndex={0} title="Abrir clientes cadastrados" onClick={() => openClients()} onKeyDown={(event) => event.key === "Enter" && openClients()} className="cursor-pointer border-l-4 border-l-blue-600 shadow-sm min-w-0 transition hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-blue-500">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-xs font-bold uppercase tracking-wider text-slate-500">
@@ -717,7 +919,7 @@ export default function Home() {
                         </span>
                       </div>
 
-                      <h3 className="font-bold text-slate-900 text-base mt-2 line-clamp-1">
+                      <h3 className="font-bold text-slate-900 text-base mt-2 line-clamp-1 cursor-pointer hover:text-red-700" title="Abrir detalhes e histórico" onClick={() => setActiveTab("clients")}>
                         {client.companyName}
                       </h3>
 
@@ -751,6 +953,10 @@ export default function Home() {
                       >
                         <Flame className="w-3.5 h-3.5 text-red-600" />
                         + Extintor
+                      </Button>
+
+                      <Button variant="ghost" size="sm" className="h-8 gap-1 px-2 text-xs text-slate-600" onClick={() => openClientEditor(client)}>
+                        <Edit className="w-3.5 h-3.5 text-blue-600" /> Editar
                       </Button>
 
                       <Button
@@ -830,11 +1036,17 @@ export default function Home() {
                     }));
                     setIsOrderModalOpen(true);
                   }}
-                  onDelete={() => {
-                    if (confirm(`Tem certeza que deseja excluir o cliente ${client.companyName}?`)) {
-                      deleteClientMutation.mutate({ id: client.id });
+                  onEdit={() => openClientEditor(client)}
+                  onEditOrder={(id) => void openOrderEditor(id)}
+                  onViewOrder={async (id) => {
+                    if (isPlatformAdmin) {
+                      const rows = await utils.platform.data.history.fetch({ companyId: client.accountId, clientId: client.id });
+                      const row = rows.find((entry: any) => entry.order.id === id);
+                      if (row) setPlatformOrderPreview({ ...row.order, client: row.client, items: row.items });
                     }
+                    setViewingOrderId(id);
                   }}
+                  onDelete={() => requestClientDeletion(client)}
                 />
               ))}
             </div>
@@ -1026,11 +1238,13 @@ export default function Home() {
                     <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
                       <div><dt className="text-slate-400">Data</dt><dd className="font-medium text-slate-700">{new Date(order.orderDate).toLocaleDateString("pt-BR")}</dd></div>
                       <div><dt className="text-slate-400">Pagamento</dt><dd className="break-words font-medium text-slate-700">{order.paymentMethod}</dd></div>
+                      <div><dt className="text-slate-400">Criada por</dt><dd className="break-words font-medium text-slate-700">{order.createdByName || "Usuário não registrado"}</dd></div>
                       <div><dt className="text-slate-400">Valor total</dt><dd className="font-mono font-bold text-slate-900">R$ {Number(order.totalAmount).toFixed(2)}</dd></div>
                     </dl>
                     <div className="flex flex-col gap-2 pt-1 min-[420px]:flex-row">
                       <Button variant="outline" size="sm" className="h-9 w-full gap-1 text-xs font-semibold text-slate-800 hover:text-red-700 min-[420px]:flex-1" onClick={() => setViewingOrderId(order.id)}><Printer className="h-3.5 w-3.5 text-red-600" /> Visualizar / Imprimir</Button>
-                      <Button variant="ghost" size="sm" className="h-9 w-full text-slate-400 hover:text-red-600 min-[420px]:w-9" aria-label={`Excluir OS ${order.orderNumber}`} onClick={() => { if (confirm(`Excluir a OS #${order.orderNumber}?`)) deleteOrderMutation.mutate({ id: order.id }); }}><Trash2 className="h-3.5 w-3.5" /><span className="min-[420px]:sr-only">Excluir</span></Button>
+                      <Button variant="outline" size="sm" className="h-9 w-full gap-1 text-xs font-semibold text-slate-800 min-[420px]:flex-1" onClick={() => void openOrderEditor(order.id)}><Edit className="h-3.5 w-3.5 text-blue-600" /> Editar</Button>
+                      <Button variant="ghost" size="sm" className="h-9 w-full text-slate-400 hover:text-red-600 min-[420px]:w-9" aria-label={`Excluir OS ${order.orderNumber}`} onClick={() => requestOrderDeletion(order)}><Trash2 className="h-3.5 w-3.5" /><span className="min-[420px]:sr-only">Excluir</span></Button>
                     </div>
                   </article>
                 ))}
@@ -1060,6 +1274,7 @@ export default function Home() {
                       </td>
                       <td className="p-3 font-bold text-slate-900">
                         {client.companyName}
+                        <div className="mt-1 text-[10px] font-normal text-slate-500">Criada por: {order.createdByName || "Usuário não registrado"}</div>
                       </td>
                       <td className="p-3 text-slate-600">
                         <Badge variant="outline" className="text-[10px]">
@@ -1083,15 +1298,12 @@ export default function Home() {
                             <Printer className="w-3.5 h-3.5 text-red-600" />
                             Visualizar / Imprimir
                           </Button>
+                          <Button variant="outline" size="sm" className="h-7 text-xs gap-1 font-semibold" onClick={() => void openOrderEditor(order.id)}><Edit className="w-3.5 h-3.5 text-blue-600" /> Editar</Button>
                           <Button
                             variant="ghost"
                             size="sm"
                             className="h-7 w-7 p-0 text-slate-400 hover:text-red-600"
-                            onClick={() => {
-                              if (confirm(`Excluir a OS #${order.orderNumber}?`)) {
-                                deleteOrderMutation.mutate({ id: order.id });
-                              }
-                            }}
+                            onClick={() => requestOrderDeletion(order)}
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </Button>
@@ -1113,18 +1325,35 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        {activeTab === "trash" && isCompanyAdmin && (
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-xl font-bold text-slate-900">Lixeira de segurança</h2>
+              <p className="text-xs text-slate-500">Itens excluídos ficam armazenados por 24 horas e são removidos automaticamente depois desse prazo.</p>
+            </div>
+            <div className="overflow-hidden rounded-xl border border-amber-200 bg-white shadow-sm">
+              {(trashQuery.data || []).map((item: any) => {
+                const remainingHours = Math.max(0, Math.ceil((new Date(item.expiresAt).getTime() - Date.now()) / 3600000));
+                const typeLabel = item.itemType === "client" ? "Cliente e histórico" : item.itemType === "order" ? "Ordem de serviço" : "Extintor";
+                return <div key={item.id} className="flex flex-col gap-2 border-b border-slate-100 p-4 last:border-b-0 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-semibold text-slate-900">{item.label}</p><p className="text-xs text-slate-500">{typeLabel} · excluído em {new Date(item.deletedAt).toLocaleString("pt-BR")}</p></div><Badge variant="outline" className="w-fit border-amber-300 bg-amber-50 text-amber-800">Expira em aproximadamente {remainingHours}h</Badge></div>;
+              })}
+              {(trashQuery.data || []).length === 0 && <div className="p-10 text-center text-sm text-slate-500">A lixeira está vazia.</div>}
+            </div>
+          </div>
+        )}
       </main>
 
       {/* ========================================================
           MODAL: CADASTRAR NOVO CLIENTE
       ======================================================== */}
-      <Dialog open={isClientModalOpen} onOpenChange={setIsClientModalOpen}>
+      <Dialog open={isClientModalOpen} onOpenChange={(open) => { setIsClientModalOpen(open); if (!open) { setEditingClientId(null); setEditingClientCompanyId(null); } }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-lg font-bold">Cadastrar Novo Cliente</DialogTitle>
+            <DialogTitle className="text-lg font-bold">{editingClientId ? "Editar dados do cliente" : "Cadastrar Novo Cliente"}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 py-2 text-xs">
-            {user?.role === "platform_admin" && (
+            {isPlatformAdmin && (
               <div>
                 <label className="font-bold block mb-1">Empresa do sistema / área de acesso *</label>
                 <Select value={selectedCompanyId ? String(selectedCompanyId) : ""} onValueChange={(value) => setSelectedCompanyId(Number(value))}>
@@ -1235,7 +1464,14 @@ export default function Home() {
                   toast.error("Preencha o nome da empresa e a cidade!");
                   return;
                 }
-                if (user?.role === "platform_admin") {
+                if (editingClientId) {
+                  if (isPlatformAdmin) {
+                    if (!editingClientCompanyId) { toast.error("Selecione a empresa do cliente."); return; }
+                    platformUpdateClientMutation.mutate({ ...clientForm, id: editingClientId, companyId: editingClientCompanyId });
+                  } else {
+                    updateClientMutation.mutate({ ...clientForm, id: editingClientId });
+                  }
+                } else if (isPlatformAdmin) {
                   if (!selectedCompanyId) {
                     toast.error("Selecione a empresa responsável pelo cliente.");
                     return;
@@ -1246,7 +1482,7 @@ export default function Home() {
                 }
               }}
             >
-              Salvar Cliente
+              {editingClientId ? "Salvar alterações" : "Salvar Cliente"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1367,7 +1603,15 @@ export default function Home() {
                   toast.error("Informe a data de vencimento!");
                   return;
                 }
-                createExtinguisherMutation.mutate(extinguisherForm);
+                if (isPlatformAdmin) {
+                  if (!selectedCompanyId) {
+                    toast.error("Selecione a empresa responsável pelo extintor.");
+                    return;
+                  }
+                  platformCreateExtinguisherMutation.mutate({ ...extinguisherForm, companyId: selectedCompanyId });
+                } else {
+                  createExtinguisherMutation.mutate(extinguisherForm);
+                }
               }}
             >
               Salvar Extintor
@@ -1379,12 +1623,12 @@ export default function Home() {
       {/* ========================================================
           MODAL: CRIAR ORDEM DE SERVIÇO COMPLETA
       ======================================================== */}
-      <Dialog open={isOrderModalOpen} onOpenChange={setIsOrderModalOpen}>
+      <Dialog open={isOrderModalOpen} onOpenChange={(open) => { setIsOrderModalOpen(open); if (!open) { setEditingOrderId(null); setEditingOrderCompanyId(null); } }}>
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold flex items-center gap-2">
               <FileText className="w-5 h-5 text-red-600" />
-              Criar Ordem de Serviço
+              {editingOrderId ? "Editar Ordem de Serviço" : "Criar Ordem de Serviço"}
             </DialogTitle>
           </DialogHeader>
 
@@ -1599,7 +1843,7 @@ export default function Home() {
             </div>
 
             {/* DADOS DO RESPONSÁVEL */}
-            <div className="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
+            <div className="grid grid-cols-1 gap-3 bg-slate-50 p-3 rounded-lg border border-slate-200 sm:grid-cols-3">
               <div>
                 <label className="font-bold block mb-1">Nome Responsável</label>
                 <Input
@@ -1623,16 +1867,16 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <label className="mb-1 block font-bold">Observações da Ordem de Serviço</label>
+            <div className="rounded-lg border border-red-200 bg-red-50/40 p-3">
+              <label className="mb-1 block font-bold text-slate-800">Observações da Ordem de Serviço</label>
               <Textarea
                 rows={4}
                 placeholder="Descreva informações adicionais, recomendações ou pendências desta OS."
                 value={orderForm.observations}
                 onChange={(e) => setOrderForm({ ...orderForm, observations: e.target.value })}
-                className="min-h-[96px] resize-y bg-white"
+                className="min-h-[110px] resize-y bg-white leading-relaxed"
               />
-              <p className="mt-1 text-xs text-slate-500">Esse texto será exibido no documento e no PDF da ordem.</p>
+              <p className="mt-1 text-xs text-slate-500">Esse texto será exibido em uma área própria, com quebra automática de linha, no documento e no PDF da ordem.</p>
             </div>
           </div>
 
@@ -1647,14 +1891,27 @@ export default function Home() {
                   toast.error("Selecione o cliente!");
                   return;
                 }
-                createOrderMutation.mutate({
-                  ...orderForm,
-                  totalAmount: calculatedTotalOrder,
-                });
+                if (editingOrderId) {
+                  if (isPlatformAdmin) {
+                    if (!editingOrderCompanyId) { toast.error("Não foi possível identificar a empresa da OS."); return; }
+                    platformUpdateOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder, id: editingOrderId, companyId: editingOrderCompanyId });
+                  } else {
+                    updateOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder, id: editingOrderId });
+                  }
+                } else if (isPlatformAdmin) {
+                  const orderCompanyId = selectedCompanyId ?? effectiveClients.find((client: any) => client.id === orderForm.clientId)?.accountId ?? null;
+                  if (!orderCompanyId) {
+                    toast.error("Selecione a empresa responsável pela ordem de serviço.");
+                    return;
+                  }
+                  platformCreateOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder, companyId: orderCompanyId });
+                } else {
+                  createOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder });
+                }
               }}
             >
               <Printer className="w-4 h-4" />
-              Salvar & Visualizar Impressão
+              {editingOrderId ? "Salvar alterações e visualizar" : "Salvar & Visualizar Impressão"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1720,20 +1977,39 @@ function ClientDetailCard({
   extinguisherFilter = "all",
   onAddExtinguisher,
   onCreateOrder,
+  onEdit,
+  onEditOrder,
+  onViewOrder,
   onDelete,
 }: {
   client: any;
   extinguisherFilter?: "all" | "active";
   onAddExtinguisher: () => void;
   onCreateOrder: () => void;
+  onEdit: () => void;
+  onEditOrder: (id: number) => void;
+  onViewOrder: (id: number) => void;
   onDelete: () => void;
 }) {
   const { user } = useAuth();
   const tenantKey = user && user.id < 0 ? String(Math.abs(user.id)) : null;
+  const isPlatformAdmin = user?.role === "platform_admin";
   const extinguishersQuery = trpc.extinguishers.listByClient.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey) });
+  const ordersQuery = trpc.orders.list.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey) });
+  const platformExtinguishersQuery = trpc.platform.data.extinguishers.useQuery({ companyId: client.accountId }, { enabled: Boolean(isPlatformAdmin && client.accountId) });
+  const platformOrdersQuery = trpc.platform.data.orders.useQuery({ companyId: client.accountId }, { enabled: Boolean(isPlatformAdmin && client.accountId) });
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyQuery = trpc.orders.history.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey && historyOpen) });
+  const platformHistoryQuery = trpc.platform.data.history.useQuery({ companyId: client.accountId, clientId: client.id }, { enabled: Boolean(isPlatformAdmin && historyOpen && client.accountId) });
+  const visibleHistory = isPlatformAdmin ? (platformHistoryQuery.data || []) : (historyQuery.data || []);
   const isOnline = useOnlineStatus();
   const localExtinguishers = useLiveQuery(() => tenantKey ? offlineDb.extinguishers.where("tenantKey").equals(tenantKey).filter((row) => row.clientId === client.id).toArray() : Promise.resolve([] as any[]), [tenantKey, client.id], [] as any[]);
-  const extinguisherRows = isOnline && extinguishersQuery.data ? extinguishersQuery.data : localExtinguishers;
+  const extinguisherRows = isPlatformAdmin
+    ? (platformExtinguishersQuery.data || []).filter((ext: any) => ext.clientId === client.id)
+    : isOnline && extinguishersQuery.data ? extinguishersQuery.data : localExtinguishers;
+  const clientOrders = isPlatformAdmin
+    ? (platformOrdersQuery.data || []).filter((entry: any) => entry.order.clientId === client.id)
+    : (ordersQuery.data || []);
   const visibleExtinguishers = (extinguisherRows || []).filter((ext) => {
     if (extinguisherFilter === "all") return true;
     const expiration = new Date(ext.expirationDate);
@@ -1782,6 +2058,8 @@ function ClientDetailCard({
             Gerar OS
           </Button>
 
+          <Button size="sm" variant="outline" className="text-xs h-8 gap-1" onClick={onEdit}><Edit className="w-3.5 h-3.5 text-blue-600" /> Editar</Button>
+
           <Button
             size="sm"
             variant="ghost"
@@ -1790,6 +2068,16 @@ function ClientDetailCard({
           >
             <Trash2 className="w-4 h-4" />
           </Button>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-blue-100 bg-blue-50/50 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-blue-900">Histórico de atendimento</p>
+            <p className="mt-0.5 text-xs text-blue-800">{clientOrders.length} ordem(ns) registrada(s) para este cliente.</p>
+          </div>
+          <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={() => setHistoryOpen(true)}><History className="h-3.5 w-3.5" /> Ver histórico completo</Button>
         </div>
       </div>
 
@@ -1860,6 +2148,43 @@ function ClientDetailCard({
           </div>
         )}
       </div>
+
+      <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Histórico de atendimento — {client.companyName}</DialogTitle></DialogHeader>
+          <div className="space-y-3 py-2">
+            {visibleHistory.map(({ order, client: orderClient, items }: any) => (
+              <div key={order.id} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 pb-3">
+                  <div><p className="font-mono text-sm font-bold text-slate-900">OS #{String(order.orderNumber).padStart(5, "0")}</p><p className="mt-1 text-xs text-slate-600"><strong>Data do atendimento:</strong> {new Date(order.orderDate).toLocaleDateString("pt-BR")}</p><p className="text-xs text-slate-500">Cliente: {orderClient?.companyName || client.companyName}</p></div>
+                  <div className="text-right"><p className="text-[10px] font-bold uppercase text-slate-400">Valor total</p><span className="font-mono text-sm font-bold text-slate-900">R$ {Number(order.totalAmount || 0).toFixed(2)}</span></div>
+                </div>
+                <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                  <p><strong>Troca/entrega:</strong> {order.replacedAndDelivered || "—"}</p>
+                  <p><strong>Deixou reserva:</strong> {order.leftReserve || "—"}</p>
+                  <p><strong>Detalhes da reserva:</strong> {order.reserveDetails || "—"}</p>
+                  <p><strong>Vencimento do extintor:</strong> {order.extinguisherExpiration || "—"}</p>
+                  <p><strong>Vencimento do alvará:</strong> {order.licenseExpiration || "—"}</p>
+                  <p><strong>Pagamento:</strong> {order.paymentMethod || "—"}{order.installmentsCount && order.installmentsCount > 1 ? ` · ${order.installmentsCount} parcelas` : ""}</p>
+                  {order.installmentDates && <p><strong>Datas das parcelas:</strong> {order.installmentDates}</p>}
+                  <p><strong>Responsável:</strong> {order.responsibleName || "—"}</p>
+                  <p><strong>CPF:</strong> {order.responsibleCpf || "—"}</p>
+                  <p><strong>Data de nascimento:</strong> {order.responsibleBirthDate || "—"}</p>
+                </div>
+                <div className="mt-3 rounded-md border border-slate-100 bg-slate-50 p-3">
+                  <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">Serviços e produtos realizados neste atendimento</p>
+                  {items?.length > 0 ? <div className="space-y-1.5">{items.map((item: any) => <div key={item.id} className="grid grid-cols-[1fr_auto_auto_auto] gap-2 text-xs"><span className="min-w-0 break-words font-medium">{item.description}</span><span>{item.quantity}×</span><span>R$ {Number(item.unitPrice || 0).toFixed(2)}</span><strong>R$ {Number(item.totalPrice || 0).toFixed(2)}</strong></div>)}</div> : <p className="text-xs text-slate-500">Nenhum item detalhado registrado nesta OS.</p>}
+                </div>
+                <div className="mt-3 rounded-md border border-amber-100 bg-amber-50/50 p-3 text-xs"><strong>Observações do atendimento:</strong><p className="mt-1 whitespace-pre-wrap break-words">{order.observations || "Nenhuma observação registrada."}</p></div>
+                <p className="mt-3 text-xs text-slate-500"><strong>Criada por:</strong> {order.createdByName || "Usuário não registrado (OS antiga)"}</p>
+                <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={() => onViewOrder(order.id)}><Eye className="h-3.5 w-3.5" /> Ver / imprimir OS</Button><Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={() => { setHistoryOpen(false); onEditOrder(order.id); }}><Edit className="h-3.5 w-3.5 text-blue-600" /> Editar OS</Button></div>
+              </div>
+            ))}
+            {visibleHistory.length === 0 && !historyQuery.isLoading && !platformHistoryQuery.isLoading && <div className="rounded-lg bg-slate-50 p-6 text-center text-sm text-slate-500">Nenhum atendimento registrado para este cliente.</div>}
+          </div>
+          <DialogFooter><Button variant="outline" onClick={() => setHistoryOpen(false)}>Fechar</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
