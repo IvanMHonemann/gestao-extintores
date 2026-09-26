@@ -78,6 +78,8 @@ export default function Home() {
   const [returnToOrderAfterClient, setReturnToOrderAfterClient] = useState(false);
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
   const platformClientsInput = useMemo(() => selectedCompanyId ? { companyId: selectedCompanyId } : undefined, [selectedCompanyId]);
+  const platformTrashInput = useMemo(() => ({ companyId: selectedCompanyId || 0 }), [selectedCompanyId]);
+  const canAccessTrash = isCompanyAdmin || isPlatformAdmin;
 
   // Seleções para sub-ações
   const [selectedClientIdForExtinguisher, setSelectedClientIdForExtinguisher] = useState<number | null>(null);
@@ -94,6 +96,8 @@ export default function Home() {
   const platformExtinguishersQuery = trpc.platform.data.extinguishers.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
   const platformOrdersQuery = trpc.platform.data.orders.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
   const trashQuery = trpc.trash.list.useQuery(undefined, { enabled: Boolean(tenantKey && isCompanyAdmin) });
+  const platformTrashQuery = trpc.platform.data.trash.list.useQuery(platformTrashInput, { enabled: Boolean(isPlatformAdmin && selectedCompanyId) });
+  const visibleTrash = isPlatformAdmin ? (platformTrashQuery.data || []) : (trashQuery.data || []);
   const remoteExtinguishers = useMemo(() => (alertsQuery.data || []).map((item: any) => item.extinguisher).filter(Boolean), [alertsQuery.data]);
   const orderDetailsQuery = trpc.orders.byId.useQuery(
     { id: viewingOrderId! },
@@ -162,6 +166,27 @@ export default function Home() {
     onSuccess: async () => {
       toast.success("Item excluído permanentemente.");
       await utils.trash.list.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const platformRestoreTrashMutation = trpc.platform.data.trash.restore.useMutation({
+    onSuccess: async (_, input) => {
+      toast.success("Item restaurado com sucesso!");
+      await Promise.all([
+        utils.platform.data.trash.list.invalidate({ companyId: input.companyId }),
+        utils.platform.data.clients.invalidate({ companyId: input.companyId }),
+        utils.platform.data.extinguishers.invalidate({ companyId: input.companyId }),
+        utils.platform.data.orders.invalidate({ companyId: input.companyId }),
+      ]);
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const platformPermanentlyDeleteTrashMutation = trpc.platform.data.trash.permanentlyDelete.useMutation({
+    onSuccess: async (_, input) => {
+      toast.success("Item excluído permanentemente.");
+      await utils.platform.data.trash.list.invalidate({ companyId: input.companyId });
     },
     onError: (err) => toast.error(err.message),
   });
@@ -738,7 +763,8 @@ export default function Home() {
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "clients" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("clients")}><MapPin className="h-4 w-4" /> Clientes por Cidade</Button>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "alerts" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("alerts")}><BellRing className="h-4 w-4 text-amber-400" /> Alertas de Vencimento {(effectiveStats?.nearExpirationCount || 0) + (effectiveStats?.expiredCount || 0) > 0 && <span className="ml-auto rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold">{(effectiveStats?.nearExpirationCount || 0) + (effectiveStats?.expiredCount || 0)}</span>}</Button>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "orders" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("orders")}><FileText className="h-4 w-4" /> Ordens de Serviço</Button>
-          {isCompanyAdmin && <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "trash" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("trash")}><Trash2 className="h-4 w-4" /> Lixeira <span className="ml-auto rounded-full bg-slate-700 px-2 py-0.5 text-[10px]">{trashQuery.data?.length || 0} · 24h</span></Button>}
+          {isPlatformAdmin && <div className="mb-2 rounded-lg border border-slate-700 bg-slate-900 p-2"><label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-400">Empresa da lixeira</label><Select value={selectedCompanyId ? String(selectedCompanyId) : ""} onValueChange={(value) => setSelectedCompanyId(Number(value))}><SelectTrigger className="h-8 w-full border-slate-700 bg-slate-950 text-xs text-slate-200"><SelectValue placeholder="Selecione a empresa" /></SelectTrigger><SelectContent>{(companiesQuery.data || []).filter((company) => company.active).map((company) => <SelectItem key={company.id} value={String(company.id)}>{company.name}</SelectItem>)}</SelectContent></Select></div>}
+          {canAccessTrash && <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "trash" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("trash")}><Trash2 className="h-4 w-4" /> Lixeira <span className="ml-auto rounded-full bg-slate-700 px-2 py-0.5 text-[10px]">{visibleTrash.length} · 24h</span></Button>}
           <div className="my-4 border-t border-slate-800" />
           <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Ações rápidas</p>
           <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setIsClientModalOpen(true); setIsSidebarOpen(false); }}><Plus className="h-4 w-4" /> Cadastrar Cliente</Button>
@@ -1348,14 +1374,14 @@ export default function Home() {
           </div>
         )}
 
-        {activeTab === "trash" && isCompanyAdmin && (
+        {activeTab === "trash" && canAccessTrash && (
           <div className="space-y-6">
             <div>
               <h2 className="text-xl font-bold text-slate-900">Lixeira de segurança</h2>
               <p className="text-xs text-slate-500">Itens excluídos ficam armazenados por 24 horas. Restaure para devolver ao sistema ou exclua permanentemente para remover o backup.</p>
             </div>
             <div className="overflow-hidden rounded-xl border border-amber-200 bg-white shadow-sm">
-              {(trashQuery.data || []).map((item: any) => {
+              {visibleTrash.map((item: any) => {
                 const remainingHours = Math.max(0, Math.ceil((new Date(item.expiresAt).getTime() - Date.now()) / 3600000));
                 const typeLabel = item.itemType === "client" ? "Cliente e histórico" : item.itemType === "order" ? "Ordem de serviço" : "Extintor";
                 return <div key={item.id} className="flex flex-col gap-4 border-b border-slate-100 p-4 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
@@ -1368,9 +1394,11 @@ export default function Home() {
                     <Button
                       size="sm"
                       className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700"
-                      disabled={restoreTrashMutation.isPending || permanentlyDeleteTrashMutation.isPending}
+                      disabled={restoreTrashMutation.isPending || permanentlyDeleteTrashMutation.isPending || platformRestoreTrashMutation.isPending || platformPermanentlyDeleteTrashMutation.isPending}
                       onClick={() => {
-                        if (confirm(`Restaurar “${item.label}” para o sistema?`)) restoreTrashMutation.mutate({ id: item.id });
+                        if (!confirm(`Restaurar “${item.label}” para o sistema?`)) return;
+                        if (isPlatformAdmin && selectedCompanyId) platformRestoreTrashMutation.mutate({ companyId: selectedCompanyId, id: item.id });
+                        else restoreTrashMutation.mutate({ id: item.id });
                       }}
                     >
                       <History className="h-4 w-4" /> Restaurar
@@ -1379,9 +1407,11 @@ export default function Home() {
                       size="sm"
                       variant="outline"
                       className="gap-1.5 border-red-300 text-red-700 hover:bg-red-50"
-                      disabled={restoreTrashMutation.isPending || permanentlyDeleteTrashMutation.isPending}
+                      disabled={restoreTrashMutation.isPending || permanentlyDeleteTrashMutation.isPending || platformRestoreTrashMutation.isPending || platformPermanentlyDeleteTrashMutation.isPending}
                       onClick={() => {
-                        if (confirm(`Excluir “${item.label}” permanentemente? Esta ação não pode ser desfeita.`)) permanentlyDeleteTrashMutation.mutate({ id: item.id });
+                        if (!confirm(`Excluir “${item.label}” permanentemente? Esta ação não pode ser desfeita.`)) return;
+                        if (isPlatformAdmin && selectedCompanyId) platformPermanentlyDeleteTrashMutation.mutate({ companyId: selectedCompanyId, id: item.id });
+                        else permanentlyDeleteTrashMutation.mutate({ id: item.id });
                       }}
                     >
                       <Trash2 className="h-4 w-4" /> Excluir definitivamente
@@ -1389,7 +1419,7 @@ export default function Home() {
                   </div>
                 </div>;
               })}
-              {(trashQuery.data || []).length === 0 && <div className="p-10 text-center text-sm text-slate-500">A lixeira está vazia.</div>}
+              {visibleTrash.length === 0 && <div className="p-10 text-center text-sm text-slate-500">A lixeira está vazia para a empresa selecionada.</div>}
             </div>
           </div>
         )}
