@@ -144,6 +144,28 @@ export default function Home() {
   // Mutations
   const utils = trpc.useUtils();
 
+  const restoreTrashMutation = trpc.trash.restore.useMutation({
+    onSuccess: async () => {
+      toast.success("Item restaurado com sucesso!");
+      await Promise.all([
+        utils.trash.list.invalidate(),
+        utils.clients.list.invalidate(),
+        utils.extinguishers.alerts.invalidate(),
+        utils.orders.list.invalidate(),
+        utils.dashboard.stats.invalidate(),
+      ]);
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const permanentlyDeleteTrashMutation = trpc.trash.permanentlyDelete.useMutation({
+    onSuccess: async () => {
+      toast.success("Item excluído permanentemente.");
+      await utils.trash.list.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   useEffect(() => {
     if (selectedCompanyId === null && companiesQuery.data?.length) {
       setSelectedCompanyId(companiesQuery.data.find((company) => company.active)?.id ?? companiesQuery.data[0].id);
@@ -716,7 +738,7 @@ export default function Home() {
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "clients" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("clients")}><MapPin className="h-4 w-4" /> Clientes por Cidade</Button>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "alerts" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("alerts")}><BellRing className="h-4 w-4 text-amber-400" /> Alertas de Vencimento {(effectiveStats?.nearExpirationCount || 0) + (effectiveStats?.expiredCount || 0) > 0 && <span className="ml-auto rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold">{(effectiveStats?.nearExpirationCount || 0) + (effectiveStats?.expiredCount || 0)}</span>}</Button>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "orders" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("orders")}><FileText className="h-4 w-4" /> Ordens de Serviço</Button>
-          {isCompanyAdmin && <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "trash" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("trash")}><Trash2 className="h-4 w-4" /> Lixeira <span className="ml-auto rounded-full bg-slate-700 px-2 py-0.5 text-[10px]">24h</span></Button>}
+          {isCompanyAdmin && <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "trash" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("trash")}><Trash2 className="h-4 w-4" /> Lixeira <span className="ml-auto rounded-full bg-slate-700 px-2 py-0.5 text-[10px]">{trashQuery.data?.length || 0} · 24h</span></Button>}
           <div className="my-4 border-t border-slate-800" />
           <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Ações rápidas</p>
           <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setIsClientModalOpen(true); setIsSidebarOpen(false); }}><Plus className="h-4 w-4" /> Cadastrar Cliente</Button>
@@ -1330,13 +1352,42 @@ export default function Home() {
           <div className="space-y-6">
             <div>
               <h2 className="text-xl font-bold text-slate-900">Lixeira de segurança</h2>
-              <p className="text-xs text-slate-500">Itens excluídos ficam armazenados por 24 horas e são removidos automaticamente depois desse prazo.</p>
+              <p className="text-xs text-slate-500">Itens excluídos ficam armazenados por 24 horas. Restaure para devolver ao sistema ou exclua permanentemente para remover o backup.</p>
             </div>
             <div className="overflow-hidden rounded-xl border border-amber-200 bg-white shadow-sm">
               {(trashQuery.data || []).map((item: any) => {
                 const remainingHours = Math.max(0, Math.ceil((new Date(item.expiresAt).getTime() - Date.now()) / 3600000));
                 const typeLabel = item.itemType === "client" ? "Cliente e histórico" : item.itemType === "order" ? "Ordem de serviço" : "Extintor";
-                return <div key={item.id} className="flex flex-col gap-2 border-b border-slate-100 p-4 last:border-b-0 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-semibold text-slate-900">{item.label}</p><p className="text-xs text-slate-500">{typeLabel} · excluído em {new Date(item.deletedAt).toLocaleString("pt-BR")}</p></div><Badge variant="outline" className="w-fit border-amber-300 bg-amber-50 text-amber-800">Expira em aproximadamente {remainingHours}h</Badge></div>;
+                return <div key={item.id} className="flex flex-col gap-4 border-b border-slate-100 p-4 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="break-words font-semibold text-slate-900">{item.label}</p>
+                    <p className="text-xs text-slate-500">{typeLabel} · excluído em {new Date(item.deletedAt).toLocaleString("pt-BR")}</p>
+                    <Badge variant="outline" className="mt-2 w-fit border-amber-300 bg-amber-50 text-amber-800">Expira em aproximadamente {remainingHours}h</Badge>
+                  </div>
+                  <div className="flex w-full flex-col gap-2 sm:w-auto sm:min-w-56 sm:flex-row">
+                    <Button
+                      size="sm"
+                      className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700"
+                      disabled={restoreTrashMutation.isPending || permanentlyDeleteTrashMutation.isPending}
+                      onClick={() => {
+                        if (confirm(`Restaurar “${item.label}” para o sistema?`)) restoreTrashMutation.mutate({ id: item.id });
+                      }}
+                    >
+                      <History className="h-4 w-4" /> Restaurar
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 border-red-300 text-red-700 hover:bg-red-50"
+                      disabled={restoreTrashMutation.isPending || permanentlyDeleteTrashMutation.isPending}
+                      onClick={() => {
+                        if (confirm(`Excluir “${item.label}” permanentemente? Esta ação não pode ser desfeita.`)) permanentlyDeleteTrashMutation.mutate({ id: item.id });
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4" /> Excluir definitivamente
+                    </Button>
+                  </div>
+                </div>;
               })}
               {(trashQuery.data || []).length === 0 && <div className="p-10 text-center text-sm text-slate-500">A lixeira está vazia.</div>}
             </div>

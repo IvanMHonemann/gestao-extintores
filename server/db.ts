@@ -334,6 +334,82 @@ export async function listTrash(accountId: number) {
   return await db.select().from(trashItems).where(and(eq(trashItems.accountId, tenant), sql`${trashItems.expiresAt} > NOW()`)).orderBy(desc(trashItems.deletedAt));
 }
 
+function parseTrashSnapshot(snapshot: string): any {
+  try {
+    return JSON.parse(snapshot);
+  } catch {
+    throw new Error("O item da lixeira está corrompido e não pode ser restaurado.");
+  }
+}
+
+function restoreDateFields<T extends Record<string, any>>(value: T): T {
+  const restored: Record<string, any> = { ...value };
+  for (const key of ["createdAt", "updatedAt"] as const) {
+    if (restored[key] && !(restored[key] instanceof Date)) restored[key] = new Date(restored[key]);
+  }
+  return restored as T;
+}
+
+export async function restoreTrashItem(id: number, accountId: number) {
+  const tenant = requireAccountId(accountId);
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const item = (await db.select().from(trashItems).where(and(eq(trashItems.id, id), eq(trashItems.accountId, tenant))).limit(1))[0];
+  if (!item) throw new Error("Item não encontrado na lixeira ou sem permissão.");
+  if (new Date(item.expiresAt).getTime() <= Date.now()) {
+    await db.delete(trashItems).where(and(eq(trashItems.id, id), eq(trashItems.accountId, tenant)));
+    throw new Error("O prazo de restauração deste item expirou.");
+  }
+
+  const snapshot = parseTrashSnapshot(item.snapshot);
+  await db.transaction(async (tx) => {
+    if (item.itemType === "client") {
+      const clientData = snapshot.client || snapshot;
+      const orders = snapshot.orders || [];
+      const items = snapshot.items || [];
+      const savedExtinguishers = snapshot.extinguishers || [];
+      const existingClient = await tx.select({ id: clients.id }).from(clients).where(eq(clients.id, item.originalId)).limit(1);
+      if (existingClient[0]) throw new Error("Já existe um cliente com o mesmo identificador. Exclua o conflito antes de restaurar.");
+      await tx.insert(clients).values({ ...restoreDateFields(clientData), id: item.originalId, accountId: tenant } as any);
+      for (const extinguisher of savedExtinguishers) {
+        await tx.insert(extinguishers).values({ ...restoreDateFields(extinguisher), accountId: tenant, clientId: item.originalId } as any);
+      }
+      for (const savedOrder of orders) {
+        const { client: _client, items: _nestedItems, ...orderData } = savedOrder;
+        void _client; void _nestedItems;
+        await tx.insert(serviceOrders).values({ ...restoreDateFields(orderData), accountId: tenant, clientId: item.originalId } as any);
+        const orderItems = items.filter((entry: any) => entry.serviceOrderId === savedOrder.id);
+        if (orderItems.length) await tx.insert(serviceOrderItems).values(orderItems.map((entry: any) => ({ ...restoreDateFields(entry), serviceOrderId: savedOrder.id })) as any);
+      }
+    } else if (item.itemType === "order") {
+      const savedOrder = snapshot.order || snapshot;
+      const { client: _client, items: nestedItems, ...orderData } = savedOrder;
+      void _client;
+      const orderItems = snapshot.items || nestedItems || [];
+      const client = await tx.select({ id: clients.id }).from(clients).where(and(eq(clients.id, orderData.clientId), eq(clients.accountId, tenant))).limit(1);
+      if (!client[0]) throw new Error("O cliente vinculado à OS não existe mais; restaure o cliente antes.");
+      await tx.insert(serviceOrders).values({ ...restoreDateFields(orderData), id: item.originalId, accountId: tenant } as any);
+      if (orderItems.length) await tx.insert(serviceOrderItems).values(orderItems.map((entry: any) => ({ ...restoreDateFields(entry), serviceOrderId: item.originalId })) as any);
+    } else if (item.itemType === "extinguisher") {
+      const clientId = snapshot.clientId;
+      const client = await tx.select({ id: clients.id }).from(clients).where(and(eq(clients.id, clientId), eq(clients.accountId, tenant))).limit(1);
+      if (!client[0]) throw new Error("O cliente vinculado ao extintor não existe mais; restaure o cliente antes.");
+      await tx.insert(extinguishers).values({ ...restoreDateFields(snapshot), id: item.originalId, accountId: tenant } as any);
+    } else {
+      throw new Error("Tipo de item da lixeira não reconhecido.");
+    }
+    await tx.delete(trashItems).where(and(eq(trashItems.id, id), eq(trashItems.accountId, tenant)));
+  });
+}
+
+export async function permanentlyDeleteTrashItem(id: number, accountId: number) {
+  const tenant = requireAccountId(accountId);
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const result = await db.delete(trashItems).where(and(eq(trashItems.id, id), eq(trashItems.accountId, tenant)));
+  if (!result[0]?.affectedRows) throw new Error("Item não encontrado na lixeira ou sem permissão.");
+}
+
 /* Configuração por empresa */
 export async function getSetting(key: string, accountId: number, defaultValue = "30") {
   const tenant = requireAccountId(accountId);

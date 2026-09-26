@@ -168,6 +168,8 @@ export const appRouter = router({
 
   trash: router({
     list: companyAdminProcedure.query(({ ctx }) => db.listTrash(ctx.accountId)),
+    restore: companyAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => { await db.restoreTrashItem(input.id, ctx.accountId); return { success: true } as const; }),
+    permanentlyDelete: companyAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => { await db.permanentlyDeleteTrashItem(input.id, ctx.accountId); return { success: true } as const; }),
   }),
 });
 
