@@ -50,8 +50,9 @@ export default function Home() {
   const { user, logout } = useAuth();
   const [, navigate] = useLocation();
   const tenantKey = user && user.id < 0 ? String(Math.abs(user.id)) : null;
+  const isPlatformAdmin = user?.role === "platform_admin";
   const isCompanyAdmin = user?.role === "company_admin";
-  const canManageUsers = isCompanyAdmin || user?.role === "platform_admin";
+  const canManageUsers = isCompanyAdmin || isPlatformAdmin;
   const [activeTab, setActiveTab] = useState<"dashboard" | "clients" | "extinguishers" | "orders" | "alerts">("dashboard");
   const [selectedCity, setSelectedCity] = useState<string>("TODAS");
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -69,6 +70,7 @@ export default function Home() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [returnToOrderAfterClient, setReturnToOrderAfterClient] = useState(false);
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
+  const platformClientsInput = useMemo(() => selectedCompanyId ? { companyId: selectedCompanyId } : undefined, [selectedCompanyId]);
 
   // Seleções para sub-ações
   const [selectedClientIdForExtinguisher, setSelectedClientIdForExtinguisher] = useState<number | null>(null);
@@ -80,7 +82,8 @@ export default function Home() {
   const alertsQuery = trpc.extinguishers.alerts.useQuery(undefined, { enabled: Boolean(tenantKey) });
   const ordersQuery = trpc.orders.list.useQuery(undefined, { enabled: Boolean(tenantKey) });
   const alertDaysQuery = trpc.settings.getAlertDays.useQuery(undefined, { enabled: Boolean(tenantKey) });
-  const companiesQuery = trpc.platform.companies.list.useQuery(undefined, { enabled: user?.role === "platform_admin" });
+  const companiesQuery = trpc.platform.companies.list.useQuery(undefined, { enabled: isPlatformAdmin });
+  const platformClientsQuery = trpc.platform.data.clients.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
   const remoteExtinguishers = useMemo(() => (alertsQuery.data || []).map((item: any) => item.extinguisher).filter(Boolean), [alertsQuery.data]);
   const orderDetailsQuery = trpc.orders.byId.useQuery(
     { id: viewingOrderId! },
@@ -95,7 +98,7 @@ export default function Home() {
     alerts: alertsQuery.data as any,
     alertDays: alertDaysQuery.data,
   });
-  const allClients = useMemo(() => offline.clients || [], [offline.clients]);
+  const allClients = useMemo(() => isPlatformAdmin ? (platformClientsQuery.data || []) : (offline.clients || []), [isPlatformAdmin, platformClientsQuery.data, offline.clients]);
   const effectiveClients = useMemo(() => allClients.filter((client: any) => selectedCity === "TODAS" || client.city === selectedCity), [allClients, selectedCity]);
   const effectiveCities = useMemo(() => Array.from(new Set(allClients.map((client: any) => client.city).filter(Boolean))).sort(), [allClients]);
   const effectiveAlerts = offline.alerts || [];
@@ -149,9 +152,17 @@ export default function Home() {
   });
 
   const platformCreateClientMutation = trpc.platform.data.createClient.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (result, input) => {
       toast.success("Cliente cadastrado com sucesso!");
       setIsClientModalOpen(false);
+      const savedClient = {
+        ...input,
+        id: result.id,
+        accountId: input.companyId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      utils.platform.data.clients.setData({ companyId: input.companyId }, (current) => [savedClient as any, ...((current || []) as any[]).filter((client) => client.id !== result.id)]);
       await utils.platform.data.clients.invalidate();
     },
     onError: (err) => toast.error(err.message),
@@ -1133,7 +1144,7 @@ export default function Home() {
             <DialogTitle className="text-lg font-bold">Cadastrar Novo Cliente</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 py-2 text-xs">
-            {user?.role === "platform_admin" && (
+            {isPlatformAdmin && (
               <div>
                 <label className="font-bold block mb-1">Empresa do sistema / área de acesso *</label>
                 <Select value={selectedCompanyId ? String(selectedCompanyId) : ""} onValueChange={(value) => setSelectedCompanyId(Number(value))}>
@@ -1244,7 +1255,7 @@ export default function Home() {
                   toast.error("Preencha o nome da empresa e a cidade!");
                   return;
                 }
-                if (user?.role === "platform_admin") {
+                if (isPlatformAdmin) {
                   if (!selectedCompanyId) {
                     toast.error("Selecione a empresa responsável pelo cliente.");
                     return;

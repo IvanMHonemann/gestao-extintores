@@ -1,0 +1,93 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const dbMock = vi.hoisted(() => ({
+  getCompanyById: vi.fn(),
+  createClient: vi.fn(),
+}));
+
+vi.mock("./db", () => dbMock);
+
+import { appRouter } from "./routers";
+
+describe("platform.data.createClient", () => {
+  beforeEach(() => {
+    dbMock.getCompanyById.mockReset();
+    dbMock.createClient.mockReset();
+  });
+
+  it("grava o cliente na empresa selecionada pelo administrador global", async () => {
+    dbMock.getCompanyById.mockResolvedValue({ id: 7, name: "Empresa Teste", active: true });
+    dbMock.createClient.mockResolvedValue(42);
+
+    const caller = appRouter.createCaller({
+      user: {
+        id: 99,
+        openId: "platform:99",
+        name: "Administrador Global",
+        email: "admin@example.com",
+        loginMethod: "password",
+        role: "platform_admin",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastSignedIn: new Date(),
+      },
+      isPlatformAdmin: true,
+      platformAdminId: 99,
+      req: { protocol: "https", headers: {} } as any,
+      res: {} as any,
+    });
+
+    const result = await caller.platform.data.createClient({
+      companyId: 7,
+      companyName: "Cliente Novo",
+      city: "Sapiranga",
+      cnpj: "",
+      address: "",
+      cep: "",
+      phone: "",
+      contactName: "",
+      cpf: "",
+      birthDate: "",
+      notes: "",
+    });
+
+    expect(result).toEqual({ id: 42 });
+    expect(dbMock.getCompanyById).toHaveBeenCalledWith(7);
+    expect(dbMock.createClient).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 7,
+      companyName: "Cliente Novo",
+      city: "Sapiranga",
+      cnpj: null,
+      address: null,
+    }));
+  });
+
+  it("recusa salvar em empresa inexistente ou inativa", async () => {
+    dbMock.getCompanyById.mockResolvedValue({ id: 7, name: "Empresa Inativa", active: false });
+
+    const caller = appRouter.createCaller({
+      user: {
+        id: 99,
+        openId: "platform:99",
+        name: "Administrador Global",
+        email: "admin@example.com",
+        loginMethod: "password",
+        role: "platform_admin",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastSignedIn: new Date(),
+      },
+      isPlatformAdmin: true,
+      platformAdminId: 99,
+      req: { protocol: "https", headers: {} } as any,
+      res: {} as any,
+    });
+
+    await expect(caller.platform.data.createClient({
+      companyId: 7,
+      companyName: "Cliente Não Salvo",
+      city: "Sapiranga",
+    })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(dbMock.createClient).not.toHaveBeenCalled();
+  });
+});
