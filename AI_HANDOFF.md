@@ -37,7 +37,9 @@ O GitHub Actions repete a validação no servidor. Após CI verde no `main`, a i
 
 ## Regras para a IA
 
-Antes de editar, leia `README.md`, `PORTABILITY.md`, `OPERATIONS.md` e `DEPLOYMENT.md`. Preserve `drizzle/schema.ts` e as migrações. Faça backup antes de alterar schema. Nunca execute restauração destrutiva sem `ALLOW_DESTRUCTIVE_RESTORE=true` e confirmação explícita. Nunca coloque `.env`, URLs de banco, chaves, sessões, backups ou dados de clientes no Git.
+Antes de editar, leia `README.md`, `PORTABILITY.md`, `OPERATIONS.md`, `DEPLOYMENT.md` e `DATABASE_MIGRATION_GUIDE.md`. Preserve `drizzle/schema.ts` e as migrações. Faça backup antes de alterar schema. Nunca execute restauração destrutiva sem `ALLOW_DESTRUCTIVE_RESTORE=true` e confirmação explícita. Nunca coloque `.env`, URLs de banco, chaves, sessões, backups ou dados de clientes no Git.
+
+O guia de banco contém apenas host, porta, schema e placeholders. A senha precisa ser rotacionada e cadastrada somente no secret manager da nova conta.
 
 ## Contratos importantes
 

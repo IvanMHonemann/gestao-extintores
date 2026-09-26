@@ -14,7 +14,7 @@ pnpm run build
 pnpm start
 ```
 
-Para usar Docker, consulte `docker-compose.yml`. Para migrar para outra IA, conta ou hospedagem, comece por `PORTABILITY.md`, `HANDOFF.md` e `OPERATIONS.md`.
+Para usar Docker, consulte `docker-compose.yml`. Para migrar para outra IA, conta ou hospedagem, comece por `PORTABILITY.md`, `HANDOFF.md`, `AI_HANDOFF.md`, `DATABASE_MIGRATION_GUIDE.md` e `OPERATIONS.md`.
 
 Para conectar este código a outra conta ou repositório GitHub sem expor tokens, autentique a GitHub CLI e execute `./scripts/git-connect.sh OWNER/REPOSITORY --private`. Para validar antes do push, execute `./scripts/ci-local.sh`. O guia completo para outra IA está em `AI_HANDOFF.md`.
 
@@ -30,4 +30,4 @@ pnpm backup:db -- --output=backups/pre-change.json
 
 ## Segurança
 
-Não versionar `.env`, URLs de banco, chaves S3 ou tokens. A senha do banco compartilhada durante a configuração deve ser rotacionada. Fora da Manus, mantenha `MANUS_INTEGRATIONS=false`.
+Não versionar `.env`, URLs completas de banco, chaves S3 ou tokens. O perfil não secreto e o procedimento de configuração estão em `DATABASE_MIGRATION_GUIDE.md`; a senha deve ser configurada somente no secret manager. A senha do banco compartilhada durante a configuração deve ser rotacionada. Fora da Manus, mantenha `MANUS_INTEGRATIONS=false`.
