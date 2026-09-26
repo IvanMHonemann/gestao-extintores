@@ -1701,11 +1701,12 @@ export default function Home() {
                   return;
                 }
                 if (isPlatformAdmin) {
-                  if (!selectedCompanyId) {
+                  const orderCompanyId = selectedCompanyId ?? effectiveClients.find((client: any) => client.id === orderForm.clientId)?.accountId ?? null;
+                  if (!orderCompanyId) {
                     toast.error("Selecione a empresa responsável pela ordem de serviço.");
                     return;
                   }
-                  platformCreateOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder, companyId: selectedCompanyId });
+                  platformCreateOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder, companyId: orderCompanyId });
                 } else {
                   createOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder });
                 }
