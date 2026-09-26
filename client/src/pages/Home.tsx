@@ -827,81 +827,46 @@ export default function Home() {
         ======================================================== */}
         {activeTab === "dashboard" && (
           <div className="space-y-6">
-            {/* CARDS DE RESUMO */}
-            <div className="dashboard-overview-grid grid grid-cols-2 items-start gap-3 sm:gap-4 lg:grid-cols-5">
-              <Card role="button" tabIndex={0} title="Abrir clientes cadastrados" onClick={() => openClients()} onKeyDown={(event) => event.key === "Enter" && openClients()} className="cursor-pointer border-l-4 border-l-blue-600 shadow-sm min-w-0 transition hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-blue-500">
-                <CardHeader className="pb-2">
-                  <CardDescription className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                    Total Clientes
-                  </CardDescription>
-                  <CardTitle className="text-xl sm:text-2xl font-black text-slate-900">
-                    {effectiveStats?.totalClients || 0}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="text-xs text-slate-500 flex items-center gap-1">
-                  <MapPin className="w-3.5 h-3.5" />
-                  Em {effectiveStats?.totalCities || 0} cidades
-                </CardContent>
-              </Card>
+            <section className="overflow-hidden rounded-2xl bg-slate-950 text-white shadow-xl shadow-slate-200/70">
+              <div className="relative px-5 py-6 sm:px-7 sm:py-7">
+                <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-red-600/20 blur-2xl" />
+                <div className="relative flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px] font-bold uppercase tracking-[0.18em] text-red-300">
+                      <span className="rounded-full bg-white/10 px-2.5 py-1">Painel operacional</span>
+                      <span className="flex items-center gap-1.5 rounded-full bg-emerald-400/10 px-2.5 py-1 text-emerald-300"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Sistema online</span>
+                    </div>
+                    <h1 className="text-2xl font-black tracking-tight sm:text-3xl">Gestão de Extintores</h1>
+                    <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-300">Acompanhe clientes, validade dos equipamentos e ordens de serviço em um só lugar.</p>
+                  </div>
+                  <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                    <Button onClick={() => setIsClientModalOpen(true)} className="h-10 gap-2 bg-white text-slate-900 hover:bg-slate-100"><Plus className="h-4 w-4" /> Novo cliente</Button>
+                    <Button onClick={() => { setReturnToOrderAfterClient(false); setIsOrderModalOpen(true); }} className="h-10 gap-2 bg-red-600 text-white hover:bg-red-700"><FileText className="h-4 w-4" /> Nova OS</Button>
+                  </div>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 divide-x divide-y divide-white/10 border-t border-white/10 bg-white/[0.04] sm:grid-cols-4 sm:divide-y-0 lg:grid-cols-5">
+                <div className="px-4 py-3.5 sm:px-5"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Clientes</p><p className="mt-1 text-xl font-black">{effectiveStats?.totalClients || 0}</p><p className="text-[11px] text-slate-400">{effectiveStats?.totalCities || 0} cidades</p></div>
+                <div className="px-4 py-3.5 sm:px-5"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Extintores</p><p className="mt-1 text-xl font-black text-emerald-300">{effectiveStats?.totalExtinguishers || 0}</p><p className="text-[11px] text-slate-400">na base ativa</p></div>
+                <div className="px-4 py-3.5 sm:px-5"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Próximos</p><p className="mt-1 text-xl font-black text-amber-300">{effectiveStats?.nearExpirationCount || 0}</p><p className="text-[11px] text-slate-400">até {offline.alertDays || 30} dias</p></div>
+                <div className="px-4 py-3.5 sm:px-5"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Vencidos</p><p className="mt-1 text-xl font-black text-red-300">{effectiveStats?.expiredCount || 0}</p><p className="text-[11px] text-slate-400">ação necessária</p></div>
+                <div className="col-span-2 px-4 py-3.5 sm:col-span-1 sm:px-5"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Ordens emitidas</p><p className="mt-1 text-xl font-black text-violet-300">{effectiveStats?.totalOrders || 0}</p><p className="text-[11px] text-slate-400">prontas para impressão</p></div>
+              </div>
+            </section>
 
-              <Card role="button" tabIndex={0} title="Abrir extintores ativos" onClick={() => openClients("active")} onKeyDown={(event) => event.key === "Enter" && openClients("active")} className="cursor-pointer border-l-4 border-l-emerald-600 shadow-sm min-w-0 transition hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-emerald-500">
-                <CardHeader className="pb-2">
-                  <CardDescription className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                    Extintores Ativos
-                  </CardDescription>
-                  <CardTitle className="text-xl sm:text-2xl font-black text-emerald-700">
-                    {effectiveStats?.totalExtinguishers || 0}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="text-xs text-slate-500 flex items-center gap-1">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                  Cadastrados na base
-                </CardContent>
+            {/* INDICADORES ACIONÁVEIS */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <Card role="button" tabIndex={0} title="Abrir clientes cadastrados" onClick={() => openClients()} onKeyDown={(event) => event.key === "Enter" && openClients()} className="group cursor-pointer border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-blue-500">
+                <CardContent className="flex items-center gap-4 p-4"><span className="rounded-xl bg-blue-50 p-3 text-blue-700"><Building2 className="h-5 w-5" /></span><span className="min-w-0"><span className="block text-xs font-bold uppercase tracking-wider text-slate-500">Clientes cadastrados</span><span className="mt-1 block text-2xl font-black text-slate-900">{effectiveStats?.totalClients || 0}</span></span><ChevronRight className="ml-auto h-4 w-4 text-slate-300 transition group-hover:translate-x-1 group-hover:text-blue-600" /></CardContent>
               </Card>
-
-              <Card role="button" tabIndex={0} title="Abrir extintores perto da validade" onClick={() => openAlerts("near")} onKeyDown={(event) => event.key === "Enter" && openAlerts("near")} className="cursor-pointer border-l-4 border-l-amber-500 shadow-sm bg-amber-50/40 min-w-0 transition hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-amber-500">
-                <CardHeader className="pb-2">
-                  <CardDescription className="text-xs font-bold uppercase tracking-wider text-amber-800">
-                    Perto da Validade
-                  </CardDescription>
-                  <CardTitle className="text-xl sm:text-2xl font-black text-amber-700">
-                    {effectiveStats?.nearExpirationCount || 0}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="text-xs text-amber-800 flex items-center gap-1 font-medium">
-                  <Clock className="w-3.5 h-3.5" />
-                  Vencem em até {offline.alertDays || 30} dias
-                </CardContent>
+              <Card role="button" tabIndex={0} title="Abrir extintores próximos do vencimento" onClick={() => openAlerts("near")} onKeyDown={(event) => event.key === "Enter" && openAlerts("near")} className="group cursor-pointer border-amber-200 bg-amber-50/50 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-amber-500">
+                <CardContent className="flex items-center gap-4 p-4"><span className="rounded-xl bg-amber-100 p-3 text-amber-700"><Clock className="h-5 w-5" /></span><span className="min-w-0"><span className="block text-xs font-bold uppercase tracking-wider text-amber-800">Próximos do vencimento</span><span className="mt-1 block text-2xl font-black text-amber-800">{effectiveStats?.nearExpirationCount || 0}</span></span><ChevronRight className="ml-auto h-4 w-4 text-amber-300 transition group-hover:translate-x-1 group-hover:text-amber-700" /></CardContent>
               </Card>
-
-              <Card role="button" tabIndex={0} title="Abrir extintores vencidos" onClick={() => openAlerts("expired")} onKeyDown={(event) => event.key === "Enter" && openAlerts("expired")} className="cursor-pointer border-l-4 border-l-red-600 shadow-sm bg-red-50/40 min-w-0 transition hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-red-500">
-                <CardHeader className="pb-2">
-                  <CardDescription className="text-xs font-bold uppercase tracking-wider text-red-800">
-                    Extintores Vencidos
-                  </CardDescription>
-                  <CardTitle className="text-xl sm:text-2xl font-black text-red-700">
-                    {effectiveStats?.expiredCount || 0}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="text-xs text-red-800 flex items-center gap-1 font-semibold">
-                  <AlertTriangle className="w-3.5 h-3.5" />
-                  Necessitam recarga imediata
-                </CardContent>
+              <Card role="button" tabIndex={0} title="Abrir extintores vencidos" onClick={() => openAlerts("expired")} onKeyDown={(event) => event.key === "Enter" && openAlerts("expired")} className="group cursor-pointer border-red-200 bg-red-50/50 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-red-500">
+                <CardContent className="flex items-center gap-4 p-4"><span className="rounded-xl bg-red-100 p-3 text-red-700"><AlertTriangle className="h-5 w-5" /></span><span className="min-w-0"><span className="block text-xs font-bold uppercase tracking-wider text-red-800">Extintores vencidos</span><span className="mt-1 block text-2xl font-black text-red-800">{effectiveStats?.expiredCount || 0}</span></span><ChevronRight className="ml-auto h-4 w-4 text-red-300 transition group-hover:translate-x-1 group-hover:text-red-700" /></CardContent>
               </Card>
-
-              <Card role="button" tabIndex={0} title="Abrir ordens de serviço" onClick={() => setActiveTab("orders")} onKeyDown={(event) => event.key === "Enter" && setActiveTab("orders")} className="cursor-pointer border-l-4 border-l-purple-600 shadow-sm min-w-0 transition hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-purple-500">
-                <CardHeader className="pb-2">
-                  <CardDescription className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                    Ordens Geradas
-                  </CardDescription>
-                  <CardTitle className="text-xl sm:text-2xl font-black text-purple-700">
-                    {effectiveStats?.totalOrders || 0}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="text-xs text-slate-500 flex items-center gap-1">
-                  <FileText className="w-3.5 h-3.5" />
-                  Prontas para impressão
-                </CardContent>
+              <Card role="button" tabIndex={0} title="Abrir ordens de serviço" onClick={() => setActiveTab("orders")} onKeyDown={(event) => event.key === "Enter" && setActiveTab("orders")} className="group cursor-pointer border-violet-200 bg-violet-50/50 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-violet-500">
+                <CardContent className="flex items-center gap-4 p-4"><span className="rounded-xl bg-violet-100 p-3 text-violet-700"><FileText className="h-5 w-5" /></span><span className="min-w-0"><span className="block text-xs font-bold uppercase tracking-wider text-violet-800">Ordens de serviço</span><span className="mt-1 block text-2xl font-black text-violet-800">{effectiveStats?.totalOrders || 0}</span></span><ChevronRight className="ml-auto h-4 w-4 text-violet-300 transition group-hover:translate-x-1 group-hover:text-violet-700" /></CardContent>
               </Card>
             </div>
 
