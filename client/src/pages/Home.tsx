@@ -85,6 +85,7 @@ export default function Home() {
   const alertDaysQuery = trpc.settings.getAlertDays.useQuery(undefined, { enabled: Boolean(tenantKey) });
   const companiesQuery = trpc.platform.companies.list.useQuery(undefined, { enabled: isPlatformAdmin });
   const platformClientsQuery = trpc.platform.data.clients.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
+  const platformOrdersQuery = trpc.platform.data.orders.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
   const remoteExtinguishers = useMemo(() => (alertsQuery.data || []).map((item: any) => item.extinguisher).filter(Boolean), [alertsQuery.data]);
   const orderDetailsQuery = trpc.orders.byId.useQuery(
     { id: viewingOrderId! },
@@ -103,7 +104,7 @@ export default function Home() {
   const effectiveClients = useMemo(() => allClients.filter((client: any) => selectedCity === "TODAS" || client.city === selectedCity), [allClients, selectedCity]);
   const effectiveCities = useMemo(() => Array.from(new Set(allClients.map((client: any) => client.city).filter(Boolean))).sort(), [allClients]);
   const effectiveAlerts = offline.alerts || [];
-  const effectiveOrders = offline.orders || [];
+  const effectiveOrders = useMemo(() => isPlatformAdmin ? (platformOrdersQuery.data || []) : (offline.orders || []), [isPlatformAdmin, platformOrdersQuery.data, offline.orders]);
   const effectiveStats = useMemo(() => offline.isOnline && statsQuery.data ? statsQuery.data : {
     totalClients: effectiveClients.length,
     totalCities: effectiveCities.length,
