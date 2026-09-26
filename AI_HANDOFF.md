@@ -14,6 +14,23 @@ cp config/env.example .env
 
 Preencha os secrets somente no ambiente local ou no secret manager do novo host. Fora da Manus, mantenha `MANUS_INTEGRATIONS=false`.
 
+### Conexão GitHub obrigatória em uma migração
+
+Antes de editar o projeto em outra conta, confirme a origem do código:
+
+```bash
+gh auth login
+git remote -v
+```
+
+O remote principal deve ser `https://github.com/IvanMHonemann/gestao-extintores.git`. Para uma nova cópia privada, use:
+
+```bash
+./scripts/git-connect.sh OWNER/REPOSITORY --private
+```
+
+Não coloque tokens nos arquivos, argumentos ou commits. O guia detalhado está em `DATABASE_MIGRATION_GUIDE.md`.
+
 ## Conectar a uma nova conta ou repositório
 
 Depois de instalar a GitHub CLI e autenticar com `gh auth login`, execute:

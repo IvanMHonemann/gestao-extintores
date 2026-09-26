@@ -47,6 +47,48 @@ pnpm run build
    - impressão do documento;
    - compartilhamento no celular usando Chrome Android ou Safari iOS.
 
+## Conectar ao GitHub em toda migração
+
+O repositório principal é `IvanMHonemann/gestao-extintores`. O GitHub guarda o código e o histórico; ele não guarda o banco nem os secrets.
+
+### Em uma máquina ou conta nova
+
+```bash
+git clone https://github.com/IvanMHonemann/gestao-extintores.git
+cd gestao-extintores
+corepack enable
+pnpm install --frozen-lockfile
+```
+
+Se for necessário conectar uma cópia local a outro repositório GitHub:
+
+```bash
+gh auth login
+./scripts/git-connect.sh NOVO_USUARIO_OU_ORG/NOVO_REPOSITORIO --private
+```
+
+O script configura o remote `github`, cria o repositório privado quando autorizado e envia o branch `main`. Ele não contém token e não deve receber senha ou token como argumento.
+
+### Antes de enviar qualquer alteração
+
+```bash
+./scripts/ci-local.sh
+git remote -v
+git status --short
+git add -A
+git commit -m "descreva a alteração"
+git push github main
+```
+
+Se a nova IA trabalhar diretamente no repositório já clonado, não é preciso criar outro repositório: basta confirmar que `git remote -v` aponta para `IvanMHonemann/gestao-extintores` e fazer o push para `main` após o CI local.
+
+### Regras de segurança do GitHub
+
+- Usar repositório privado, salvo decisão explícita em contrário.
+- Nunca colocar token pessoal, senha do banco, `.env`, backups ou URLs completas de banco em commits.
+- Usar `gh auth login` ou o gerenciador de credenciais do Git; nunca colar tokens em arquivos do projeto.
+- Na nova conta Manus, reconectar o GitHub e importar este mesmo repositório; conectar o GitHub na Manus não transfere automaticamente o banco.
+
 ## Regras para outra IA
 
 - Não substituir `EXTERNAL_DATABASE_URL` por um banco novo.
