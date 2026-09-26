@@ -148,10 +148,16 @@ export function ServiceOrderDocument({
         files: [file],
       };
 
+      const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
       if (navigator.share && navigator.canShare?.({ files: [file] })) {
-        await navigator.share(shareData);
-        toast.success("PDF pronto para ser enviado. Selecione o WhatsApp na tela de compartilhamento.");
-        return;
+        try {
+          await navigator.share(shareData);
+          toast.success("PDF pronto para ser enviado. Selecione o WhatsApp na tela de compartilhamento.");
+          return;
+        } catch (shareError) {
+          if ((shareError as DOMException)?.name === "AbortError") return;
+          console.warn("O navegador não aceitou compartilhar o PDF como anexo; usando fallback.", shareError);
+        }
       }
 
       // No PC, os navegadores bloqueiam anexar automaticamente um arquivo local ao WhatsApp Web.
@@ -164,6 +170,21 @@ export function ServiceOrderDocument({
       link.click();
       link.remove();
       URL.revokeObjectURL(downloadUrl);
+      if (isMobile) {
+        const message = encodeURIComponent(`Ordem de Serviço ${orderNumber} — o PDF foi baixado neste celular. Anexe o arquivo nesta conversa.`);
+        if (navigator.share) {
+          try {
+            await navigator.share({ title: `Ordem de Serviço ${orderNumber}`, text: `O PDF da Ordem de Serviço ${orderNumber} foi baixado. Anexe-o na conversa do WhatsApp.` });
+            toast.success("PDF baixado. Escolha o WhatsApp na tela de compartilhamento para anexá-lo.");
+            return;
+          } catch (shareError) {
+            if ((shareError as DOMException)?.name === "AbortError") return;
+          }
+        }
+        window.location.href = `https://wa.me/?text=${message}`;
+        toast.success("PDF baixado e WhatsApp aberto. Anexe o arquivo na conversa.");
+        return;
+      }
       window.open("https://web.whatsapp.com/", "_blank", "noopener,noreferrer");
       toast.success("PDF baixado e WhatsApp Web aberto. Anexe o arquivo PDF na conversa do cliente.");
     } catch (error) {
