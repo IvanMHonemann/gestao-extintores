@@ -171,7 +171,6 @@ export function ServiceOrderDocument({
       link.remove();
       URL.revokeObjectURL(downloadUrl);
       if (isMobile) {
-        const message = encodeURIComponent(`Ordem de Serviço ${orderNumber} — o PDF foi baixado neste celular. Anexe o arquivo nesta conversa.`);
         if (navigator.share) {
           try {
             await navigator.share({ title: `Ordem de Serviço ${orderNumber}`, text: `O PDF da Ordem de Serviço ${orderNumber} foi baixado. Anexe-o na conversa do WhatsApp.` });
@@ -181,8 +180,7 @@ export function ServiceOrderDocument({
             if ((shareError as DOMException)?.name === "AbortError") return;
           }
         }
-        window.location.href = `https://wa.me/?text=${message}`;
-        toast.success("PDF baixado e WhatsApp aberto. Anexe o arquivo na conversa.");
+        toast.success("PDF baixado no celular. Abra o WhatsApp manualmente e anexe o arquivo na conversa.");
         return;
       }
       window.open("https://web.whatsapp.com/", "_blank", "noopener,noreferrer");
