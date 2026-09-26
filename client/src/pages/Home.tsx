@@ -62,6 +62,7 @@ export default function Home() {
   
   // Visualização e Impressão de OS
   const [viewingOrderId, setViewingOrderId] = useState<number | null>(null);
+  const [platformOrderPreview, setPlatformOrderPreview] = useState<any>(null);
 
   // Modais de Criação
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
@@ -233,6 +234,7 @@ export default function Home() {
       utils.orders.invalidate();
       utils.dashboard.stats.invalidate();
       if (res?.id) {
+        setPlatformOrderPreview(null);
         setViewingOrderId(res.id);
       }
     },
@@ -254,10 +256,13 @@ export default function Home() {
     },
   });
   const platformCreateOrderMutation = trpc.platform.data.createOrder.useMutation({
-    onSuccess: () => {
+    onSuccess: (result, input) => {
       toast.success("Ordem de serviço criada com sucesso!");
       setIsOrderModalOpen(false);
       if (selectedCompanyId) void utils.platform.data.orders.invalidate({ companyId: selectedCompanyId });
+      const client = allClients.find((item: any) => item.id === input.clientId);
+      setPlatformOrderPreview({ ...input, id: result.id, orderNumber: result.orderNumber, client, items: input.items });
+      setViewingOrderId(result.id);
     },
     onError: (err) => toast.error(err.message),
   });
@@ -419,14 +424,17 @@ export default function Home() {
   };
 
   // Se estiver visualizando a OS para impressão
-  const selectedOrderDetails = orderDetailsQuery.data || offlineOrderDetails;
+  const selectedOrderDetails = (platformOrderPreview?.id === viewingOrderId ? platformOrderPreview : undefined) || orderDetailsQuery.data || offlineOrderDetails;
   if (viewingOrderId && selectedOrderDetails) {
     return (
       <ServiceOrderDocument
         order={selectedOrderDetails}
         client={selectedOrderDetails.client}
         items={selectedOrderDetails.items}
-        onBack={() => setViewingOrderId(null)}
+        onBack={() => {
+          setViewingOrderId(null);
+          setPlatformOrderPreview(null);
+        }}
       />
     );
   }
