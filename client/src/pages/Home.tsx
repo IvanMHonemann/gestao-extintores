@@ -204,6 +204,15 @@ export default function Home() {
       toast.error(err.message);
     },
   });
+  const platformCreateExtinguisherMutation = trpc.platform.data.createExtinguisher.useMutation({
+    onSuccess: async () => {
+      toast.success("Extintor registrado com sucesso!");
+      setIsExtinguisherModalOpen(false);
+      if (selectedCompanyId) await utils.platform.data.extinguishers.invalidate({ companyId: selectedCompanyId });
+      if (selectedCompanyId) await utils.platform.data.clients.invalidate({ companyId: selectedCompanyId });
+    },
+    onError: (err) => toast.error(err.message),
+  });
 
   const deleteExtinguisherMutation = trpc.extinguishers.delete.useMutation({
     onSuccess: () => {
@@ -243,6 +252,14 @@ export default function Home() {
       }
       toast.error(err.message);
     },
+  });
+  const platformCreateOrderMutation = trpc.platform.data.createOrder.useMutation({
+    onSuccess: () => {
+      toast.success("Ordem de serviço criada com sucesso!");
+      setIsOrderModalOpen(false);
+      if (selectedCompanyId) void utils.platform.data.orders.invalidate({ companyId: selectedCompanyId });
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   const deleteOrderMutation = trpc.orders.delete.useMutation({
@@ -1387,7 +1404,15 @@ export default function Home() {
                   toast.error("Informe a data de vencimento!");
                   return;
                 }
-                createExtinguisherMutation.mutate(extinguisherForm);
+                if (isPlatformAdmin) {
+                  if (!selectedCompanyId) {
+                    toast.error("Selecione a empresa responsável pelo extintor.");
+                    return;
+                  }
+                  platformCreateExtinguisherMutation.mutate({ ...extinguisherForm, companyId: selectedCompanyId });
+                } else {
+                  createExtinguisherMutation.mutate(extinguisherForm);
+                }
               }}
             >
               Salvar Extintor
@@ -1667,10 +1692,15 @@ export default function Home() {
                   toast.error("Selecione o cliente!");
                   return;
                 }
-                createOrderMutation.mutate({
-                  ...orderForm,
-                  totalAmount: calculatedTotalOrder,
-                });
+                if (isPlatformAdmin) {
+                  if (!selectedCompanyId) {
+                    toast.error("Selecione a empresa responsável pela ordem de serviço.");
+                    return;
+                  }
+                  platformCreateOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder, companyId: selectedCompanyId });
+                } else {
+                  createOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder });
+                }
               }}
             >
               <Printer className="w-4 h-4" />

@@ -88,6 +88,18 @@ export const appRouter = router({
         if (!company || !company.active) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para cadastrar o cliente." });
         return { id: await db.createClient({ ...data, accountId: companyId, cnpj: emptyToNull(data.cnpj), address: emptyToNull(data.address), cep: emptyToNull(data.cep), phone: emptyToNull(data.phone), contactName: emptyToNull(data.contactName), cpf: emptyToNull(data.cpf), birthDate: emptyToNull(data.birthDate), notes: emptyToNull(data.notes) }) };
       }),
+      createExtinguisher: platformProcedure.input(z.object({ companyId: z.number().int().positive(), clientId: z.number(), typeModel: z.string().min(1), capacity: z.string().optional(), serialNumber: z.string().optional(), locationInBuilding: z.string().optional(), expirationDate: z.string(), lastInspectionDate: z.string().optional(), notes: z.string().optional() })).mutation(async ({ input }) => {
+        const { companyId, ...data } = input;
+        const company = await db.getCompanyById(companyId);
+        if (!company || !company.active) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para cadastrar o extintor." });
+        return { id: await db.createExtinguisher({ ...data, accountId: companyId, expirationDate: data.expirationDate as any, lastInspectionDate: (data.lastInspectionDate || null) as any, capacity: emptyToNull(data.capacity), serialNumber: emptyToNull(data.serialNumber), locationInBuilding: emptyToNull(data.locationInBuilding), notes: emptyToNull(data.notes) }, companyId) };
+      }),
+      createOrder: platformProcedure.input(z.object({ companyId: z.number().int().positive(), orderNumber: z.number().optional(), orderDate: z.string(), clientId: z.number(), replacedAndDelivered: z.string().default("SIM"), leftReserve: z.string().default("NÃO"), reserveDetails: z.string().optional(), extinguisherExpiration: z.string().optional(), licenseExpiration: z.string().optional(), totalAmount: z.string().default("0.00"), paymentMethod: z.string().default("A VISTA"), installmentsCount: z.number().default(1), installmentDates: z.string().optional(), responsibleName: z.string().optional(), responsibleCpf: z.string().optional(), responsibleBirthDate: z.string().optional(), observations: z.string().optional(), items: z.array(z.object({ description: z.string().min(1), quantity: z.number().min(1), unitPrice: z.string(), totalPrice: z.string() })) })).mutation(async ({ input }) => {
+        const { companyId, items, ...orderData } = input;
+        const company = await db.getCompanyById(companyId);
+        if (!company || !company.active) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para criar a ordem de serviço." });
+        return db.createServiceOrder({ ...orderData, accountId: companyId } as any, items as any, companyId);
+      }),
     }),
   }),
 

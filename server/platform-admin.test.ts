@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const dbMock = vi.hoisted(() => ({
   getCompanyById: vi.fn(),
   createClient: vi.fn(),
+  createExtinguisher: vi.fn(),
+  createServiceOrder: vi.fn(),
 }));
 
 vi.mock("./db", () => dbMock);
@@ -13,6 +15,8 @@ describe("platform.data.createClient", () => {
   beforeEach(() => {
     dbMock.getCompanyById.mockReset();
     dbMock.createClient.mockReset();
+    dbMock.createExtinguisher.mockReset();
+    dbMock.createServiceOrder.mockReset();
   });
 
   it("grava o cliente na empresa selecionada pelo administrador global", async () => {
@@ -89,5 +93,39 @@ describe("platform.data.createClient", () => {
       city: "Sapiranga",
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(dbMock.createClient).not.toHaveBeenCalled();
+  });
+
+  it("cria a ordem de serviço na empresa selecionada sem accountId na sessão", async () => {
+    dbMock.getCompanyById.mockResolvedValue({ id: 7, name: "Empresa Teste", active: true });
+    dbMock.createServiceOrder.mockResolvedValue({ id: 88, orderNumber: 1001 });
+
+    const caller = appRouter.createCaller({
+      user: {
+        id: 99,
+        openId: "platform:99",
+        name: "Administrador Global",
+        email: "admin@example.com",
+        loginMethod: "password",
+        role: "platform_admin",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastSignedIn: new Date(),
+      },
+      isPlatformAdmin: true,
+      platformAdminId: 99,
+      req: { protocol: "https", headers: {} } as any,
+      res: {} as any,
+    });
+
+    const result = await caller.platform.data.createOrder({
+      companyId: 7,
+      orderDate: "2026-09-26",
+      clientId: 12,
+      totalAmount: "45.00",
+      items: [{ description: "Recarga", quantity: 1, unitPrice: "45.00", totalPrice: "45.00" }],
+    });
+
+    expect(result).toEqual({ id: 88, orderNumber: 1001 });
+    expect(dbMock.createServiceOrder).toHaveBeenCalledWith(expect.objectContaining({ accountId: 7, clientId: 12 }), expect.any(Array), 7);
   });
 });
