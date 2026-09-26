@@ -854,22 +854,6 @@ export default function Home() {
               </div>
             </section>
 
-            {/* INDICADORES ACIONÁVEIS */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <Card role="button" tabIndex={0} title="Abrir clientes cadastrados" onClick={() => openClients()} onKeyDown={(event) => event.key === "Enter" && openClients()} className="group cursor-pointer border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-blue-500">
-                <CardContent className="flex items-center gap-4 p-4"><span className="rounded-xl bg-blue-50 p-3 text-blue-700"><Building2 className="h-5 w-5" /></span><span className="min-w-0"><span className="block text-xs font-bold uppercase tracking-wider text-slate-500">Clientes cadastrados</span><span className="mt-1 block text-2xl font-black text-slate-900">{effectiveStats?.totalClients || 0}</span></span><ChevronRight className="ml-auto h-4 w-4 text-slate-300 transition group-hover:translate-x-1 group-hover:text-blue-600" /></CardContent>
-              </Card>
-              <Card role="button" tabIndex={0} title="Abrir extintores próximos do vencimento" onClick={() => openAlerts("near")} onKeyDown={(event) => event.key === "Enter" && openAlerts("near")} className="group cursor-pointer border-amber-200 bg-amber-50/50 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-amber-500">
-                <CardContent className="flex items-center gap-4 p-4"><span className="rounded-xl bg-amber-100 p-3 text-amber-700"><Clock className="h-5 w-5" /></span><span className="min-w-0"><span className="block text-xs font-bold uppercase tracking-wider text-amber-800">Próximos do vencimento</span><span className="mt-1 block text-2xl font-black text-amber-800">{effectiveStats?.nearExpirationCount || 0}</span></span><ChevronRight className="ml-auto h-4 w-4 text-amber-300 transition group-hover:translate-x-1 group-hover:text-amber-700" /></CardContent>
-              </Card>
-              <Card role="button" tabIndex={0} title="Abrir extintores vencidos" onClick={() => openAlerts("expired")} onKeyDown={(event) => event.key === "Enter" && openAlerts("expired")} className="group cursor-pointer border-red-200 bg-red-50/50 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-red-500">
-                <CardContent className="flex items-center gap-4 p-4"><span className="rounded-xl bg-red-100 p-3 text-red-700"><AlertTriangle className="h-5 w-5" /></span><span className="min-w-0"><span className="block text-xs font-bold uppercase tracking-wider text-red-800">Extintores vencidos</span><span className="mt-1 block text-2xl font-black text-red-800">{effectiveStats?.expiredCount || 0}</span></span><ChevronRight className="ml-auto h-4 w-4 text-red-300 transition group-hover:translate-x-1 group-hover:text-red-700" /></CardContent>
-              </Card>
-              <Card role="button" tabIndex={0} title="Abrir ordens de serviço" onClick={() => setActiveTab("orders")} onKeyDown={(event) => event.key === "Enter" && setActiveTab("orders")} className="group cursor-pointer border-violet-200 bg-violet-50/50 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-violet-500">
-                <CardContent className="flex items-center gap-4 p-4"><span className="rounded-xl bg-violet-100 p-3 text-violet-700"><FileText className="h-5 w-5" /></span><span className="min-w-0"><span className="block text-xs font-bold uppercase tracking-wider text-violet-800">Ordens de serviço</span><span className="mt-1 block text-2xl font-black text-violet-800">{effectiveStats?.totalOrders || 0}</span></span><ChevronRight className="ml-auto h-4 w-4 text-violet-300 transition group-hover:translate-x-1 group-hover:text-violet-700" /></CardContent>
-              </Card>
-            </div>
-
             {/* SEÇÃO DE ALERTAS CRÍTICOS (Banner de Aviso com Antecedência) */}
             {((effectiveStats?.nearExpirationCount || 0) > 0 || (effectiveStats?.expiredCount || 0) > 0) && (
               <div className="bg-gradient-to-r from-amber-50 to-red-50 border-2 border-amber-300 rounded-xl p-3 sm:p-5 shadow-sm">
