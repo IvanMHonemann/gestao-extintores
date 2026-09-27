@@ -55,8 +55,8 @@ function isOfflineFailure(error: unknown, isOnline: boolean) {
 export default function Home() {
   const { user, logout } = useAuth();
   const [, navigate] = useLocation();
-  const tenantKey = user && user.id < 0 ? String(Math.abs(user.id)) : null;
   const isPlatformAdmin = user?.role === "platform_admin";
+  const tenantKey = user ? (isPlatformAdmin ? `platform:${user.id}` : user.id < 0 ? String(Math.abs(user.id)) : null) : null;
   const isCompanyAdmin = user?.role === "company_admin";
   const canManageUsers = isCompanyAdmin || isPlatformAdmin;
   const [activeTab, setActiveTab] = useState<"dashboard" | "clients" | "extinguishers" | "orders" | "alerts" | "trash">("dashboard");
@@ -112,17 +112,17 @@ export default function Home() {
 
   const offline = useOfflineSnapshot({
     tenantKey,
-    clients: clientsQuery.data as any,
-    extinguishers: remoteExtinguishers as any,
-    orders: ordersQuery.data as any,
+    clients: (isPlatformAdmin ? platformClientsQuery.data : clientsQuery.data) as any,
+    extinguishers: (isPlatformAdmin ? platformExtinguishersQuery.data : remoteExtinguishers) as any,
+    orders: (isPlatformAdmin ? platformOrdersQuery.data : ordersQuery.data) as any,
     alerts: alertsQuery.data as any,
     alertDays: alertDaysQuery.data,
   });
-  const allClients = useMemo(() => isPlatformAdmin ? (platformClientsQuery.data || []) : (offline.clients || []), [isPlatformAdmin, platformClientsQuery.data, offline.clients]);
+  const allClients = useMemo(() => isPlatformAdmin ? (platformClientsQuery.data || offline.clients || []) : (offline.clients || []), [isPlatformAdmin, platformClientsQuery.data, offline.clients]);
   const effectiveClients = useMemo(() => allClients.filter((client: any) => selectedCity === "TODAS" || client.city === selectedCity), [allClients, selectedCity]);
   const effectiveCities = useMemo(() => Array.from(new Set(allClients.map((client: any) => client.city).filter(Boolean))).sort(), [allClients]);
-  const effectiveExtinguishers = useMemo(() => isPlatformAdmin ? (platformExtinguishersQuery.data || []) : (offline.extinguishers || []), [isPlatformAdmin, platformExtinguishersQuery.data, offline.extinguishers]);
-  const effectiveOrders = useMemo(() => isPlatformAdmin ? (platformOrdersQuery.data || []) : (offline.orders || []), [isPlatformAdmin, platformOrdersQuery.data, offline.orders]);
+  const effectiveExtinguishers = useMemo(() => isPlatformAdmin ? (platformExtinguishersQuery.data || offline.extinguishers || []) : (offline.extinguishers || []), [isPlatformAdmin, platformExtinguishersQuery.data, offline.extinguishers]);
+  const effectiveOrders = useMemo(() => isPlatformAdmin ? (platformOrdersQuery.data || offline.orders || []) : (offline.orders || []), [isPlatformAdmin, platformOrdersQuery.data, offline.orders]);
   const effectiveAlerts = useMemo(() => {
     if (!isPlatformAdmin) return offline.alerts || [];
     const clientsById = new Map((platformClientsQuery.data || []).map((client: any) => [client.id, client]));
