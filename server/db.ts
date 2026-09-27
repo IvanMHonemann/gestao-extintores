@@ -277,7 +277,7 @@ export async function getExpiringExtinguishers(daysAhead: number, accountId: num
   const tenant = requireAccountId(accountId);
   const db = await getDb();
   if (!db) return [];
-  const result = await db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).innerJoin(clients, and(eq(extinguishers.clientId, clients.id), eq(extinguishers.accountId, clients.accountId))).where(and(eq(extinguishers.accountId, tenant), eq(clients.accountId, tenant))).orderBy(extinguishers.expirationDate);
+  const result = await db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).innerJoin(clients, and(eq(extinguishers.clientId, clients.id), eq(extinguishers.accountId, clients.accountId))).where(and(eq(extinguishers.accountId, tenant), eq(clients.accountId, tenant), sql`${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL ${daysAhead} DAY)`)).orderBy(extinguishers.expirationDate);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return result.map(item => {
@@ -515,17 +515,14 @@ export async function getDashboardStats(accountId: number) {
   const daysAhead = parseInt(await getSetting("alert_days_ahead", tenant, "30"), 10) || 30;
   const allClients = await getClients(undefined, tenant);
   const cityCount = new Set(allClients.map(client => client.city)).size;
-  const extinguisherResult = await db.select({ extinguisher: extinguishers }).from(extinguishers).where(eq(extinguishers.accountId, tenant));
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  let nearExpirationCount = 0;
-  let expiredCount = 0;
-  for (const row of extinguisherResult) {
-    const expiration = new Date(row.extinguisher.expirationDate);
-    expiration.setHours(0, 0, 0, 0);
-    if (expiration < today) expiredCount++;
-    else if (expiration.getTime() <= today.getTime() + daysAhead * 86400000) nearExpirationCount++;
-  }
+  const [extinguisherTotalRows, expiredRows, nearRows] = await Promise.all([
+    db.select({ total: sql<number>`count(*)` }).from(extinguishers).where(eq(extinguishers.accountId, tenant)),
+    db.select({ total: sql<number>`count(*)` }).from(extinguishers).where(and(eq(extinguishers.accountId, tenant), sql`${extinguishers.expirationDate} < CURRENT_DATE()`)),
+    db.select({ total: sql<number>`count(*)` }).from(extinguishers).where(and(eq(extinguishers.accountId, tenant), sql`${extinguishers.expirationDate} >= CURRENT_DATE() AND ${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL ${daysAhead} DAY)`)),
+  ]);
+  const totalExtinguishers = Number(extinguisherTotalRows[0]?.total || 0);
+  const expiredCount = Number(expiredRows[0]?.total || 0);
+  const nearExpirationCount = Number(nearRows[0]?.total || 0);
   const orders = await getServiceOrders(undefined, tenant);
-  return { totalClients: allClients.length, totalCities: cityCount, totalExtinguishers: extinguisherResult.length, nearExpirationCount, expiredCount, totalOrders: orders.length, alertDaysConfig: daysAhead };
+  return { totalClients: allClients.length, totalCities: cityCount, totalExtinguishers, nearExpirationCount, expiredCount, totalOrders: orders.length, alertDaysConfig: daysAhead };
 }
