@@ -64,6 +64,10 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [extinguisherFilter, setExtinguisherFilter] = useState<"all" | "active">("all");
   const [alertFilter, setAlertFilter] = useState<"all" | "near" | "expired">("all");
+  const [clientPage, setClientPage] = useState(1);
+  const [orderPage, setOrderPage] = useState(1);
+  const [alertPage, setAlertPage] = useState(1);
+  const pageSize = 25;
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   
   // Visualização e Impressão de OS
@@ -83,6 +87,11 @@ export default function Home() {
   const [returnToOrderAfterClient, setReturnToOrderAfterClient] = useState(false);
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
   const platformClientsInput = useMemo(() => selectedCompanyId ? { companyId: selectedCompanyId } : undefined, [selectedCompanyId]);
+  const clientPageInput = useMemo(() => ({ page: clientPage, pageSize, city: selectedCity, search: searchQuery }), [clientPage, selectedCity, searchQuery]);
+  const platformClientPageInput = useMemo(() => ({ companyId: selectedCompanyId || 0, ...clientPageInput }), [selectedCompanyId, clientPageInput]);
+  const orderPageInput = useMemo(() => ({ page: orderPage, pageSize }), [orderPage]);
+  const platformOrderPageInput = useMemo(() => ({ companyId: selectedCompanyId || 0, ...orderPageInput }), [selectedCompanyId, orderPageInput]);
+  const alertPageInput = useMemo(() => ({ page: alertPage, pageSize, filter: alertFilter }), [alertPage, alertFilter]);
   const platformTrashInput = useMemo(() => ({ companyId: selectedCompanyId || 0 }), [selectedCompanyId]);
   const canAccessTrash = isCompanyAdmin || isPlatformAdmin;
 
@@ -93,14 +102,20 @@ export default function Home() {
   const statsQuery = trpc.dashboard.stats.useQuery(undefined, { enabled: Boolean(tenantKey) });
   const citiesQuery = trpc.clients.cities.useQuery(undefined, { enabled: Boolean(tenantKey) });
   const clientsQuery = trpc.clients.list.useQuery(undefined, { enabled: Boolean(tenantKey) });
+  const clientsPageQuery = trpc.clients.page.useQuery(clientPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const allExtinguishersQuery = trpc.extinguishers.list.useQuery(undefined, { enabled: Boolean(tenantKey) });
   const alertsQuery = trpc.extinguishers.alerts.useQuery(undefined, { enabled: Boolean(tenantKey) });
   const ordersQuery = trpc.orders.list.useQuery(undefined, { enabled: Boolean(tenantKey) });
+  const ordersPageQuery = trpc.orders.page.useQuery(orderPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
+  const alertsPageQuery = trpc.extinguishers.alertsPage.useQuery(alertPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const alertDaysQuery = trpc.settings.getAlertDays.useQuery(undefined, { enabled: Boolean(tenantKey) });
   const companiesQuery = trpc.platform.companies.list.useQuery(undefined, { enabled: isPlatformAdmin });
   const platformClientsQuery = trpc.platform.data.clients.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
+  const platformClientsPageQuery = trpc.platform.data.clientsPage.useQuery(platformClientPageInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
   const platformExtinguishersQuery = trpc.platform.data.extinguishers.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
   const platformOrdersQuery = trpc.platform.data.orders.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
+  const platformOrdersPageQuery = trpc.platform.data.ordersPage.useQuery(platformOrderPageInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
+  const platformAlertsPageQuery = trpc.platform.data.alertsPage.useQuery({ companyId: selectedCompanyId || 0, page: alertPage, pageSize, filter: alertFilter }, { enabled: Boolean(isPlatformAdmin && selectedCompanyId) });
   const trashQuery = trpc.trash.list.useQuery(undefined, { enabled: Boolean(tenantKey && isCompanyAdmin) });
   const platformTrashQuery = trpc.platform.data.trash.list.useQuery(platformTrashInput, { enabled: Boolean(isPlatformAdmin && selectedCompanyId) });
   const visibleTrash = isPlatformAdmin ? (platformTrashQuery.data || []) : (trashQuery.data || []);
@@ -223,6 +238,14 @@ export default function Home() {
       setSelectedCompanyId(companiesQuery.data.find((company) => company.active)?.id ?? companiesQuery.data[0].id);
     }
   }, [companiesQuery.data, selectedCompanyId]);
+
+  useEffect(() => {
+    setClientPage(1);
+  }, [selectedCity, searchQuery]);
+
+  useEffect(() => {
+    setAlertPage(1);
+  }, [alertFilter]);
 
   const createClientMutation = trpc.clients.create.useMutation({
     onSuccess: async (result) => {
@@ -657,18 +680,29 @@ export default function Home() {
     return id;
   };
 
-  // Filtragem dos clientes
-  const filteredClients = (effectiveClients || []).filter(c => {
-    const matchSearch = searchQuery === "" || 
-      c.companyName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (c.cnpj && c.cnpj.includes(searchQuery)) ||
-      (c.contactName && c.contactName.toLowerCase().includes(searchQuery.toLowerCase()));
-    return matchSearch;
-  });
-  const visibleAlerts = (effectiveAlerts || []).filter((item) => {
+  // Online: listas usam paginação e filtros no banco. Offline: preserva o snapshot local completo.
+  const filteredClients = offline.isOnline && (isPlatformAdmin ? platformClientsPageQuery.data : clientsPageQuery.data)
+    ? ((isPlatformAdmin ? platformClientsPageQuery.data : clientsPageQuery.data)?.items || [])
+    : (effectiveClients || []).filter(c => {
+      const matchSearch = searchQuery === "" || c.companyName.toLowerCase().includes(searchQuery.toLowerCase()) || (c.cnpj && c.cnpj.includes(searchQuery)) || (c.contactName && c.contactName.toLowerCase().includes(searchQuery.toLowerCase()));
+      return matchSearch;
+    });
+  const paginatedOrders = offline.isOnline && (isPlatformAdmin ? platformOrdersPageQuery.data : ordersPageQuery.data)
+    ? ((isPlatformAdmin ? platformOrdersPageQuery.data : ordersPageQuery.data)?.items || [])
+    : (effectiveOrders || []);
+  const onlineAlertPage = isPlatformAdmin ? platformAlertsPageQuery.data : alertsPageQuery.data;
+  const visibleAlerts = offline.isOnline && onlineAlertPage
+    ? onlineAlertPage.items.filter((item) => {
+      if (alertFilter === "all") return true;
+      return alertFilter === "expired" ? item.alertStatus === "expired" : item.alertStatus === "urgent" || item.alertStatus === "warning";
+    })
+    : (effectiveAlerts || []).filter((item) => {
     if (alertFilter === "all") return true;
     return alertFilter === "expired" ? item.alertStatus === "expired" : item.alertStatus === "urgent" || item.alertStatus === "warning";
   });
+  const clientPageData = isPlatformAdmin ? platformClientsPageQuery.data : clientsPageQuery.data;
+  const orderPageData = isPlatformAdmin ? platformOrdersPageQuery.data : ordersPageQuery.data;
+  const alertPageData = onlineAlertPage;
   const openClientEditor = (client: any) => {
     setEditingClientId(client.id);
     setEditingClientCompanyId(client.accountId || selectedCompanyId);
@@ -1056,6 +1090,16 @@ export default function Home() {
                   </div>
                 )}
               </div>
+              {clientPageData && clientPageData.totalPages > 1 && (
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
+                  <span className="text-slate-500">Mostrando {filteredClients.length} de {clientPageData.total} clientes</span>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="outline" disabled={clientPage <= 1} onClick={() => setClientPage((page) => page - 1)}>Anterior</Button>
+                    <span className="font-semibold text-slate-700">Página {clientPage} de {clientPageData.totalPages}</span>
+                    <Button size="sm" variant="outline" disabled={clientPage >= clientPageData.totalPages} onClick={() => setClientPage((page) => page + 1)}>Próxima</Button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1259,6 +1303,16 @@ export default function Home() {
                     {alertFilter === "expired" ? "Nenhum extintor vencido encontrado." : alertFilter === "near" ? "Nenhum extintor próximo do vencimento encontrado." : "Parabéns! Todos os extintores estão dentro da validade e sem alertas pendentes."}
                   </div>
                 )}
+                {alertPageData && alertPageData.totalPages > 1 && (
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
+                    <span className="text-slate-500">Mostrando {visibleAlerts.length} de {alertPageData.total} alertas</span>
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" variant="outline" disabled={alertPage <= 1} onClick={() => setAlertPage((page) => page - 1)}>Anterior</Button>
+                      <span className="font-semibold text-slate-700">Página {alertPage} de {alertPageData.totalPages}</span>
+                      <Button size="sm" variant="outline" disabled={alertPage >= alertPageData.totalPages} onClick={() => setAlertPage((page) => page + 1)}>Próxima</Button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1295,7 +1349,7 @@ export default function Home() {
 
             <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
               <div className="divide-y divide-slate-100 md:hidden">
-                {(effectiveOrders || []).map(({ order, client }) => (
+                {(paginatedOrders || []).map(({ order, client }) => (
                   <article key={order.id} className="space-y-3 p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -1317,7 +1371,7 @@ export default function Home() {
                     </div>
                   </article>
                 ))}
-                {(effectiveOrders || []).length === 0 && <div className="p-8 text-center text-slate-400">Nenhuma ordem de serviço cadastrada ainda.</div>}
+                {(paginatedOrders || []).length === 0 && <div className="p-8 text-center text-slate-400">Nenhuma ordem de serviço cadastrada ainda.</div>}
               </div>
               <div className="hidden overflow-x-auto md:block">
               <table className="w-full min-w-[760px] text-left border-collapse text-xs">
@@ -1333,7 +1387,7 @@ export default function Home() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {(effectiveOrders || []).map(({ order, client }) => (
+                  {(paginatedOrders || []).map(({ order, client }) => (
                     <tr key={order.id} className="hover:bg-slate-50 transition-colors">
                       <td className="p-3 font-mono font-bold text-slate-900">
                         #{String(order.orderNumber).padStart(5, '0')}
@@ -1381,7 +1435,7 @@ export default function Home() {
                     </tr>
                   ))}
 
-                  {(effectiveOrders || []).length === 0 && (
+                  {(paginatedOrders || []).length === 0 && (
                     <tr>
                       <td colSpan={7} className="p-8 text-center text-slate-400">
                         Nenhuma ordem de serviço cadastrada ainda.
@@ -1391,6 +1445,16 @@ export default function Home() {
                 </tbody>
               </table>
               </div>
+              {orderPageData && orderPageData.totalPages > 1 && (
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
+                  <span className="text-slate-500">Mostrando {paginatedOrders.length} de {orderPageData.total} ordens</span>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="outline" disabled={orderPage <= 1} onClick={() => setOrderPage((page) => page - 1)}>Anterior</Button>
+                    <span className="font-semibold text-slate-700">Página {orderPage} de {orderPageData.totalPages}</span>
+                    <Button size="sm" variant="outline" disabled={orderPage >= orderPageData.totalPages} onClick={() => setOrderPage((page) => page + 1)}>Próxima</Button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -2097,8 +2161,10 @@ function ClientDetailCard({
   const tenantKey = user && user.id < 0 ? String(Math.abs(user.id)) : null;
   const isPlatformAdmin = user?.role === "platform_admin";
   const extinguishersQuery = trpc.extinguishers.listByClient.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey) });
+  const extinguishersPageQuery = trpc.extinguishers.page.useQuery({ clientId: client.id, page: 1, pageSize: 25, filter: extinguisherFilter }, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const ordersQuery = trpc.orders.list.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey) });
   const platformExtinguishersQuery = trpc.platform.data.extinguishers.useQuery({ companyId: client.accountId }, { enabled: Boolean(isPlatformAdmin && client.accountId) });
+  const platformExtinguishersPageQuery = trpc.platform.data.extinguishersPage.useQuery({ companyId: client.accountId || 0, clientId: client.id, page: 1, pageSize: 25, filter: extinguisherFilter }, { enabled: Boolean(isPlatformAdmin && client.accountId) });
   const platformOrdersQuery = trpc.platform.data.orders.useQuery({ companyId: client.accountId }, { enabled: Boolean(isPlatformAdmin && client.accountId) });
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyQuery = trpc.orders.history.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey && historyOpen) });
@@ -2107,8 +2173,8 @@ function ClientDetailCard({
   const isOnline = useOnlineStatus();
   const localExtinguishers = useLiveQuery(() => tenantKey ? offlineDb.extinguishers.where("tenantKey").equals(tenantKey).filter((row) => row.clientId === client.id).toArray() : Promise.resolve([] as any[]), [tenantKey, client.id], [] as any[]);
   const extinguisherRows = isPlatformAdmin
-    ? (platformExtinguishersQuery.data || []).filter((ext: any) => ext.clientId === client.id)
-    : isOnline && extinguishersQuery.data ? extinguishersQuery.data : localExtinguishers;
+    ? (platformExtinguishersPageQuery.data?.items || [])
+    : isOnline && extinguishersPageQuery.data ? extinguishersPageQuery.data.items.map((row: any) => row.extinguisher) : localExtinguishers;
   const clientOrders = isPlatformAdmin
     ? (platformOrdersQuery.data || []).filter((entry: any) => entry.order.clientId === client.id)
     : (ordersQuery.data || []);

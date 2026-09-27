@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   clients,
@@ -35,6 +35,16 @@ export async function getDb() {
 function requireAccountId(accountId: number | undefined): number {
   if (typeof accountId !== "number" || !Number.isInteger(accountId) || accountId <= 0) throw new Error("Tenant comercial obrigatório");
   return accountId;
+}
+
+function pageArgs(page = 1, pageSize = 25) {
+  const safePageSize = Math.min(100, Math.max(1, Math.trunc(pageSize || 25)));
+  const safePage = Math.max(1, Math.trunc(page || 1));
+  return { page: safePage, pageSize: safePageSize, offset: (safePage - 1) * safePageSize };
+}
+
+function pageResult<T>(items: T[], total: number, page: number, pageSize: number) {
+  return { items, total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
 }
 
 export async function upsertUser(user: InsertUser): Promise<void> {
@@ -116,6 +126,20 @@ export async function getPlatformOrders(companyId?: number) {
   return companyId ? await query.where(eq(serviceOrders.accountId, companyId)).orderBy(desc(serviceOrders.createdAt)) : await query.orderBy(desc(serviceOrders.createdAt));
 }
 
+export async function getClientsPage(accountId: number, options: { page?: number; pageSize?: number; city?: string; search?: string } = {}) {
+  const tenant = requireAccountId(accountId); const db = await getDb(); if (!db) return pageResult([], 0, 1, 25);
+  const { page, pageSize, offset } = pageArgs(options.page, options.pageSize);
+  const search = options.search?.trim(); const conditions = [eq(clients.accountId, tenant)];
+  if (options.city && options.city !== "TODAS") conditions.push(eq(clients.city, options.city));
+  if (search) conditions.push(or(like(clients.companyName, `%${search}%`), like(clients.cnpj, `%${search}%`), like(clients.contactName, `%${search}%`))!);
+  const where = and(...conditions);
+  const [items, totalRows] = await Promise.all([
+    db.select().from(clients).where(where).orderBy(desc(clients.createdAt), desc(clients.id)).limit(pageSize).offset(offset),
+    db.select({ total: sql<number>`count(*)` }).from(clients).where(where),
+  ]);
+  return pageResult(items, Number(totalRows[0]?.total || 0), page, pageSize);
+}
+
 /* Clientes */
 export async function getClients(cityFilter: string | undefined, accountId: number) {
   const tenant = requireAccountId(accountId);
@@ -181,6 +205,23 @@ export async function getDistinctCities(accountId: number) {
   if (!db) return [];
   const result = await db.selectDistinct({ city: clients.city }).from(clients).where(eq(clients.accountId, tenant)).orderBy(clients.city);
   return result.map(row => row.city).filter(Boolean);
+}
+
+export async function getExtinguishersPage(accountId: number, options: { page?: number; pageSize?: number; clientId?: number; search?: string; filter?: "all" | "active" | "near" | "expired" } = {}) {
+  const tenant = requireAccountId(accountId); const db = await getDb(); if (!db) return pageResult([], 0, 1, 25);
+  const { page, pageSize, offset } = pageArgs(options.page, options.pageSize);
+  const conditions = [eq(extinguishers.accountId, tenant)]; const search = options.search?.trim();
+  if (options.clientId) conditions.push(eq(extinguishers.clientId, options.clientId));
+  if (search) conditions.push(or(like(extinguishers.typeModel, `%${search}%`), like(extinguishers.serialNumber, `%${search}%`), like(extinguishers.locationInBuilding, `%${search}%`))!);
+  if (options.filter === "active") conditions.push(sql`${extinguishers.expirationDate} >= CURRENT_DATE()`);
+  if (options.filter === "expired") conditions.push(sql`${extinguishers.expirationDate} < CURRENT_DATE()`);
+  if (options.filter === "near") conditions.push(sql`${extinguishers.expirationDate} >= CURRENT_DATE() AND ${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL 30 DAY)`);
+  const where = and(...conditions);
+  const [items, totalRows] = await Promise.all([
+    db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).innerJoin(clients, eq(extinguishers.clientId, clients.id)).where(and(where, eq(clients.accountId, tenant))).orderBy(extinguishers.expirationDate, desc(extinguishers.id)).limit(pageSize).offset(offset),
+    db.select({ total: sql<number>`count(*)` }).from(extinguishers).where(where),
+  ]);
+  return pageResult(items, Number(totalRows[0]?.total || 0), page, pageSize);
 }
 
 /* Extintores */
@@ -250,6 +291,40 @@ export async function getExpiringExtinguishers(daysAhead: number, accountId: num
     else if (diffDays <= daysAhead) { alertStatus = "warning"; alertMessage = `Vence em ${diffDays} dia(s) (Alerta prévio)`; }
     return { ...item, diffDays, alertStatus, alertMessage, isNearExpiration: diffDays <= daysAhead };
   });
+}
+
+export async function getServiceOrdersPage(accountId: number, options: { page?: number; pageSize?: number; clientId?: number; search?: string; from?: string; to?: string } = {}) {
+  const tenant = requireAccountId(accountId); const db = await getDb(); if (!db) return pageResult([], 0, 1, 25);
+  const { page, pageSize, offset } = pageArgs(options.page, options.pageSize);
+  const conditions = [eq(serviceOrders.accountId, tenant), eq(clients.accountId, tenant)];
+  if (options.clientId) conditions.push(eq(serviceOrders.clientId, options.clientId));
+  if (options.from) conditions.push(sql`${serviceOrders.orderDate} >= ${options.from}`);
+  if (options.to) conditions.push(sql`${serviceOrders.orderDate} <= ${options.to}`);
+  const search = options.search?.trim();
+  if (search) conditions.push(or(like(clients.companyName, `%${search}%`), like(clients.city, `%${search}%`), like(sql`CAST(${serviceOrders.orderNumber} AS CHAR)`, `%${search}%`))!);
+  const where = and(...conditions);
+  const query = db.select({ order: serviceOrders, client: clients }).from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id));
+  const [items, totalRows] = await Promise.all([
+    query.where(where).orderBy(desc(serviceOrders.orderDate), desc(serviceOrders.createdAt), desc(serviceOrders.id)).limit(pageSize).offset(offset),
+    db.select({ total: sql<number>`count(*)` }).from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id)).where(where),
+  ]);
+  return pageResult(items, Number(totalRows[0]?.total || 0), page, pageSize);
+}
+
+export async function getExpiringExtinguishersPage(daysAhead: number, accountId: number, options: { page?: number; pageSize?: number; filter?: "all" | "near" | "expired"; search?: string } = {}) {
+  const tenant = requireAccountId(accountId); const db = await getDb(); if (!db) return pageResult([], 0, 1, 25);
+  const { page, pageSize, offset } = pageArgs(options.page, options.pageSize);
+  const conditions = [eq(extinguishers.accountId, tenant), eq(clients.accountId, tenant)];
+  if (options.filter === "expired") conditions.push(sql`${extinguishers.expirationDate} < CURRENT_DATE()`);
+  if (options.filter === "near") conditions.push(sql`${extinguishers.expirationDate} >= CURRENT_DATE() AND ${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL ${daysAhead} DAY)`);
+  if (options.filter === "all") conditions.push(sql`${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL ${daysAhead} DAY)`);
+  const search = options.search?.trim(); if (search) conditions.push(or(like(clients.companyName, `%${search}%`), like(clients.city, `%${search}%`), like(extinguishers.serialNumber, `%${search}%`))!);
+  const where = and(...conditions);
+  const query = db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).innerJoin(clients, and(eq(extinguishers.clientId, clients.id), eq(extinguishers.accountId, clients.accountId)));
+  const [rows, totalRows] = await Promise.all([query.where(where).orderBy(extinguishers.expirationDate, desc(extinguishers.id)).limit(pageSize).offset(offset), db.select({ total: sql<number>`count(*)` }).from(extinguishers).innerJoin(clients, eq(extinguishers.clientId, clients.id)).where(where)]);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const items = rows.map((item) => { const expiration = new Date(item.extinguisher.expirationDate); expiration.setHours(0, 0, 0, 0); const diffDays = Math.ceil((expiration.getTime() - today.getTime()) / 86400000); const alertStatus = diffDays < 0 ? "expired" : diffDays <= 15 ? "urgent" : "warning"; const alertMessage = diffDays < 0 ? `VENCIDO há ${Math.abs(diffDays)} dia(s)!` : diffDays === 0 ? "VENCE HOJE!" : diffDays <= 15 ? `Vence em ${diffDays} dia(s) (Urgente)` : `Vence em ${diffDays} dia(s) (Alerta prévio)`; return { ...item, diffDays, alertStatus, alertMessage, isNearExpiration: true }; });
+  return pageResult(items, Number(totalRows[0]?.total || 0), page, pageSize);
 }
 
 /* Ordens de Serviço */
