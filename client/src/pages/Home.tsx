@@ -62,6 +62,8 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "clients" | "extinguishers" | "orders" | "alerts" | "trash">("dashboard");
   const [selectedCity, setSelectedCity] = useState<string>("TODAS");
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
   const [extinguisherFilter, setExtinguisherFilter] = useState<"all" | "active">("all");
   const [alertFilter, setAlertFilter] = useState<"all" | "near" | "expired">("all");
   const [clientPage, setClientPage] = useState(1);
@@ -89,9 +91,10 @@ export default function Home() {
   const platformClientsInput = useMemo(() => selectedCompanyId ? { companyId: selectedCompanyId } : undefined, [selectedCompanyId]);
   const clientPageInput = useMemo(() => ({ page: clientPage, pageSize, city: selectedCity, search: searchQuery }), [clientPage, selectedCity, searchQuery]);
   const platformClientPageInput = useMemo(() => ({ companyId: selectedCompanyId || 0, ...clientPageInput }), [selectedCompanyId, clientPageInput]);
-  const orderPageInput = useMemo(() => ({ page: orderPage, pageSize }), [orderPage]);
+  const orderPageInput = useMemo(() => ({ page: orderPage, pageSize, city: selectedCity, from: fromDate || undefined, to: toDate || undefined }), [orderPage, selectedCity, fromDate, toDate]);
   const platformOrderPageInput = useMemo(() => ({ companyId: selectedCompanyId || 0, ...orderPageInput }), [selectedCompanyId, orderPageInput]);
-  const alertPageInput = useMemo(() => ({ page: alertPage, pageSize, filter: alertFilter }), [alertPage, alertFilter]);
+  const alertPageInput = useMemo(() => ({ page: alertPage, pageSize, filter: alertFilter, city: selectedCity }), [alertPage, alertFilter, selectedCity]);
+  const platformDashboardInput = useMemo(() => ({ companyId: selectedCompanyId || 0, city: selectedCity, from: fromDate || undefined, to: toDate || undefined }), [selectedCompanyId, selectedCity, fromDate, toDate]);
   const platformTrashInput = useMemo(() => ({ companyId: selectedCompanyId || 0 }), [selectedCompanyId]);
   const canAccessTrash = isCompanyAdmin || isPlatformAdmin;
 
@@ -99,23 +102,22 @@ export default function Home() {
   const [selectedClientIdForExtinguisher, setSelectedClientIdForExtinguisher] = useState<number | null>(null);
 
   // Queries
-  const statsQuery = trpc.dashboard.stats.useQuery(undefined, { enabled: Boolean(tenantKey) });
-  const citiesQuery = trpc.clients.cities.useQuery(undefined, { enabled: Boolean(tenantKey) });
-  const clientsQuery = trpc.clients.list.useQuery(undefined, { enabled: Boolean(tenantKey) });
+  const statsQuery = trpc.dashboard.stats.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
+  const citiesQuery = trpc.clients.cities.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
+  const clientsQuery = trpc.clients.list.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const clientsPageQuery = trpc.clients.page.useQuery(clientPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
-  const allExtinguishersQuery = trpc.extinguishers.list.useQuery(undefined, { enabled: Boolean(tenantKey) });
-  const alertsQuery = trpc.extinguishers.alerts.useQuery(undefined, { enabled: Boolean(tenantKey) });
-  const ordersQuery = trpc.orders.list.useQuery(undefined, { enabled: Boolean(tenantKey) });
+  const allExtinguishersQuery = trpc.extinguishers.list.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
+  const alertsQuery = trpc.extinguishers.alerts.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
+  const ordersQuery = trpc.orders.list.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const ordersPageQuery = trpc.orders.page.useQuery(orderPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const alertsPageQuery = trpc.extinguishers.alertsPage.useQuery(alertPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
-  const alertDaysQuery = trpc.settings.getAlertDays.useQuery(undefined, { enabled: Boolean(tenantKey) });
+  const alertDaysQuery = trpc.settings.getAlertDays.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const companiesQuery = trpc.platform.companies.list.useQuery(undefined, { enabled: isPlatformAdmin });
+  const platformStatsQuery = trpc.platform.dashboard.useQuery(platformDashboardInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
   const platformClientsQuery = trpc.platform.data.clients.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
   const platformClientsPageQuery = trpc.platform.data.clientsPage.useQuery(platformClientPageInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
-  const platformExtinguishersQuery = trpc.platform.data.extinguishers.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
-  const platformOrdersQuery = trpc.platform.data.orders.useQuery(platformClientsInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
   const platformOrdersPageQuery = trpc.platform.data.ordersPage.useQuery(platformOrderPageInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
-  const platformAlertsPageQuery = trpc.platform.data.alertsPage.useQuery({ companyId: selectedCompanyId || 0, page: alertPage, pageSize, filter: alertFilter }, { enabled: Boolean(isPlatformAdmin && selectedCompanyId) });
+  const platformAlertsPageQuery = trpc.platform.data.alertsPage.useQuery({ companyId: selectedCompanyId || 0, page: alertPage, pageSize, filter: alertFilter, city: selectedCity }, { enabled: Boolean(isPlatformAdmin && selectedCompanyId) });
   const trashQuery = trpc.trash.list.useQuery(undefined, { enabled: Boolean(tenantKey && isCompanyAdmin) });
   const platformTrashQuery = trpc.platform.data.trash.list.useQuery(platformTrashInput, { enabled: Boolean(isPlatformAdmin && selectedCompanyId) });
   const visibleTrash = isPlatformAdmin ? (platformTrashQuery.data || []) : (trashQuery.data || []);
@@ -128,22 +130,23 @@ export default function Home() {
   const offline = useOfflineSnapshot({
     tenantKey,
     clients: (isPlatformAdmin ? platformClientsQuery.data : clientsQuery.data) as any,
-    extinguishers: (isPlatformAdmin ? platformExtinguishersQuery.data : remoteExtinguishers) as any,
-    orders: (isPlatformAdmin ? platformOrdersQuery.data : ordersQuery.data) as any,
+    extinguishers: (isPlatformAdmin ? undefined : remoteExtinguishers) as any,
+    orders: (isPlatformAdmin ? undefined : ordersQuery.data) as any,
     alerts: alertsQuery.data as any,
     alertDays: alertDaysQuery.data,
   });
   const allClients = useMemo(() => isPlatformAdmin ? (platformClientsQuery.data || offline.clients || []) : (offline.clients || []), [isPlatformAdmin, platformClientsQuery.data, offline.clients]);
   const effectiveClients = useMemo(() => allClients.filter((client: any) => selectedCity === "TODAS" || client.city === selectedCity), [allClients, selectedCity]);
   const effectiveCities = useMemo(() => Array.from(new Set(allClients.map((client: any) => client.city).filter(Boolean))).sort(), [allClients]);
-  const effectiveExtinguishers = useMemo(() => isPlatformAdmin ? (platformExtinguishersQuery.data || offline.extinguishers || []) : (offline.extinguishers || []), [isPlatformAdmin, platformExtinguishersQuery.data, offline.extinguishers]);
-  const effectiveOrders = useMemo(() => isPlatformAdmin ? (platformOrdersQuery.data || offline.orders || []) : (offline.orders || []), [isPlatformAdmin, platformOrdersQuery.data, offline.orders]);
+  const effectiveExtinguishers = useMemo(() => isPlatformAdmin ? (offline.extinguishers || []) : (offline.extinguishers || []), [isPlatformAdmin, offline.extinguishers]);
+  const effectiveOrders = useMemo(() => isPlatformAdmin ? (offline.orders || []) : (offline.orders || []), [isPlatformAdmin, offline.orders]);
   const effectiveAlerts = useMemo(() => {
     if (!isPlatformAdmin) return offline.alerts || [];
     const clientsById = new Map((platformClientsQuery.data || []).map((client: any) => [client.id, client]));
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const daysAhead = alertDaysQuery.data || 30;
+    if (isPlatformAdmin) return platformAlertsPageQuery.data?.items || [];
     return effectiveExtinguishers.map((extinguisher: any) => {
       const expiration = new Date(extinguisher.expirationDate);
       expiration.setHours(0, 0, 0, 0);
@@ -159,29 +162,16 @@ export default function Home() {
         isNearExpiration: diffDays <= daysAhead,
       };
     });
-  }, [isPlatformAdmin, offline.alerts, platformClientsQuery.data, effectiveExtinguishers, alertDaysQuery.data]);
-  const platformExpirationStats = useMemo(() => {
-    if (!isPlatformAdmin) return { near: 0, expired: 0 };
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const limit = new Date(today);
-    limit.setDate(limit.getDate() + (alertDaysQuery.data || 30));
-    return effectiveExtinguishers.reduce((result: { near: number; expired: number }, extinguisher: any) => {
-      const expiration = new Date(extinguisher.expirationDate);
-      expiration.setHours(0, 0, 0, 0);
-      if (expiration < today) result.expired += 1;
-      else if (expiration <= limit) result.near += 1;
-      return result;
-    }, { near: 0, expired: 0 });
-  }, [isPlatformAdmin, effectiveExtinguishers, alertDaysQuery.data]);
-  const effectiveStats = useMemo(() => offline.isOnline && statsQuery.data ? statsQuery.data : {
+  }, [isPlatformAdmin, offline.alerts, platformClientsQuery.data, effectiveExtinguishers, alertDaysQuery.data, platformAlertsPageQuery.data]);
+  const effectiveStats = useMemo(() => offline.isOnline && (isPlatformAdmin ? platformStatsQuery.data : statsQuery.data) ? (isPlatformAdmin ? platformStatsQuery.data : statsQuery.data) : {
     totalClients: effectiveClients.length,
     totalCities: effectiveCities.length,
     totalExtinguishers: effectiveExtinguishers.length,
-    nearExpirationCount: isPlatformAdmin ? platformExpirationStats.near : effectiveAlerts.filter((item: any) => item.alertStatus === "warning" || item.alertStatus === "urgent").length,
-    expiredCount: isPlatformAdmin ? platformExpirationStats.expired : effectiveAlerts.filter((item: any) => item.alertStatus === "expired").length,
+    nearExpirationCount: effectiveAlerts.filter((item: any) => item.alertStatus === "warning" || item.alertStatus === "urgent").length,
+    expiredCount: effectiveAlerts.filter((item: any) => item.alertStatus === "expired").length,
     totalOrders: effectiveOrders.length,
-  }, [offline.isOnline, statsQuery.data, effectiveClients.length, effectiveCities.length, effectiveExtinguishers.length, effectiveAlerts, effectiveOrders.length, isPlatformAdmin, platformExpirationStats]);
+    alertDaysConfig: offline.alertDays || 30,
+  }, [offline.isOnline, offline.alertDays, statsQuery.data, platformStatsQuery.data, isPlatformAdmin, effectiveClients.length, effectiveCities.length, effectiveExtinguishers.length, effectiveAlerts, effectiveOrders.length]);
   const offlineOrderDetails = useMemo(() => {
     const row = (offline.orders || []).find((item: any) => item.order?.id === viewingOrderId);
     return row ? { ...row.order, client: row.client, items: row.order.items || [] } : undefined;
@@ -749,7 +739,7 @@ export default function Home() {
 
   const openOrderEditor = async (id: number) => {
     try {
-      const listedOrder = (effectiveOrders || []).find((entry: any) => entry.order.id === id)?.order;
+      const listedOrder = (paginatedOrders || []).find((entry: any) => entry.order.id === id)?.order;
       const detail: any = isPlatformAdmin
         ? (await utils.platform.data.history.fetch({ companyId: listedOrder?.accountId, clientId: listedOrder?.clientId })).find((entry: any) => entry.order.id === id)
         : await utils.orders.byId.fetch({ id });
@@ -938,6 +928,42 @@ export default function Home() {
         ======================================================== */}
         {activeTab === "dashboard" && (
           <div className="space-y-6">
+            {isPlatformAdmin && (
+              <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+                <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h2 className="text-sm font-black uppercase tracking-wide text-slate-800">Visão do administrador geral</h2>
+                    <p className="text-xs text-slate-500">Selecione uma empresa para carregar somente os dados necessários.</p>
+                  </div>
+                  <Badge variant="outline" className="w-fit text-[10px] text-emerald-700">Consultas agregadas no banco</Badge>
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+                  <div>
+                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">Empresa</label>
+                    <Select value={selectedCompanyId ? String(selectedCompanyId) : ""} onValueChange={(value) => { setSelectedCompanyId(Number(value)); setSelectedCity("TODAS"); setClientPage(1); setOrderPage(1); setAlertPage(1); }}>
+                      <SelectTrigger className="h-10"><SelectValue placeholder="Selecione a empresa" /></SelectTrigger>
+                      <SelectContent>{(companiesQuery.data || []).filter((company) => company.active).map((company) => <SelectItem key={company.id} value={String(company.id)}>{company.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">Cidade</label>
+                    <Select value={selectedCity} onValueChange={(value) => { setSelectedCity(value); setClientPage(1); setOrderPage(1); }}>
+                      <SelectTrigger className="h-10"><SelectValue placeholder="Todas as cidades" /></SelectTrigger>
+                      <SelectContent><SelectItem value="TODAS">Todas as cidades</SelectItem>{effectiveCities.map((city) => <SelectItem key={city} value={city}>{city}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">OS a partir de</label>
+                    <Input type="date" value={fromDate} onChange={(event) => { setFromDate(event.target.value); setOrderPage(1); }} className="h-10" />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">OS até</label>
+                    <Input type="date" value={toDate} onChange={(event) => { setToDate(event.target.value); setOrderPage(1); }} className="h-10" />
+                  </div>
+                </div>
+                {(selectedCity !== "TODAS" || fromDate || toDate) && <Button variant="ghost" size="sm" className="mt-3 h-8 px-2 text-xs text-slate-500" onClick={() => { setSelectedCity("TODAS"); setFromDate(""); setToDate(""); setClientPage(1); setOrderPage(1); }}>Limpar filtros</Button>}
+              </section>
+            )}
             <section className="overflow-hidden rounded-2xl bg-slate-950 text-white shadow-xl shadow-slate-200/70">
               <div className="relative px-5 py-6 sm:px-7 sm:py-7">
                 <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-red-600/20 blur-2xl" />
@@ -959,7 +985,7 @@ export default function Home() {
               <div className="grid grid-cols-2 divide-x divide-y divide-white/10 border-t border-white/10 bg-white/[0.04] sm:grid-cols-4 sm:divide-y-0 lg:grid-cols-5">
                 <button type="button" aria-label="Visualizar clientes cadastrados" onClick={() => openClients()} onKeyDown={(event) => event.key === "Enter" && openClients()} className="group px-4 py-3.5 text-left transition hover:bg-white/[0.08] focus-visible:bg-white/[0.1] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/70 sm:px-5"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Clientes</p><p className="mt-1 text-xl font-black">{effectiveStats?.totalClients || 0}</p><p className="text-[11px] text-slate-400">{effectiveStats?.totalCities || 0} cidades <span className="ml-1 text-white/40 transition group-hover:text-white">→</span></p></button>
                 <button type="button" aria-label="Visualizar extintores ativos" onClick={() => openClients("active")} onKeyDown={(event) => event.key === "Enter" && openClients("active")} className="group px-4 py-3.5 text-left transition hover:bg-white/[0.08] focus-visible:bg-white/[0.1] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/70 sm:px-5"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Extintores</p><p className="mt-1 text-xl font-black text-emerald-300">{effectiveStats?.totalExtinguishers || 0}</p><p className="text-[11px] text-slate-400">na base ativa <span className="ml-1 text-white/40 transition group-hover:text-white">→</span></p></button>
-                <button type="button" aria-label="Visualizar extintores próximos do vencimento" onClick={() => openAlerts("near")} onKeyDown={(event) => event.key === "Enter" && openAlerts("near")} className="group px-4 py-3.5 text-left transition hover:bg-white/[0.08] focus-visible:bg-white/[0.1] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/70 sm:px-5"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Próximos do vencimento</p><p className="mt-1 text-xl font-black text-amber-300">{effectiveStats?.nearExpirationCount || 0}</p><p className="text-[11px] text-slate-400">até {offline.alertDays || 30} dias <span className="ml-1 text-white/40 transition group-hover:text-white">→</span></p></button>
+                <button type="button" aria-label="Visualizar extintores próximos do vencimento" onClick={() => openAlerts("near")} onKeyDown={(event) => event.key === "Enter" && openAlerts("near")} className="group px-4 py-3.5 text-left transition hover:bg-white/[0.08] focus-visible:bg-white/[0.1] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/70 sm:px-5"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Próximos do vencimento</p><p className="mt-1 text-xl font-black text-amber-300">{effectiveStats?.nearExpirationCount || 0}</p><p className="text-[11px] text-slate-400">até {effectiveStats?.alertDaysConfig || offline.alertDays || 30} dias <span className="ml-1 text-white/40 transition group-hover:text-white">→</span></p></button>
                 <button type="button" aria-label="Visualizar extintores vencidos" onClick={() => openAlerts("expired")} onKeyDown={(event) => event.key === "Enter" && openAlerts("expired")} className="group px-4 py-3.5 text-left transition hover:bg-white/[0.08] focus-visible:bg-white/[0.1] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/70 sm:px-5"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Vencidos</p><p className="mt-1 text-xl font-black text-red-300">{effectiveStats?.expiredCount || 0}</p><p className="text-[11px] text-slate-400">ação necessária <span className="ml-1 text-white/40 transition group-hover:text-white">→</span></p></button>
                 <button type="button" aria-label="Visualizar ordens de serviço emitidas" onClick={() => setActiveTab("orders")} onKeyDown={(event) => event.key === "Enter" && setActiveTab("orders")} className="group col-span-2 px-4 py-3.5 text-left transition hover:bg-white/[0.08] focus-visible:bg-white/[0.1] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/70 sm:col-span-1 sm:px-5"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Ordens emitidas</p><p className="mt-1 text-xl font-black text-violet-300">{effectiveStats?.totalOrders || 0}</p><p className="text-[11px] text-slate-400">prontas para impressão <span className="ml-1 text-white/40 transition group-hover:text-white">→</span></p></button>
               </div>
@@ -978,7 +1004,7 @@ export default function Home() {
                         Atenção aos Prazos de Validade dos Extintores!
                       </h3>
                       <p className="text-sm text-slate-700 mt-1 leading-relaxed">
-                        Existem extintores que venceram ou estão a menos de <strong>{offline.alertDays || 30} dias</strong> do vencimento. 
+                        Existem extintores que venceram ou estão a menos de <strong>{effectiveStats?.alertDaysConfig || offline.alertDays || 30} dias</strong> do vencimento.
                         Revise os clientes abaixo e agende a recarga/troca.
                       </p>
                     </div>
@@ -2198,9 +2224,8 @@ function ClientDetailCard({
   const extinguishersQuery = trpc.extinguishers.listByClient.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey) });
   const extinguishersPageQuery = trpc.extinguishers.page.useQuery({ clientId: client.id, page: 1, pageSize: 25, filter: extinguisherFilter }, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const ordersQuery = trpc.orders.list.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey) });
-  const platformExtinguishersQuery = trpc.platform.data.extinguishers.useQuery({ companyId: client.accountId }, { enabled: Boolean(isPlatformAdmin && client.accountId) });
   const platformExtinguishersPageQuery = trpc.platform.data.extinguishersPage.useQuery({ companyId: client.accountId || 0, clientId: client.id, page: 1, pageSize: 25, filter: extinguisherFilter }, { enabled: Boolean(isPlatformAdmin && client.accountId) });
-  const platformOrdersQuery = trpc.platform.data.orders.useQuery({ companyId: client.accountId }, { enabled: Boolean(isPlatformAdmin && client.accountId) });
+  const platformOrdersPageQuery = trpc.platform.data.ordersPage.useQuery({ companyId: client.accountId || 0, clientId: client.id, page: 1, pageSize: 25 }, { enabled: Boolean(isPlatformAdmin && client.accountId) });
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyQuery = trpc.orders.history.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey && historyOpen) });
   const platformHistoryQuery = trpc.platform.data.history.useQuery({ companyId: client.accountId, clientId: client.id }, { enabled: Boolean(isPlatformAdmin && historyOpen && client.accountId) });
@@ -2211,7 +2236,7 @@ function ClientDetailCard({
     ? (platformExtinguishersPageQuery.data?.items || [])
     : isOnline && extinguishersPageQuery.data ? extinguishersPageQuery.data.items.map((row: any) => row.extinguisher) : localExtinguishers;
   const clientOrders = isPlatformAdmin
-    ? (platformOrdersQuery.data || []).filter((entry: any) => entry.order.clientId === client.id)
+    ? (platformOrdersPageQuery.data?.items || [])
     : (ordersQuery.data || []);
   const visibleExtinguishers = (extinguisherRows || []).filter((ext) => {
     if (extinguisherFilter === "all") return true;
