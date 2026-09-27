@@ -680,6 +680,32 @@ export default function Home() {
     return id;
   };
 
+  const saveClientOfflineAndQueue = async (input: typeof clientForm) => {
+    if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
+    const localId = await saveOfflineClient(input);
+    await queueOfflineMutation({ tenantKey, entity: "client", action: "create", payload: { ...input, localId } });
+    toast.success("Cliente salvo no dispositivo (offline).");
+    setIsClientModalOpen(false);
+    if (returnToOrderAfterClient) {
+      setOrderForm(prev => ({ ...prev, clientId: localId, responsibleName: input.contactName, responsibleCpf: input.cpf, responsibleBirthDate: input.birthDate }));
+      setReturnToOrderAfterClient(false);
+      setIsOrderModalOpen(true);
+    }
+  };
+
+  const saveOrderOfflineAndQueue = async (input: any) => {
+    if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
+    const id = offlineId();
+    const client = allClients.find((item: any) => item.id === input.clientId);
+    const order = { ...input, id, orderNumber: input.orderNumber || Math.abs(id), items: input.items, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const localClient = client ? { ...client, tenantKey } : { id: input.clientId, tenantKey, companyName: "Cliente offline", city: "Não informado" };
+    await offlineDb.orders.put({ tenantKey, order: { ...order, tenantKey }, client: localClient });
+    await queueOfflineMutation({ tenantKey, entity: "order", action: "create", payload: { ...input, localId: id } });
+    toast.success("Ordem salva no dispositivo (offline).");
+    setIsOrderModalOpen(false);
+    setViewingOrderId(id);
+  };
+
   // Online: listas usam paginação e filtros no banco. Offline: preserva o snapshot local completo.
   const filteredClients = offline.isOnline && (isPlatformAdmin ? platformClientsPageQuery.data : clientsPageQuery.data)
     ? ((isPlatformAdmin ? platformClientsPageQuery.data : clientsPageQuery.data)?.items || [])
@@ -1644,7 +1670,11 @@ export default function Home() {
                   }
                   platformCreateClientMutation.mutate({ ...clientForm, companyId: selectedCompanyId });
                 } else {
-                  createClientMutation.mutate(clientForm);
+                  if (!offline.isOnline || !navigator.onLine) {
+                    void saveClientOfflineAndQueue(clientForm).catch((error) => toast.error(error instanceof Error ? error.message : "Não foi possível salvar o cliente offline."));
+                  } else {
+                    createClientMutation.mutate(clientForm);
+                  }
                 }
               }}
             >
@@ -2072,7 +2102,12 @@ export default function Home() {
                   }
                   platformCreateOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder, companyId: orderCompanyId });
                 } else {
-                  createOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder });
+                  const payload = { ...orderForm, totalAmount: calculatedTotalOrder };
+                  if (!offline.isOnline || !navigator.onLine) {
+                    void saveOrderOfflineAndQueue(payload).catch((error) => toast.error(error instanceof Error ? error.message : "Não foi possível salvar a ordem offline."));
+                  } else {
+                    createOrderMutation.mutate(payload);
+                  }
                 }
               }}
             >
