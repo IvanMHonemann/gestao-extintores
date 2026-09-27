@@ -184,6 +184,13 @@ export async function getDistinctCities(accountId: number) {
 }
 
 /* Extintores */
+export async function getExtinguishers(accountId: number) {
+  const tenant = requireAccountId(accountId);
+  const db = await getDb();
+  if (!db) return [];
+  return await db.select().from(extinguishers).where(eq(extinguishers.accountId, tenant)).orderBy(extinguishers.expirationDate);
+}
+
 export async function getExtinguishersByClient(clientId: number, accountId: number) {
   const tenant = requireAccountId(accountId);
   const db = await getDb();

@@ -154,6 +154,7 @@ export const appRouter = router({
   }),
 
   extinguishers: router({
+    list: commercialProcedure.query(({ ctx }) => db.getExtinguishers(ctx.accountId)),
     listByClient: commercialProcedure.input(z.object({ clientId: z.number() })).query(async ({ ctx, input }) => db.getExtinguishersByClient(input.clientId, ctx.accountId)),
     alerts: commercialProcedure.input(z.object({ daysAhead: z.number().optional() }).optional()).query(async ({ ctx, input }) => { const days = input?.daysAhead || parseInt(await db.getSetting("alert_days_ahead", ctx.accountId, "30"), 10) || 30; return db.getExpiringExtinguishers(days, ctx.accountId); }),
     create: commercialProcedure.input(z.object({ clientId: z.number(), typeModel: z.string().min(1), capacity: z.string().optional(), serialNumber: z.string().optional(), locationInBuilding: z.string().optional(), expirationDate: z.string(), lastInspectionDate: z.string().optional(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => ({ id: await db.createExtinguisher({ ...input, accountId: ctx.accountId, expirationDate: input.expirationDate as any, lastInspectionDate: (input.lastInspectionDate || null) as any, capacity: emptyToNull(input.capacity), serialNumber: emptyToNull(input.serialNumber), locationInBuilding: emptyToNull(input.locationInBuilding), notes: emptyToNull(input.notes) }, ctx.accountId) })),

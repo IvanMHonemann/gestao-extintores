@@ -1,6 +1,6 @@
 import { useLiveQuery } from "dexie-react-hooks";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { offlineDb, saveOnlineSnapshot, type LocalOrderRow, type LocalRecord } from "./localDb";
+import { offlineDb, saveOnlineSnapshot, type LocalOrderRow, type LocalRecord, type OfflineMutation } from "./localDb";
 
 export function useOnlineStatus() {
   const [isOnline, setIsOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
@@ -91,6 +91,7 @@ export function useOfflineSnapshot(remote: {
   const localExtinguishers = useLiveQuery(() => tenantKey ? offlineDb.extinguishers.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as LocalRecord[]), [tenantKey], [] as LocalRecord[]);
   const localOrders = useLiveQuery(() => tenantKey ? offlineDb.orders.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as LocalOrderRow[]), [tenantKey], [] as LocalOrderRow[]);
   const localAlerts = useLiveQuery(() => tenantKey ? offlineDb.alerts.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as LocalRecord[]), [tenantKey], [] as LocalRecord[]);
+  const localMutations = useLiveQuery(() => tenantKey ? offlineDb.mutations.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as OfflineMutation[]), [tenantKey], [] as OfflineMutation[]);
   const localAlertDays = useLiveQuery(() => tenantKey ? offlineDb.settings.get(`${tenantKey}:alertDays`) : Promise.resolve(undefined), [tenantKey], undefined);
 
   useEffect(() => {
@@ -98,12 +99,30 @@ export function useOfflineSnapshot(remote: {
     if (remote.clients || remote.extinguishers || remote.orders || remote.alerts) void saveOnlineSnapshot(remote as { tenantKey: string; clients?: LocalRecord[]; extinguishers?: LocalRecord[]; orders?: LocalOrderRow[]; alerts?: LocalRecord[]; alertDays?: number });
   }, [isOnline, tenantKey, remote.clients, remote.extinguishers, remote.orders, remote.alerts, remote.alertDays]);
 
-  return useMemo(() => ({
+  return useMemo(() => {
+    const mergePending = (remoteRows: any[] | undefined, localRows: any[], entity: OfflineMutation["entity"], getId: (row: any) => number) => {
+      const mutations = localMutations.filter((mutation) => mutation.entity === entity && (mutation.state || "pending") === "pending");
+      const written = new Set(mutations.filter((mutation) => mutation.action !== "delete").map((mutation) => Number(mutation.payload?.localId ?? mutation.payload?.id)));
+      const deleted = new Set(mutations.filter((mutation) => mutation.action === "delete").map((mutation) => Number(mutation.payload?.id)));
+      const merged = (remoteRows || []).filter((row) => !deleted.has(Number(getId(row))) && !deleted.has(Number(row.clientId ?? row.order?.clientId)) && !written.has(Number(getId(row))));
+      const remoteIds = new Set(merged.map(getId).map(Number));
+      for (const row of localRows) {
+        const id = Number(getId(row));
+        if (written.has(id) && !remoteIds.has(id)) merged.push(row);
+        if (id < 0 && !remoteIds.has(id)) merged.push(row);
+      }
+      return merged;
+    };
+    const clients = mergePending(remote.clients, localClients, "client", (row) => row.id);
+    const extinguishers = mergePending(remote.extinguishers, localExtinguishers, "extinguisher", (row) => row.id);
+    const orders = mergePending(remote.orders, localOrders, "order", (row) => row.order?.id ?? row.id);
+    return {
     isOnline,
-    clients: isOnline && remote.clients ? remote.clients : localClients,
-    extinguishers: isOnline && remote.extinguishers ? remote.extinguishers : localExtinguishers,
-    orders: isOnline && remote.orders ? remote.orders : localOrders,
+    clients: isOnline && remote.clients ? clients : localClients,
+    extinguishers: isOnline && remote.extinguishers ? extinguishers : localExtinguishers,
+    orders: isOnline && remote.orders ? orders : localOrders,
     alerts: isOnline && remote.alerts ? remote.alerts : localAlerts,
     alertDays: isOnline && remote.alertDays !== undefined ? remote.alertDays : ((localAlertDays as any)?.value || remote.alertDays || 30),
-  }), [isOnline, remote.clients, remote.extinguishers, remote.orders, remote.alerts, remote.alertDays, localClients, localExtinguishers, localOrders, localAlerts, localAlertDays]);
+    };
+  }, [isOnline, remote.clients, remote.extinguishers, remote.orders, remote.alerts, remote.alertDays, localClients, localExtinguishers, localOrders, localAlerts, localMutations, localAlertDays]);
 }

@@ -6,7 +6,7 @@ export type OfflineMutation = {
   id?: number;
   tenantKey: string;
   entity: "client" | "extinguisher" | "order";
-  action: "create" | "delete";
+  action: "create" | "update" | "delete";
   payload: any;
   createdAt: string;
   state?: "pending" | "failed";
@@ -84,13 +84,20 @@ async function deleteScopedRows(table: any, tenantKey: string) {
 }
 
 async function replaceScopedRows(table: any, tenantKey: string, rows: any[], getId: (row: any) => number) {
-  const remoteIds = new Set(rows.map(getId).filter((id) => Number.isFinite(id)));
+  const pending = await offlineDb.mutations.where("tenantKey").equals(tenantKey).toArray();
+  const pendingWrites = new Set(pending.filter((mutation) => mutation.action === "create" || mutation.action === "update").map((mutation) => Number(mutation.payload?.localId ?? mutation.payload?.id)).filter(Number.isFinite));
+  const pendingDeletes = new Set(pending.filter((mutation) => mutation.action === "delete").map((mutation) => Number(mutation.payload?.id)).filter(Number.isFinite));
+  const filteredRows = rows.filter((row) => {
+    const id = Number(getId(row));
+    return !pendingDeletes.has(id) && !pendingDeletes.has(Number(row.clientId ?? row.order?.clientId)) && !pendingWrites.has(id);
+  });
+  const remoteIds = new Set(filteredRows.map(getId).filter((id) => Number.isFinite(id)));
   const existing = await table.where("tenantKey").equals(tenantKey).toArray();
   const staleIds = existing
-    .filter((row: any) => Number(row.id) > 0 && !remoteIds.has(Number(row.id)))
+    .filter((row: any) => Number(row.id) > 0 && !remoteIds.has(Number(row.id)) && !pendingDeletes.has(Number(row.id)) && !pendingWrites.has(Number(row.id)))
     .map((row: any) => row.id);
   if (staleIds.length) await table.bulkDelete(staleIds);
-  if (rows.length) await table.bulkPut(rows);
+  if (filteredRows.length) await table.bulkPut(filteredRows);
 }
 
 export async function saveOnlineSnapshot(snapshot: {
@@ -102,7 +109,7 @@ export async function saveOnlineSnapshot(snapshot: {
   alertDays?: number;
 }) {
   const tenantKey = requireTenantKey(snapshot.tenantKey);
-  await offlineDb.transaction("rw", [offlineDb.clients, offlineDb.extinguishers, offlineDb.orders, offlineDb.alerts, offlineDb.settings, offlineDb.meta], async () => {
+  await offlineDb.transaction("rw", [offlineDb.clients, offlineDb.extinguishers, offlineDb.orders, offlineDb.alerts, offlineDb.settings, offlineDb.meta, offlineDb.mutations], async () => {
     if (snapshot.clients) {
       const rows = snapshot.clients.map(row => withTenant(tenantKey, row));
       await replaceScopedRows(offlineDb.clients, tenantKey, rows, row => row.id);
