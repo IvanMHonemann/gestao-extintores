@@ -12,7 +12,9 @@
     "test": "vitest run",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "backup:db": "node scripts/backup-db.mjs",
-    "restore:db": "node scripts/restore-db.mjs"
+    "restore:db": "node scripts/restore-db.mjs",
+    "maintenance:db": "node scripts/maintenance-db.mjs",
+    "cleanup:db": "node scripts/maintenance-db.mjs --skip-backup"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",

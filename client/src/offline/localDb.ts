@@ -11,6 +11,8 @@ export type OfflineMutation = {
   createdAt: string;
   state?: "pending" | "failed";
   lastError?: string;
+  attempts?: number;
+  lastAttemptAt?: string;
 };
 
 type OfflineSetting = { key: string; tenantKey: string; value: any };
@@ -83,7 +85,7 @@ async function deleteScopedRows(table: any, tenantKey: string) {
   if (rows.length) await table.bulkDelete(rows);
 }
 
-async function replaceScopedRows(table: any, tenantKey: string, rows: any[], getId: (row: any) => number) {
+async function replaceScopedRows(table: any, tenantKey: string, rows: any[], getId: (row: any) => number, preserveExisting = false) {
   const pending = await offlineDb.mutations.where("tenantKey").equals(tenantKey).toArray();
   const pendingWrites = new Set(pending.filter((mutation) => mutation.action === "create" || mutation.action === "update").map((mutation) => Number(mutation.payload?.localId ?? mutation.payload?.id)).filter(Number.isFinite));
   const pendingDeletes = new Set(pending.filter((mutation) => mutation.action === "delete").map((mutation) => Number(mutation.payload?.id)).filter(Number.isFinite));
@@ -96,7 +98,7 @@ async function replaceScopedRows(table: any, tenantKey: string, rows: any[], get
   const staleIds = existing
     .filter((row: any) => Number(row.id) > 0 && !remoteIds.has(Number(row.id)) && !pendingDeletes.has(Number(row.id)) && !pendingWrites.has(Number(row.id)))
     .map((row: any) => row.id);
-  if (staleIds.length) await table.bulkDelete(staleIds);
+  if (!preserveExisting && staleIds.length) await table.bulkDelete(staleIds);
   if (filteredRows.length) await table.bulkPut(filteredRows);
 }
 
@@ -107,16 +109,17 @@ export async function saveOnlineSnapshot(snapshot: {
   orders?: LocalOrderRow[];
   alerts?: LocalRecord[];
   alertDays?: number;
+  preserveExisting?: boolean;
 }) {
   const tenantKey = requireTenantKey(snapshot.tenantKey);
   await offlineDb.transaction("rw", [offlineDb.clients, offlineDb.extinguishers, offlineDb.orders, offlineDb.alerts, offlineDb.settings, offlineDb.meta, offlineDb.mutations], async () => {
     if (snapshot.clients) {
       const rows = snapshot.clients.map(row => withTenant(tenantKey, row));
-      await replaceScopedRows(offlineDb.clients, tenantKey, rows, row => row.id);
+      await replaceScopedRows(offlineDb.clients, tenantKey, rows, row => row.id, snapshot.preserveExisting ?? true);
     }
     if (snapshot.extinguishers) {
       const rows = snapshot.extinguishers.map(row => withTenant(tenantKey, row));
-      await replaceScopedRows(offlineDb.extinguishers, tenantKey, rows, row => row.id);
+      await replaceScopedRows(offlineDb.extinguishers, tenantKey, rows, row => row.id, snapshot.preserveExisting ?? true);
     }
     if (snapshot.orders) {
       const rows = snapshot.orders.map(row => ({
@@ -125,7 +128,7 @@ export async function saveOnlineSnapshot(snapshot: {
         order: withTenant(tenantKey, row.order),
         client: withTenant(tenantKey, row.client),
       }));
-      await replaceScopedRows(offlineDb.orders, tenantKey, rows, row => row.order.id);
+      await replaceScopedRows(offlineDb.orders, tenantKey, rows, row => row.order.id, snapshot.preserveExisting ?? true);
     }
     if (snapshot.alerts) {
       const rows = snapshot.alerts.map((row: any) => withTenant(tenantKey, {
@@ -134,7 +137,7 @@ export async function saveOnlineSnapshot(snapshot: {
         clientId: row.clientId ?? row.extinguisher?.clientId,
         expirationDate: row.expirationDate ?? row.extinguisher?.expirationDate,
       }));
-      await replaceScopedRows(offlineDb.alerts, tenantKey, rows, row => row.id);
+      await replaceScopedRows(offlineDb.alerts, tenantKey, rows, row => row.id, snapshot.preserveExisting ?? true);
     }
     if (snapshot.alertDays !== undefined) await offlineDb.settings.put({ key: scopedKey(tenantKey, "alertDays"), tenantKey, value: snapshot.alertDays });
     await offlineDb.meta.put({ key: scopedKey(tenantKey, "lastOnlineSync"), tenantKey, value: new Date().toISOString() });
@@ -259,5 +262,40 @@ export async function clearOfflineData(tenantKey: string) {
 
 export async function queueOfflineMutation(mutation: Omit<OfflineMutation, "createdAt" | "state">) {
   const tenantKey = requireTenantKey(mutation.tenantKey);
-  await offlineDb.mutations.add({ ...mutation, tenantKey, state: "pending", createdAt: new Date().toISOString() });
+  await offlineDb.mutations.add({ ...mutation, tenantKey, state: "pending", attempts: 0, createdAt: new Date().toISOString() });
+}
+
+export async function retryOfflineMutation(id: number, tenantKey: string) {
+  const tenant = requireTenantKey(tenantKey);
+  const mutation = await offlineDb.mutations.get(id);
+  if (!mutation || mutation.tenantKey !== tenant) throw new Error("Operação offline não encontrada.");
+  await offlineDb.mutations.update(id, { state: "pending", lastError: undefined, lastAttemptAt: undefined });
+}
+
+export async function discardOfflineMutation(id: number, tenantKey: string) {
+  const tenant = requireTenantKey(tenantKey);
+  const mutation = await offlineDb.mutations.get(id);
+  if (!mutation || mutation.tenantKey !== tenant) throw new Error("Operação offline não encontrada.");
+  await offlineDb.mutations.delete(id);
+}
+
+export async function markOfflineMutationFailed(id: number, tenantKey: string, error: string) {
+  const tenant = requireTenantKey(tenantKey);
+  const mutation = await offlineDb.mutations.get(id);
+  if (!mutation || mutation.tenantKey !== tenant) return;
+  await offlineDb.mutations.update(id, { state: "failed", lastError: error, attempts: (mutation.attempts || 0) + 1, lastAttemptAt: new Date().toISOString() });
+}
+
+export async function pruneOfflineMutations(tenantKey: string, failedAfterDays = 30, pendingAfterDays = 90) {
+  const tenant = requireTenantKey(tenantKey);
+  const now = Date.now();
+  const failedCutoff = now - failedAfterDays * 86400000;
+  const pendingCutoff = now - pendingAfterDays * 86400000;
+  const rows = await offlineDb.mutations.where("tenantKey").equals(tenant).toArray();
+  const expired = rows.filter((row) => {
+    const timestamp = new Date(row.createdAt).getTime();
+    return (row.state === "failed" && timestamp < failedCutoff) || ((row.state || "pending") === "pending" && timestamp < pendingCutoff);
+  }).map((row) => row.id).filter((id): id is number => typeof id === "number");
+  if (expired.length) await offlineDb.mutations.bulkDelete(expired);
+  return expired.length;
 }

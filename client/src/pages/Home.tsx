@@ -32,7 +32,8 @@ import {
   LogOut,
   Menu,
   X,
-  ArrowLeft
+  ArrowLeft,
+  RefreshCw
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,7 +46,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ServiceOrderDocument } from "@/components/ServiceOrderDocument";
 import { toast } from "sonner";
 import { useOfflineSnapshot, useOnlineStatus } from "@/offline/hooks";
-import { offlineDb, queueOfflineMutation } from "@/offline/localDb";
+import { offlineDb, markOfflineMutationFailed, queueOfflineMutation } from "@/offline/localDb";
 
 function isOfflineFailure(error: unknown, isOnline: boolean) {
   const code = (error as any)?.data?.code;
@@ -111,6 +112,7 @@ export default function Home() {
   const ordersQuery = trpc.orders.list.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const ordersPageQuery = trpc.orders.page.useQuery(orderPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const alertsPageQuery = trpc.extinguishers.alertsPage.useQuery(alertPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
+  const offlineSnapshotQuery = trpc.offline.snapshot.useQuery({ page: 1, pageSize: 50 }, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const alertDaysQuery = trpc.settings.getAlertDays.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const companiesQuery = trpc.platform.companies.list.useQuery(undefined, { enabled: isPlatformAdmin });
   const platformStatsQuery = trpc.platform.dashboard.useQuery(platformDashboardInput, { enabled: isPlatformAdmin && Boolean(selectedCompanyId) });
@@ -129,19 +131,19 @@ export default function Home() {
 
   const offline = useOfflineSnapshot({
     tenantKey,
-    clients: (isPlatformAdmin ? platformClientsQuery.data : clientsQuery.data) as any,
-    extinguishers: (isPlatformAdmin ? undefined : remoteExtinguishers) as any,
-    orders: (isPlatformAdmin ? undefined : ordersQuery.data) as any,
-    alerts: alertsQuery.data as any,
+    clients: (isPlatformAdmin ? platformClientsQuery.data : offlineSnapshotQuery.data?.clients) as any,
+    extinguishers: (isPlatformAdmin ? undefined : offlineSnapshotQuery.data?.extinguishers) as any,
+    orders: (isPlatformAdmin ? undefined : offlineSnapshotQuery.data?.orders) as any,
+    alerts: (isPlatformAdmin ? undefined : offlineSnapshotQuery.data?.alerts) as any,
     alertDays: alertDaysQuery.data,
   });
-  const allClients = useMemo(() => isPlatformAdmin ? (platformClientsQuery.data || offline.clients || []) : (offline.clients || []), [isPlatformAdmin, platformClientsQuery.data, offline.clients]);
+  const allClients = useMemo(() => isPlatformAdmin ? (platformClientsQuery.data || offline.clients || []) : (offline.isOnline ? (clientsQuery.data || []) : (offline.clients || [])), [isPlatformAdmin, platformClientsQuery.data, clientsQuery.data, offline.isOnline, offline.clients]);
   const effectiveClients = useMemo(() => allClients.filter((client: any) => selectedCity === "TODAS" || client.city === selectedCity), [allClients, selectedCity]);
   const effectiveCities = useMemo(() => Array.from(new Set(allClients.map((client: any) => client.city).filter(Boolean))).sort(), [allClients]);
-  const effectiveExtinguishers = useMemo(() => isPlatformAdmin ? (offline.extinguishers || []) : (offline.extinguishers || []), [isPlatformAdmin, offline.extinguishers]);
-  const effectiveOrders = useMemo(() => isPlatformAdmin ? (offline.orders || []) : (offline.orders || []), [isPlatformAdmin, offline.orders]);
+  const effectiveExtinguishers = useMemo(() => isPlatformAdmin ? (offline.extinguishers || []) : (offline.isOnline ? (remoteExtinguishers || []) : (offline.extinguishers || [])), [isPlatformAdmin, remoteExtinguishers, offline.isOnline, offline.extinguishers]);
+  const effectiveOrders = useMemo(() => isPlatformAdmin ? (offline.orders || []) : (offline.isOnline ? (ordersQuery.data || []) : (offline.orders || [])), [isPlatformAdmin, ordersQuery.data, offline.isOnline, offline.orders]);
   const effectiveAlerts = useMemo(() => {
-    if (!isPlatformAdmin) return offline.alerts || [];
+    if (!isPlatformAdmin) return offline.isOnline ? (alertsPageQuery.data?.items || alertsQuery.data || []) : (offline.alerts || []);
     const clientsById = new Map((platformClientsQuery.data || []).map((client: any) => [client.id, client]));
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -162,7 +164,7 @@ export default function Home() {
         isNearExpiration: diffDays <= daysAhead,
       };
     });
-  }, [isPlatformAdmin, offline.alerts, platformClientsQuery.data, effectiveExtinguishers, alertDaysQuery.data, platformAlertsPageQuery.data]);
+  }, [isPlatformAdmin, offline.alerts, offline.isOnline, alertsPageQuery.data, alertsQuery.data, platformClientsQuery.data, effectiveExtinguishers, alertDaysQuery.data, platformAlertsPageQuery.data]);
   const effectiveStats = useMemo(() => offline.isOnline && (isPlatformAdmin ? platformStatsQuery.data : statsQuery.data) ? (isPlatformAdmin ? platformStatsQuery.data : statsQuery.data) : {
     totalClients: effectiveClients.length,
     totalCities: effectiveCities.length,
@@ -491,7 +493,7 @@ export default function Home() {
     let cancelled = false;
     void (async () => {
       if (!tenantKey) return;
-      const queued = await offlineDb.mutations.where("tenantKey").equals(tenantKey).sortBy("createdAt");
+      const queued = (await offlineDb.mutations.where("tenantKey").equals(tenantKey).sortBy("createdAt")).filter((mutation) => (mutation.state || "pending") === "pending");
       const idMap = new Map<number, number>();
       for (const mutation of queued) {
         if (cancelled) return;
@@ -521,7 +523,7 @@ export default function Home() {
           }
           if (mutation.id) await offlineDb.mutations.delete(mutation.id);
         } catch (error) {
-          if (mutation.id) await offlineDb.mutations.update(mutation.id, { state: "failed", lastError: error instanceof Error ? error.message : "Falha desconhecida" });
+          if (mutation.id) await markOfflineMutationFailed(mutation.id, tenantKey, error instanceof Error ? error.message : "Falha desconhecida");
           toast.error("Não foi possível sincronizar os dados locais. Tentaremos novamente.");
           return;
         }
@@ -894,6 +896,7 @@ export default function Home() {
           {canManageUsers && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/admin/usuarios"); setIsSidebarOpen(false); }}><Users className="h-4 w-4" /> Usuários</Button>}
           {isCompanyAdmin && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setConfigDays(offline.alertDays || 30); setIsSettingsModalOpen(true); setIsSidebarOpen(false); }}><Settings className="h-4 w-4" /> Antecedência: {offline.alertDays || 30} dias</Button>}
           <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/backup"); setIsSidebarOpen(false); }}><HardDrive className="h-4 w-4" /> Backup e Restauração</Button>
+          {!isPlatformAdmin && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/sync-status"); setIsSidebarOpen(false); }}><RefreshCw className="h-4 w-4" /> Status da sincronização</Button>}
         </div>
         <div className="border-t border-slate-800 p-4">
           <div className="mb-3 rounded-lg bg-slate-900 px-3 py-2 text-xs text-slate-400">Cidade selecionada: <strong className="text-slate-200">{selectedCity === "TODAS" ? "Todas" : selectedCity}</strong></div>

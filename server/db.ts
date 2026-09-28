@@ -1,9 +1,12 @@
 import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
+import mysql from "mysql2/promise";
 import {
   clients,
   companies,
   extinguishers,
+  memberSessions,
+  platformSessions,
   serviceOrders,
   serviceOrderItems,
   trashItems,
@@ -19,20 +22,47 @@ import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _dbUrl: string | null = null;
+let _pool: mysql.Pool | null = null;
+
+function monitoredPool(pool: mysql.Pool): mysql.Pool {
+  const slowQueryMs = Number(process.env.DB_SLOW_QUERY_MS || 1000);
+  return new Proxy(pool as object, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if ((property !== "query" && property !== "execute") || typeof value !== "function") return value;
+      return (...args: any[]) => {
+        const startedAt = Date.now();
+        const result = value.apply(target, args);
+        if (!result || typeof result.finally !== "function") return result;
+        return result.finally(() => {
+          const elapsed = Date.now() - startedAt;
+          if (elapsed >= slowQueryMs) console.warn(`[Database] Slow query: ${elapsed}ms`);
+        });
+      };
+    },
+  }) as mysql.Pool;
+}
 
 export async function getDb() {
   const databaseUrl = process.env.EXTERNAL_DATABASE_URL ?? process.env.DATABASE_URL;
   if (_db && _dbUrl !== databaseUrl) {
+    await _pool?.end().catch(() => undefined);
+    _pool = null;
     _db = null;
+    _dbUrl = null;
   }
   if (!_db && databaseUrl) {
     try {
-      _db = drizzle({
-        connection: {
-          uri: databaseUrl,
-          ssl: { rejectUnauthorized: true },
-        },
-      });
+      _pool = monitoredPool(mysql.createPool({
+        uri: databaseUrl,
+        ssl: { rejectUnauthorized: true },
+        connectionLimit: Math.max(1, Number(process.env.DB_CONNECTION_LIMIT || 10)),
+        queueLimit: Math.max(0, Number(process.env.DB_QUEUE_LIMIT || 50)),
+        connectTimeout: Math.max(1000, Number(process.env.DB_CONNECT_TIMEOUT_MS || 10000)),
+        enableKeepAlive: true,
+        keepAliveInitialDelay: Math.max(1000, Number(process.env.DB_KEEP_ALIVE_MS || 10000)),
+      }));
+      _db = drizzle(_pool as any) as ReturnType<typeof drizzle>;
       _dbUrl = databaseUrl;
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
@@ -358,6 +388,28 @@ export async function getServiceOrdersPage(accountId: number, options: { page?: 
   return pageResult(items, Number(totalRows[0]?.total || 0), page, pageSize);
 }
 
+export async function getOfflineSnapshot(accountId: number, options: { page?: number; pageSize?: number } = {}) {
+  const tenant = requireAccountId(accountId);
+  const page = Math.max(1, Math.trunc(options.page || 1));
+  const pageSize = Math.min(100, Math.max(10, Math.trunc(options.pageSize || 50)));
+  const [clientsPage, extinguishersPage, ordersPage, alertsPage] = await Promise.all([
+    getClientsPage(tenant, { page, pageSize }),
+    getExtinguishersPage(tenant, { page, pageSize }),
+    getServiceOrdersPage(tenant, { page, pageSize }),
+    getExpiringExtinguishersPage(30, tenant, { page, pageSize, filter: "all" }),
+  ]);
+  return {
+    page,
+    pageSize,
+    clients: clientsPage.items,
+    extinguishers: extinguishersPage.items.map((row: any) => row.extinguisher),
+    orders: ordersPage.items,
+    alerts: alertsPage.items.map((row: any) => ({ ...row.extinguisher, ...row })),
+    totals: { clients: clientsPage.total, extinguishers: extinguishersPage.total, orders: ordersPage.total, alerts: alertsPage.total },
+    hasMore: { clients: page < clientsPage.totalPages, extinguishers: page < extinguishersPage.totalPages, orders: page < ordersPage.totalPages, alerts: page < alertsPage.totalPages },
+  };
+}
+
 export async function getExpiringExtinguishersPage(daysAhead: number, accountId: number, options: { page?: number; pageSize?: number; filter?: "all" | "near" | "expired"; search?: string; city?: string } = {}) {
   const tenant = requireAccountId(accountId); const db = await getDb(); if (!db) return pageResult([], 0, 1, 25);
   const { page, pageSize, offset } = pageArgs(options.page, options.pageSize);
@@ -384,16 +436,46 @@ export async function getNextOrderNumber(accountId: number) {
   return result[0]?.maxNum ? Number(result[0].maxNum) + 1 : 1001;
 }
 
+async function allocateOrderNumber(tx: any, tenant: number) {
+  const maxRows = await tx.select({ maxNum: sql<number>`MAX(${serviceOrders.orderNumber})` }).from(serviceOrders).where(eq(serviceOrders.accountId, tenant));
+  const currentMax = Math.max(1000, Number(maxRows[0]?.maxNum || 1000));
+  await tx.insert(systemSettings).values({ accountId: tenant, settingKey: "order_sequence", settingValue: String(currentMax) }).onDuplicateKeyUpdate({
+    set: { updatedAt: new Date() },
+  });
+  await tx.update(systemSettings).set({
+    settingValue: sql`CAST(GREATEST(CAST(${systemSettings.settingValue} AS UNSIGNED), ${currentMax}) + 1 AS CHAR)`,
+  }).where(and(eq(systemSettings.accountId, tenant), eq(systemSettings.settingKey, "order_sequence")));
+  const rows = await tx.select({ value: systemSettings.settingValue }).from(systemSettings).where(and(eq(systemSettings.accountId, tenant), eq(systemSettings.settingKey, "order_sequence"))).limit(1);
+  const nextNumber = Number(rows[0]?.value);
+  if (!Number.isInteger(nextNumber) || nextNumber < 1001) throw new Error("Não foi possível reservar o número da OS.");
+  return nextNumber;
+}
+
+function isDuplicateKeyError(error: unknown) {
+  return Number((error as any)?.code) === 1062 || String((error as any)?.message || "").includes("Duplicate entry");
+}
+
 export async function createServiceOrder(order: InsertServiceOrder, items: Omit<InsertServiceOrderItem, "serviceOrderId">[], accountId: number) {
   const tenant = requireAccountId(accountId);
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
   if (order.accountId !== tenant || !(await getClientById(order.clientId, tenant))) throw new Error("Cliente sem permissão");
-  const orderNumber = order.orderNumber || await getNextOrderNumber(tenant);
-  const result = await db.insert(serviceOrders).values({ ...order, accountId: tenant, orderNumber });
-  const orderId = Number(result[0].insertId);
-  if (items.length) await db.insert(serviceOrderItems).values(items.map(item => ({ ...item, serviceOrderId: orderId })));
-  return { id: orderId, orderNumber };
+  const requestedNumber = order.orderNumber && Number.isInteger(order.orderNumber) ? order.orderNumber : undefined;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await db.transaction(async (tx) => {
+        const orderNumber = requestedNumber ?? await allocateOrderNumber(tx, tenant);
+        const result = await tx.insert(serviceOrders).values({ ...order, accountId: tenant, orderNumber });
+        const orderId = Number(result[0].insertId);
+        if (items.length) await tx.insert(serviceOrderItems).values(items.map(item => ({ ...item, serviceOrderId: orderId })));
+        return { id: orderId, orderNumber };
+      });
+    } catch (error) {
+      if (requestedNumber !== undefined || !isDuplicateKeyError(error) || attempt === 3) throw error;
+      console.warn(`[Database] OS number conflict; retrying allocation (${attempt}/3).`);
+    }
+  }
+  throw new Error("Não foi possível criar a OS.");
 }
 
 export async function getServiceOrderById(id: number, accountId: number) {
@@ -462,6 +544,21 @@ export async function listTrash(accountId: number) {
   if (!db) return [];
   await db.delete(trashItems).where(and(eq(trashItems.accountId, tenant), sql`${trashItems.expiresAt} <= NOW()`));
   return await db.select().from(trashItems).where(and(eq(trashItems.accountId, tenant), sql`${trashItems.expiresAt} > NOW()`)).orderBy(desc(trashItems.deletedAt));
+}
+
+export async function cleanupExpiredData() {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const [trashResult, memberResult, platformResult] = await Promise.all([
+    db.delete(trashItems).where(sql`${trashItems.expiresAt} <= NOW()`),
+    db.delete(memberSessions).where(sql`${memberSessions.expiresAt} <= NOW()`),
+    db.delete(platformSessions).where(sql`${platformSessions.expiresAt} <= NOW()`),
+  ]);
+  return {
+    trash: Number(trashResult[0]?.affectedRows || 0),
+    memberSessions: Number(memberResult[0]?.affectedRows || 0),
+    platformSessions: Number(platformResult[0]?.affectedRows || 0),
+  };
 }
 
 function parseTrashSnapshot(snapshot: string): any {

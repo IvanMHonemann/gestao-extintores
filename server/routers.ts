@@ -67,6 +67,10 @@ export const appRouter = router({
     }),
   }),
 
+  offline: router({
+    snapshot: commercialProcedure.input(z.object({ page: z.number().int().positive().optional(), pageSize: z.number().int().min(10).max(100).optional() }).optional()).query(({ ctx, input }) => db.getOfflineSnapshot(ctx.accountId, input)),
+  }),
+
   platform: router({
     identity: platformProcedure.query(({ ctx }) => ({ id: ctx.platformAdminId ?? ctx.user.id, role: "platform_admin" as const, global: true })),
     companies: router({

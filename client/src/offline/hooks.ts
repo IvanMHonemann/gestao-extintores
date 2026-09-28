@@ -1,6 +1,6 @@
 import { useLiveQuery } from "dexie-react-hooks";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { offlineDb, saveOnlineSnapshot, type LocalOrderRow, type LocalRecord, type OfflineMutation } from "./localDb";
+import { offlineDb, pruneOfflineMutations, saveOnlineSnapshot, type LocalOrderRow, type LocalRecord, type OfflineMutation } from "./localDb";
 
 export function useOnlineStatus() {
   const [isOnline, setIsOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
@@ -96,6 +96,7 @@ export function useOfflineSnapshot(remote: {
 
   useEffect(() => {
     if (!isOnline || !tenantKey) return;
+    void pruneOfflineMutations(tenantKey);
     if (remote.clients || remote.extinguishers || remote.orders || remote.alerts) void saveOnlineSnapshot(remote as { tenantKey: string; clients?: LocalRecord[]; extinguishers?: LocalRecord[]; orders?: LocalOrderRow[]; alerts?: LocalRecord[]; alertDays?: number });
   }, [isOnline, tenantKey, remote.clients, remote.extinguishers, remote.orders, remote.alerts, remote.alertDays]);
 
