@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import mysql from "mysql2/promise";
+import { storagePut } from "./storage";
 
 function backupDirectory() {
   return process.env.BACKUP_DIR || "/tmp/gestao-extintores-backups/daily";
@@ -48,11 +49,14 @@ export async function runScheduledMaintenance() {
     await fs.writeFile(file, serialized, { mode: 0o600 });
     const checksum = crypto.createHash("sha256").update(serialized).digest("hex");
     await fs.writeFile(`${file}.sha256`, `${checksum}  ${path.basename(file)}\n`, { mode: 0o600 });
+    const objectPrefix = `backups/database/${new Date().toISOString().slice(0, 10)}`;
+    const stored = await storagePut(`${objectPrefix}/${path.basename(file)}`, serialized, "application/json");
+    await storagePut(`${objectPrefix}/${path.basename(file)}.sha256`, `${checksum}  ${path.basename(file)}\n`, "text/plain");
     const [trash] = await connection.query("DELETE FROM trash_items WHERE expiresAt <= UTC_TIMESTAMP()");
     const [memberSessions] = await connection.query("DELETE FROM member_sessions WHERE expiresAt <= UTC_TIMESTAMP()");
     const [platformSessions] = await connection.query("DELETE FROM platform_sessions WHERE expiresAt <= UTC_TIMESTAMP()");
     const removed = await pruneBackups(directory, retentionDays);
-    return { file, tables: tables.length, checksum, removed, cleaned: { trash: (trash as any).affectedRows, memberSessions: (memberSessions as any).affectedRows, platformSessions: (platformSessions as any).affectedRows } };
+    return { file, storageKey: stored.key, tables: tables.length, checksum, removed, cleaned: { trash: (trash as any).affectedRows, memberSessions: (memberSessions as any).affectedRows, platformSessions: (platformSessions as any).affectedRows } };
   } finally {
     await connection.end();
   }

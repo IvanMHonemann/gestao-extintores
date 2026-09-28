@@ -10,6 +10,7 @@
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
+    "test:ci": "node scripts/prepare-test-db.mjs && vitest run",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "backup:db": "node scripts/backup-db.mjs",
     "restore:db": "node scripts/restore-db.mjs",

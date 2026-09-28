@@ -50,6 +50,17 @@ A rotina remove:
 
 A limpeza é idempotente e pode ser executada novamente sem apagar dados válidos.
 
+## Suíte de testes isolada
+
+Os testes de negócio não devem apontar para o banco usado pelo site. O comando abaixo cria/atualiza um banco dedicado, insere fixtures determinísticas para as empresas A e B e executa toda a suíte:
+
+```bash
+export TEST_DATABASE_URL='mysql://usuario:senha@host:4000/gestao_extintores_ci?tls=true'
+ALLOW_TEST_DB_RESET=true EXTERNAL_DATABASE_URL="$TEST_DATABASE_URL" DATABASE_URL="$TEST_DATABASE_URL" pnpm test:ci
+```
+
+O utilitário `scripts/prepare-test-db.mjs` recusa bancos `test` e `sys` e também recusa resetar um banco que já contenha tabelas sem `ALLOW_TEST_DB_RESET=true`. Assim, as verificações de isolamento, OS, alertas e estatísticas rodam em ambiente limpo sem criar dados falsos no banco comercial.
+
 ## Offline para contas grandes
 
 O endpoint autenticado `offline.snapshot` sincroniza páginas de 10 a 100 registros, com padrão de 50, e retorna `totals`/`hasMore`. A Home usa a primeira página para o cache offline; consultas paginadas continuam sendo usadas para a visualização online. O IndexedDB preserva páginas já cacheadas em vez de apagar todo o tenant a cada snapshot.

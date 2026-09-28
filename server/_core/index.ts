@@ -8,6 +8,7 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { sdk } from "./sdk";
 import { runScheduledMaintenance } from "../scheduledMaintenance";
+import { notifyOwner } from "./notification";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -43,6 +44,7 @@ async function startServer() {
       return res.json({ ok: true, taskUid: user.taskUid, result });
     } catch (error) {
       console.error("[Maintenance] Scheduled backup failed:", error);
+      await notifyOwner({ title: "Falha no backup diário", content: "O backup automático e a limpeza programada falharam. Verifique os logs do projeto e o armazenamento persistente configurado." }).catch(() => undefined);
       return res.status(500).json({ error: "Scheduled maintenance failed" });
     }
   });
