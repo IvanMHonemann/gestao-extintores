@@ -1,82 +1,76 @@
 # Relatório de migração segura — Gestão de Extintores
 
-**Data da validação:** 2026-09-27/28  
+**Data da validação:** 2026-09-28
 **Origem analisada:** `/home/ubuntu/upload/gestao-extintores-main(1).zip`  
-**Cópia de trabalho:** `/home/ubuntu/work/gestao-extintores-main`
+**Projeto WebDev:** `/home/ubuntu/gestao-extintores`
 
 ## Resumo executivo
 
-Foi feita uma inspeção e validação local **sem conectar ao banco, sem criar banco, sem executar migrações, sem seed, sem backup de dados reais e sem publicar no GitHub**.
+O código foi importado para o projeto WebDev e conectado ao TiDB Cloud usando o secret `EXTERNAL_DATABASE_URL`, com TLS validado. A URL aponta para o schema de aplicação `test`; o schema de sistema `sys` foi rejeitado para uso da aplicação.
 
-O código passou no typecheck, no build de produção, nos testes de autenticação e na validação do servidor/bundle estático. A suíte completa que depende de dados falhou porque esta sessão não possui `EXTERNAL_DATABASE_URL` configurada. A migração de produção não pode ser declarada concluída.
+O schema atual foi aplicado ao banco vazio sem seed, criando as 12 tabelas definidas em `drizzle/schema.ts`. Foi criada uma única conta `platform_admin` autorizada pelo proprietário. Nenhuma empresa, cliente, extintor, ordem de serviço ou dado demonstrativo foi inserido.
 
-## Checklist obrigatório
+## Estado do banco
 
-- [x] Código extraído em cópia isolada, preservando o ZIP original.
-- [ ] Repositório/remote GitHub confirmado — **não confirmado**; o ZIP não contém `.git` e não houve autenticação GitHub disponível.
-- [ ] Branch e commit final — **não aplicável na cópia ZIP**.
-- [ ] Banco existente confirmado sem banco novo — **não executado**; não há `EXTERNAL_DATABASE_URL` nesta sessão.
-- [ ] Secrets configurados fora do código — **não configurados** nesta sessão.
-- [ ] Senha antiga rotacionada — **não verificável**; deve ser rotacionada no TiDB Cloud antes da conexão.
-- [ ] Backup completo criado — **não executado**; exige acesso ao banco e deve ser feito fora do repositório, com modo 600.
-- [ ] Schema comparado em modo somente leitura — **não executado**; exige acesso ao banco.
-- [ ] Migração de schema executada — **não executada deliberadamente**.
-- [x] Typecheck — `pnpm run check` passou sem erros.
-- [ ] Suíte completa de testes — **8 falhas / 9 testes aprovados / 17 total**; as falhas são dependentes de dados/banco ausente.
-- [x] Testes de autenticação locais — **3 aprovados / 3 total**.
-- [x] Build — `pnpm run build` concluído.
-- [ ] Smoke test de login com conta real — não executado; requer ambiente protegido e credenciais fornecidas pelo responsável.
-- [ ] Smoke test de cliente/extintor/OS — não executado; requer banco existente.
-- [ ] Isolamento multi-tenant contra dados reais — não concluído; testes de dados falharam sem banco.
-- [ ] Lixeira, restauração e exclusão permanente — não executado contra banco.
-- [x] Bundle de produção sem marcadores de HMR — validado; nenhum `@vite/client`, `html-proxy`, `vite-hmr` ou websocket de desenvolvimento encontrado.
-- [x] PWA/artefatos estáticos — `dist/public/index.html` e `dist/public/manifest.json` presentes.
-- [ ] PDF/impressão/compartilhamento — não validado em navegador/dispositivo real.
-- [ ] CI GitHub — não executado; remote/autenticação ausentes.
-- [ ] URL/host público atual — não validado.
-- [x] Rollback preservado — nenhum arquivo original ou banco foi alterado.
+- Provedor: TiDB Cloud.
+- Host/porta não secretos: `gateway01.sa-east-1.prod.aws.tidbcloud.com:4000`.
+- Schema da aplicação: `test`.
+- Transporte: TLS com `rejectUnauthorized: true` no runtime, backup e Drizzle Kit.
+- Tabelas confirmadas: 12.
+- Backup preventivo realizado fora do repositório antes da criação do schema, com diretório 700 e arquivo 600.
+- Nenhuma senha, URL completa, hash, cookie ou dado de cliente foi registrado neste relatório.
 
-## Evidências locais
+Tabelas confirmadas:
 
-### Ferramentas
+```text
+clients
+companies
+extinguishers
+member_accounts
+member_sessions
+platform_admins
+platform_sessions
+service_order_items
+service_orders
+system_settings
+trash_items
+users
+```
 
-- Node.js: `v22.13.0`
-- pnpm: `10.4.1`
-- Instalação: `pnpm install --frozen-lockfile` concluída.
+## Checklist de validação
 
-O `corepack enable` inicialmente falhou por erro de verificação de assinatura; a validação prosseguiu instalando globalmente a versão exata `pnpm@10.4.1`, declarada no projeto. Nenhuma verificação foi desativada.
+- [x] Código importado para o projeto WebDev.
+- [x] Secret `EXTERNAL_DATABASE_URL` configurado fora do código.
+- [x] TLS validado na aplicação, backup e Drizzle Kit.
+- [x] Conexão read-only aprovada por `server/external-db.test.ts`.
+- [x] Banco `test` confirmado sem tabelas antes da inicialização.
+- [x] Backup preventivo criado fora do repositório.
+- [x] Schema atual aplicado com `pnpm exec drizzle-kit push --strict`.
+- [x] 12 tabelas confirmadas após a aplicação.
+- [x] Nenhum seed/dado demonstrativo executado.
+- [x] Conta inicial `platform_admin` autorizada criada.
+- [x] Login direto e endpoint real de login retornaram sucesso.
+- [x] `pnpm run check` passou.
+- [x] `pnpm run build` passou.
+- [x] Testes de autenticação e conexão passaram.
+- [x] Preview WebDev reiniciado após atualizar os secrets.
+- [x] Checkpoint WebDev salvo após a validação.
 
-### Build e servidor
+## Regras para futuras migrações
 
-- `pnpm run check`: **passou**.
-- `pnpm run build`: **passou**.
-- Servidor: `NODE_ENV=production PORT=3000 MANUS_INTEGRATIONS=false pnpm start` iniciou corretamente.
-- `GET /`: HTTP **200**.
-- `GET /manifest.json`: HTTP **200**.
-- Warnings do build: placeholders de analytics não definidos e chunk principal acima de 500 kB. Não foram feitas alterações estruturais arriscadas.
+1. Ler `DATABASE_MIGRATION_GUIDE.md`, `AI_HANDOFF.md`, `PORTABILITY.md`, `DEPLOYMENT.md` e `OPERATIONS.md` antes de editar.
+2. Confirmar que `EXTERNAL_DATABASE_URL` aponta para o schema correto; no ambiente atual, é `/test`, nunca `/sys`.
+3. Executar `pnpm exec vitest run server/external-db.test.ts`.
+4. Criar backup privado fora do repositório antes de qualquer alteração.
+5. Editar `drizzle/schema.ts`, executar `pnpm exec drizzle-kit generate` e revisar integralmente o SQL.
+6. Parar diante de `DROP`, `TRUNCATE`, `DELETE` amplo ou alteração de dados não planejada.
+7. Aplicar somente após autorização explícita com `pnpm exec drizzle-kit push --strict`.
+8. Não usar `pnpm db:push` automaticamente: a cadeia histórica em `drizzle/0000`–`drizzle/0006` contém transformações de dados e não é uma baseline limpa para banco vazio.
+9. Rodar check, build, testes e validação read-only depois da mudança.
+10. Nunca executar `server/seed.ts` em produção.
 
-### Testes
+## Bloqueios e observações remanescentes
 
-- `server/auth.logout.test.ts`: passou.
-- `server/memberAuth.test.ts`: 2 passaram.
-- Testes de negócio, isolamento e banco externo: falharam por ausência de dados/conexão configurada nesta sessão; não foram corrigidos com seed, escrita ou alteração de schema.
-
-## Bloqueios para a próxima fase
-
-O responsável pela nova hospedagem precisa configurar **somente no secret manager**:
-
-- `EXTERNAL_DATABASE_URL` com a senha nova, TLS obrigatório, apontando para o banco existente;
-- `JWT_SECRET`, preservando o atual somente se as sessões existentes precisarem continuar válidas;
-- `MANUS_INTEGRATIONS=false` fora da Manus;
-- `PORT=3000`.
-
-A senha anteriormente compartilhada deve ser considerada exposta e rotacionada antes do uso. Depois disso, ainda é necessário:
-
-1. criar backup completo fora do repositório;
-2. executar o teste read-only de conexão;
-3. comparar tabelas/colunas do schema local com o banco real;
-4. parar e reportar qualquer divergência antes de qualquer migração;
-5. executar smoke tests protegidos com conta existente;
-6. autenticar no GitHub, confirmar remote/branch e somente então avaliar CI/push.
-
-Nenhuma dessas etapas deve ser simulada com credenciais inventadas ou banco novo.
+- O secret temporário usado para o bootstrap da conta administrativa não é referenciado pelo código da aplicação; ele deve ser removido ou substituído pelo administrador no secret manager após o primeiro login.
+- Testes de negócio que exigem empresas/clientes reais devem ser executados em uma cópia ou após cadastro explícito de dados reais, nunca por seed automático.
+- O CI valida código e bundle, mas não deve alterar schema de produção automaticamente.
