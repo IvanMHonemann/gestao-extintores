@@ -19,6 +19,8 @@ pnpm maintenance:db
 
 `maintenance:db` faz o backup antes da limpeza, grava um checksum `.sha256`, verifica o JSON recém-criado e remove arquivos fora da retenção. A rotina também remove snapshots vencidos da lixeira e sessões expiradas. Se o backup falhar, o processo termina com código diferente de zero e a limpeza não é executada.
 
+O projeto também possui um heartbeat diário `daily-database-maintenance` (02:15 UTC) que chama `/api/scheduled/database-maintenance`. O callback aceita somente uma sessão cron válida do WebDev. Em runtime serverless, o fallback é `/tmp/gestao-extintores-backups/daily`, que é apenas temporário; configure `BACKUP_DIR` para um volume persistente assim que ele estiver disponível.
+
 Para uma migração manual, sempre execute antes:
 
 ```bash

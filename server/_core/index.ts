@@ -6,6 +6,8 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { sdk } from "./sdk";
+import { runScheduledMaintenance } from "../scheduledMaintenance";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -33,6 +35,17 @@ async function startServer() {
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  app.post("/api/scheduled/database-maintenance", async (req, res) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      if (!user.isCron || !user.taskUid) return res.status(403).json({ error: "Cron session required" });
+      const result = await runScheduledMaintenance();
+      return res.json({ ok: true, taskUid: user.taskUid, result });
+    } catch (error) {
+      console.error("[Maintenance] Scheduled backup failed:", error);
+      return res.status(500).json({ error: "Scheduled maintenance failed" });
+    }
+  });
   if (manusIntegrationsEnabled) {
     const [{ registerOAuthRoutes }, { registerStorageProxy }] = await Promise.all([
       import("./oauth"),
