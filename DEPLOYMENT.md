@@ -1,38 +1,57 @@
 # CI/CD e publicação
 
-## O que acontece automaticamente
+## Validação
 
-Todo push para `main` e todo pull request executam o workflow `CI`. Ele instala o projeto com o lockfile, executa TypeScript, testes isolados de autenticação e build de produção. Nenhum job de CI escreve no banco.
+Todo pull request deve executar:
 
-Quando o workflow `CI` termina com sucesso no branch `main`, o workflow `Container` constrói e publica uma imagem versionada no GitHub Container Registry. As tags são `latest` e o SHA do commit. A imagem contém o servidor e o frontend compilado, mas não contém secrets, banco ou backups.
-
-O workflow `Database smoke test` é manual. Ele usa o secret `EXTERNAL_DATABASE_URL` do repositório e executa somente a consulta de conectividade já existente. Não coloque a URL no código, nos logs ou em arquivos versionados.
-
-## Como cadastrar o secret do banco
-
-No GitHub, abra **Settings → Secrets and variables → Actions → New repository secret** e crie `EXTERNAL_DATABASE_URL`. Para o ambiente atual, a URL deve apontar para o schema TiDB `test` em `gateway01.sa-east-1.prod.aws.tidbcloud.com:4000`; nunca use o schema de sistema `sys`. Use uma credencial de leitura ou uma credencial limitada para o smoke test, se possível. A URL completa e a senha devem permanecer somente no secret manager; o runtime e o Drizzle Kit exigem TLS validado.
-
-## Publicação da aplicação
-
-A pipeline produz uma imagem pronta para hospedagem externa:
-
-```text
-ghcr.io/ivanmhonemann/gestao-extintores:latest
+```bash
+pnpm install --frozen-lockfile
+pnpm run check
+pnpm test
+pnpm run build
 ```
 
-O host de produção deve executar essa imagem com `EXTERNAL_DATABASE_URL`, `JWT_SECRET`, `PORT` e demais secrets configurados fora da imagem. Nunca grave esses valores em `docker-compose.yml`, no GitHub ou no Dockerfile.
+Nenhum workflow de CI deve escrever no banco comercial. O teste completo usa um banco CI separado e as fixtures de `scripts/prepare-test-db.mjs`.
 
-A hospedagem Manus/WebDev atual continua sendo gerenciada pela plataforma e não recebe deploy automático do GitHub apenas por existir este workflow. Para ativar deploy contínuo nela, seria necessário um mecanismo oficial de integração e credenciais de deploy da própria hospedagem. Sem isso, o fluxo seguro é validar e publicar a imagem no GitHub e promover a versão no host escolhido.
+## Container
 
-## Fluxo operacional
+O Dockerfile produz uma imagem Node 22 contendo o bundle compilado, scripts operacionais e migrações. A imagem não contém secrets, banco, backups ou dados reais.
 
-1. Criar uma branch e abrir pull request.
-2. Aguardar o CI passar.
-3. Revisar e fazer merge em `main`.
-4. Confirmar que a imagem `latest` foi publicada no GHCR.
-5. Fazer backup privado antes de qualquer migração de schema.
-6. Gerar e revisar o SQL; aplicar somente com `pnpm exec drizzle-kit push --strict` após autorização explícita.
-7. Promover a imagem no host de produção, mantendo o mesmo banco externo.
-8. Rodar o smoke test manual após a publicação.
+```bash
+docker build -t gestao-extintores:local .
+docker run --env-file .env -p 3000:3000 gestao-extintores:local
+```
 
-Migrações de banco continuam sendo uma operação separada, revisada e protegida por backup. O CI não deve executar `db:push`, `drizzle-kit migrate` ou SQL destrutivo automaticamente contra produção. Consulte `DATABASE_MIGRATION_GUIDE.md` para o fluxo completo.
+## Variáveis do runtime
+
+Configure no secret manager da hospedagem:
+
+- `EXTERNAL_DATABASE_URL`
+- `JWT_SECRET`
+- `SCHEDULE_SECRET`
+- `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`
+- `ALERT_WEBHOOK_URL`
+- `VITE_GOOGLE_MAPS_API_KEY`, se mapas forem necessários
+
+Nunca grave esses valores no Dockerfile, no compose ou no Git.
+
+## Cron e health check
+
+Configure um scheduler externo para chamar diariamente:
+
+```bash
+curl --fail-with-body -X POST "$APP_URL/api/scheduled/database-maintenance" \
+  -H "Authorization: Bearer $SCHEDULE_SECRET"
+```
+
+Use HTTPS no proxy reverso e monitore o status HTTP. O endpoint de saúde tRPC é `system.health`.
+
+## Migrações
+
+1. Faça backup privado.
+2. Gere e revise o SQL com `pnpm exec drizzle-kit generate`.
+3. Aplique com `pnpm exec drizzle-kit push --strict` após revisão.
+4. Execute testes, build e smoke test de banco.
+5. Promova a imagem no host.
+
+O CI não executa `db:push`, `drizzle-kit migrate`, `DROP`, `TRUNCATE` ou restauração destrutiva contra produção.

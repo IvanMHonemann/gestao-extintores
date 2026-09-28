@@ -2,95 +2,105 @@
 
 ## Objetivo
 
-Este projeto pode ser executado fora da Manus com **Node.js 22, pnpm, Docker e um banco MySQL/TiDB compatível**. O login comercial é próprio da aplicação; não depende de Manus OAuth quando `MANUS_INTEGRATIONS=false`.
+O projeto é uma aplicação Node.js independente: React/Vite no frontend, Express/tRPC no servidor, autenticação comercial própria e MySQL/TiDB via Drizzle. Não depende de OAuth, APIs, cron, storage ou runtime de um provedor específico.
 
-## Inventário de dependências
+## Dependências externas explícitas
 
-| Área | Estado | Como migrar |
-|---|---|---|
-| Banco | TiDB Cloud/MySQL via Drizzle + `mysql2` | Configurar `EXTERNAL_DATABASE_URL` apontando para o schema `test` com TLS; fazer backup, revisar SQL e aplicar `pnpm exec drizzle-kit push --strict`; validar com `pnpm exec vitest run server/external-db.test.ts` |
-| Autenticação comercial | Própria (`member_accounts`, `platform_admins`, sessões com hash) | Não depende da Manus; preservar tabelas e `JWT_SECRET` apenas se outros cookies forem usados |
-| Frontend/API | React, Vite, Express, tRPC | Executar `pnpm install --frozen-lockfile`, `pnpm run build`, `pnpm start` |
-| Arquivos | Helper legado usa Forge/S3 da Manus | O produto atual não usa upload no fluxo principal; para arquivos futuros, configurar S3 compatível e substituir `server/storage.ts` |
-| Mapas | Proxy de mapas da Forge por padrão | Fornecer `VITE_GOOGLE_MAPS_API_KEY` e trocar o proxy em `client/src/components/Map.tsx`, ou manter o proxy opcional |
-| IA/notificações | Helpers opcionais do scaffold (`server/_core/llm.ts`, `notification.ts`, `imageGeneration.ts`) | Não são usados pelo fluxo comercial atual; substituir por APIs do novo provedor somente se forem ativados |
-| OAuth Manus | Scaffold legado | Desligado fora da Manus; rotas só são registradas com `MANUS_INTEGRATIONS=true` |
-| Hosting | WebDev/Manus | `Dockerfile` e `docker-compose.yml` permitem rodar em VPS, Render, Railway, Fly.io, Cloud Run, ECS ou Kubernetes |
+| Serviço | Obrigatório | Configuração |
+|---|---:|---|
+| Node.js 22 + pnpm | Sim | `pnpm install --frozen-lockfile` |
+| MySQL/TiDB compatível | Sim | `EXTERNAL_DATABASE_URL` com TLS |
+| `JWT_SECRET` | Sim | Segredo longo e aleatório |
+| S3/R2/MinIO compatível | Para backup remoto | Variáveis `S3_*`; o backup local continua disponível |
+| Google Maps | Não | `VITE_GOOGLE_MAPS_API_KEY`; sem chave, o mapa mostra estado desativado |
+| Webhook de alertas | Não | `ALERT_WEBHOOK_URL`; compatível com Slack, Discord, n8n ou serviço próprio |
+| Cron externo | Recomendado | POST para `/api/scheduled/database-maintenance` com `Authorization: Bearer $SCHEDULE_SECRET` |
 
-## Migração rápida para outra hospedagem
+Nenhum serviço proprietário é necessário para login, API, sessões, banco, backup ou manutenção.
 
-1. Exporte o repositório Git completo, incluindo `drizzle/schema.ts`, `drizzle/0000_shallow_leo.sql`, `server/`, `client/`, `shared/`, `package.json` e `pnpm-lock.yaml`.
-2. Crie um `.env` a partir de [`config/env.example`](config/env.example). Nunca faça commit do `.env`.
-3. Aponte `EXTERNAL_DATABASE_URL` para o banco atual, schema `test` (`gateway01.sa-east-1.prod.aws.tidbcloud.com:4000`) e mantenha TLS validado. Não use `sys` e não rode migrações sem backup.
-4. Instale e valide:
-   ```bash
-   corepack enable
-   pnpm install --frozen-lockfile
-   pnpm run check
-   pnpm run build
-   pnpm exec vitest run server/external-db.test.ts
-   ```
-5. Para uma mudança de schema, gere e revise o SQL antes de aplicar:
+## Execução local ou VPS
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+cp config/env.example .env
+pnpm run check
+pnpm run build
+NODE_ENV=production pnpm start
+```
+
+O servidor escuta `PORT` (padrão 3000). O frontend é servido pelo mesmo processo; não há necessidade de Node separado para o frontend.
+
+## Docker
+
+```bash
+docker compose up -d --build
+```
+
+Configure os secrets no ambiente do host, nunca no `Dockerfile`, `docker-compose.yml` ou Git. O container não contém banco, dados, backups nem chaves.
+
+## Banco e migrações
+
+1. Configure `EXTERNAL_DATABASE_URL` com TLS validado.
+2. Faça backup privado antes de qualquer alteração.
+3. Gere e revise o SQL:
    ```bash
    pnpm exec drizzle-kit generate
+   ```
+4. Aplique somente após revisão:
+   ```bash
    pnpm exec drizzle-kit push --strict
    ```
-   Não use `pnpm db:push` automaticamente: as migrações históricas incluem transformações de dados e não são uma baseline limpa para banco vazio.
-6. Inicie:
+5. Valide:
    ```bash
-   NODE_ENV=production pnpm start
+   pnpm run check
+   pnpm run build
+   pnpm test
    ```
-   ou:
-   ```bash
-   docker compose up -d --build
-   ```
-7. Teste o login com uma conta existente. Não crie dados demonstrativos em produção.
 
-## Backup antes de trocar de plataforma
+Não use schemas de sistema (`sys`) para a aplicação e não execute reset/seed demonstrativo em produção.
 
-Backup completo, sem expor a URL no terminal:
+## Backups e manutenção
+
+Backup manual:
 
 ```bash
-mkdir -p backups
-pnpm backup:db -- --output=backups/pre-migration.json
+pnpm backup:db -- --output=/var/backups/gestao-extintores/pre-migration.json
 ```
 
-Backup somente do schema:
+Manutenção diária:
 
 ```bash
-pnpm backup:db -- --schema-only --output=backups/schema.json
+pnpm maintenance:db
 ```
 
-Restauração normal:
+O callback HTTP pode ser agendado por cron, GitHub Actions, GitLab CI, Kubernetes CronJob, systemd timer ou qualquer scheduler:
 
 ```bash
-pnpm restore:db -- --input=backups/pre-migration.json
+curl -fsS -X POST https://seu-dominio.example/api/scheduled/database-maintenance \
+  -H "Authorization: Bearer $SCHEDULE_SECRET"
 ```
 
-Restauração destrutiva exige duas confirmações explícitas:
+Quando `S3_*` estiver configurado, o backup é enviado para o bucket compatível. `ALERT_WEBHOOK_URL` recebe alertas de falha. Em runtime efêmero, use S3/R2; `BACKUP_DIR` local não substitui armazenamento persistente.
+
+## Suíte isolada
+
+A suíte completa usa um banco dedicado, nunca o banco comercial:
 
 ```bash
-ALLOW_DESTRUCTIVE_RESTORE=true pnpm restore:db -- --input=backups/pre-migration.json --replace
+export TEST_DATABASE_URL='mysql://usuario:senha@host:4000/gestao_extintores_ci?tls=true'
+ALLOW_TEST_DB_RESET=true EXTERNAL_DATABASE_URL="$TEST_DATABASE_URL" DATABASE_URL="$TEST_DATABASE_URL" pnpm test:ci
 ```
 
-Guarde backups fora do repositório, com criptografia e controle de acesso. A senha do banco compartilhada durante esta tarefa deve ser rotacionada.
+O utilitário recusa os schemas `test` e `sys` como banco de fixtures e exige autorização explícita para resetar um banco CI já existente.
 
-## Checklist de troca de conta/IA
+## Migração para outro host
 
-- [ ] Conta nova tem acesso ao repositório e ao banco.
-- [ ] Secrets foram cadastrados no novo host, sem entrar no Git.
-- [ ] `EXTERNAL_DATABASE_URL` aponta para o mesmo banco.
-- [ ] `JWT_SECRET` foi preservado ou sessões foram conscientemente invalidadas.
-- [ ] `MANUS_INTEGRATIONS=false` fora da Manus.
-- [ ] Build e teste de conexão passaram.
-- [ ] Login com conta real passou.
-- [ ] Backup recente foi testado em uma cópia do banco.
-- [ ] Domínio, TLS, SMTP/notificações e storage foram reconfigurados, se usados.
+- Copie o repositório e o lockfile.
+- Cadastre `EXTERNAL_DATABASE_URL`, `JWT_SECRET`, `SCHEDULE_SECRET` e os `S3_*` fora do Git.
+- Execute `pnpm run check`, `pnpm run build` e `pnpm test`.
+- Configure TLS no proxy reverso e HTTPS no domínio.
+- Configure o cron externo e execute uma manutenção manual.
+- Teste login, criação de empresa, isolamento entre tenants, emissão simultânea de OS e restauração de backup.
 
-## Regras para futuras IAs/agentes
-
-- Não executar `DROP`, `TRUNCATE` ou migração destrutiva sem backup e confirmação explícita.
-- Não inserir seed/demo no banco de produção.
-- Não colocar URLs de banco, senhas ou chaves em arquivos versionados.
-- Preferir `EXTERNAL_DATABASE_URL` a `DATABASE_URL`; o primeiro é o contrato portátil do projeto.
-- Manter o schema Drizzle e `drizzle/0000_shallow_leo.sql` versionados juntos.
+A única informação que não deve ser copiada para o repositório é o conteúdo dos secrets e os dados reais do banco.

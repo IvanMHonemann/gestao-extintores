@@ -1,75 +1,34 @@
 # Operação automática e escalabilidade
 
-## Banco e numeração de OS
+## Componentes portáveis
 
-A criação de OS reserva o próximo número dentro de uma transação, usando a chave única lógica `system_settings(accountId, settingKey)` com `settingKey=order_sequence`. A atualização é atômica por empresa e a inserção repete até três vezes quando o banco reporta conflito de chave duplicada. O endpoint `orders.nextNumber` continua sendo apenas uma prévia; a reserva definitiva ocorre no `orders.create`.
+- **Banco:** pool MySQL/TiDB com limite, fila, timeout, keep-alive e log de consultas lentas.
+- **Numeração de OS:** sequência transacional por empresa e retry contra conflito.
+- **Backup:** arquivo local com checksum, retenção e upload opcional para S3/R2/MinIO.
+- **Alertas:** webhook HTTP genérico configurado por `ALERT_WEBHOOK_URL`.
+- **Agendamento:** endpoint protegido por `SCHEDULE_SECRET`; o cron pode ser executado por qualquer provedor.
+- **Limpeza:** remove lixeira expirada, sessões vencidas e operações offline antigas.
+- **Offline:** snapshots paginados, fila com tentativas e tela de status.
 
-O servidor usa pool MySQL/TiDB com `DB_CONNECTION_LIMIT`, `DB_QUEUE_LIMIT`, `DB_CONNECT_TIMEOUT_MS` e keep-alive. Consultas que excederem `DB_SLOW_QUERY_MS` aparecem nos logs como `[Database] Slow query`.
+## Cron diário
 
-## Backup diário e retenção
-
-Nunca grave backups no repositório. Configure uma pasta privada e, quando possível, uma segunda pasta em outro volume ou provedor:
-
-```bash
-BACKUP_DIR=/var/backups/gestao-extintores/daily
-BACKUP_COPY_DIR=/mnt/backup-externo/gestao-extintores
-BACKUP_RETENTION_DAYS=14
-pnpm maintenance:db
-```
-
-`maintenance:db` faz o backup antes da limpeza, grava um checksum `.sha256`, verifica o JSON recém-criado e remove arquivos fora da retenção. A rotina também remove snapshots vencidos da lixeira e sessões expiradas. Se o backup falhar, o processo termina com código diferente de zero e a limpeza não é executada.
-
-O projeto também possui um heartbeat diário `daily-database-maintenance` (02:15 UTC) que chama `/api/scheduled/database-maintenance`. O callback aceita somente uma sessão cron válida do WebDev. Em runtime serverless, o fallback é `/tmp/gestao-extintores-backups/daily`, que é apenas temporário; configure `BACKUP_DIR` para um volume persistente assim que ele estiver disponível.
-
-Para uma migração manual, sempre execute antes:
+Configure um job externo para executar diariamente:
 
 ```bash
-pnpm backup:db -- --output=/var/backups/gestao-extintores/pre-migration.json --retention-days=30
+curl --fail-with-body -X POST "$APP_URL/api/scheduled/database-maintenance" \
+  -H "Authorization: Bearer $SCHEDULE_SECRET"
 ```
 
-A restauração permanece protegida por `ALLOW_DESTRUCTIVE_RESTORE=true`; depois da restauração, faça uma verificação read-only e um teste de login.
+O endpoint retorna HTTP 401 sem secret, HTTP 500 quando backup/limpeza falha e HTTP 200 com o resultado da execução. Não existe dependência de heartbeat proprietário.
 
-### Agendamento externo
+## Storage remoto
 
-Em hospedagem com cron, use um usuário sem permissões desnecessárias e `MAILTO` para alertar falhas:
+Configure `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID` e `S3_SECRET_ACCESS_KEY` para AWS S3, Cloudflare R2, MinIO, Backblaze ou outro serviço compatível. Use uma credencial restrita ao prefixo de backups. Nunca publique `S3_SECRET_ACCESS_KEY` no frontend.
 
-```cron
-MAILTO=operacoes@exemplo.com
-15 2 * * * cd /srv/gestao-extintores && /usr/bin/flock -n /tmp/gestao-extintores-maintenance.lock /usr/bin/pnpm maintenance:db >> /var/log/gestao-extintores-maintenance.log 2>&1
-```
-
-O backup externo deve estar em volume diferente do banco. Periodicamente, restaure uma cópia em ambiente de teste; um backup que nunca foi restaurado não deve ser considerado validado.
-
-## Limpeza automática
-
-A rotina remove:
-
-- itens da `trash_items` cujo `expiresAt` já passou;
-- sessões vencidas de membros e administradores;
-- operações offline locais antigas: falhas com mais de 30 dias e pendências com mais de 90 dias, no navegador do tenant.
-
-A limpeza é idempotente e pode ser executada novamente sem apagar dados válidos.
-
-## Suíte de testes isolada
-
-Os testes de negócio não devem apontar para o banco usado pelo site. O comando abaixo cria/atualiza um banco dedicado, insere fixtures determinísticas para as empresas A e B e executa toda a suíte:
+## Testes
 
 ```bash
-export TEST_DATABASE_URL='mysql://usuario:senha@host:4000/gestao_extintores_ci?tls=true'
 ALLOW_TEST_DB_RESET=true EXTERNAL_DATABASE_URL="$TEST_DATABASE_URL" DATABASE_URL="$TEST_DATABASE_URL" pnpm test:ci
 ```
 
-O utilitário `scripts/prepare-test-db.mjs` recusa bancos `test` e `sys` e também recusa resetar um banco que já contenha tabelas sem `ALLOW_TEST_DB_RESET=true`. Assim, as verificações de isolamento, OS, alertas e estatísticas rodam em ambiente limpo sem criar dados falsos no banco comercial.
-
-## Offline para contas grandes
-
-O endpoint autenticado `offline.snapshot` sincroniza páginas de 10 a 100 registros, com padrão de 50, e retorna `totals`/`hasMore`. A Home usa a primeira página para o cache offline; consultas paginadas continuam sendo usadas para a visualização online. O IndexedDB preserva páginas já cacheadas em vez de apagar todo o tenant a cada snapshot.
-
-A fila offline agora registra tentativas, último erro e horário da tentativa. A tela `/sync-status` permite:
-
-- ver conectividade, pendências e falhas;
-- reprocessar uma operação com falha;
-- descartar uma operação inválida;
-- identificar que o cache é limitado a páginas recentes.
-
-Antes de trabalhar offline em uma conta grande, carregue as páginas necessárias enquanto estiver conectado. O sistema não deve ser configurado para baixar milhares de registros de uma vez.
+O banco CI deve ser separado do banco da aplicação e conter somente fixtures determinísticas. O comando completo deve permanecer verde antes de cada release.

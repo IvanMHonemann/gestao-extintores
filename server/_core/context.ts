@@ -17,7 +17,7 @@ export type TrpcContext = {
 
 /**
  * O sistema comercial usa exclusivamente a sessão própria criada por auth.login.
- * Não há fallback para Manus OAuth: sem o cookie próprio, a requisição é anônima.
+ * Sem o cookie próprio, a requisição é anônima.
  */
 export async function createContext(opts: CreateExpressContextOptions): Promise<TrpcContext> {
   let user: AuthenticatedUser | null = null;

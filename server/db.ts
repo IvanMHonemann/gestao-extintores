@@ -105,8 +105,8 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     values.lastSignedIn = user.lastSignedIn;
     updateSet.lastSignedIn = user.lastSignedIn;
   }
-  if (user.role !== undefined || user.openId === ENV.ownerOpenId) {
-    values.role = user.openId === ENV.ownerOpenId ? "platform_admin" : (user.role ?? "oauth_user");
+  if (user.role !== undefined) {
+    values.role = user.role;
     updateSet.role = values.role;
   }
   if (!values.lastSignedIn) values.lastSignedIn = new Date();

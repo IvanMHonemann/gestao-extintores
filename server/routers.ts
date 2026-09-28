@@ -1,4 +1,4 @@
-import { COOKIE_NAME, MEMBER_COOKIE_NAME } from "@shared/const";
+import { MEMBER_COOKIE_NAME } from "@shared/const";
 import { z } from "zod";
 import { parse as parseCookie } from "cookie";
 import { TRPCError } from "@trpc/server";
@@ -60,9 +60,7 @@ export const appRouter = router({
       const cookies = parseCookie(ctx.req.headers.cookie ?? "");
       await memberAuth.revokeSessions(cookies[MEMBER_COOKIE_NAME] ?? "");
       const memberCookieOptions = getSessionCookieOptions(ctx.req, true);
-      const oauthCookieOptions = getSessionCookieOptions(ctx.req, true);
       if (cookies[MEMBER_COOKIE_NAME]) ctx.res.clearCookie(MEMBER_COOKIE_NAME, { ...memberCookieOptions, maxAge: -1 });
-      ctx.res.clearCookie(COOKIE_NAME, { ...oauthCookieOptions, maxAge: -1 });
       return { success: true } as const;
     }),
   }),

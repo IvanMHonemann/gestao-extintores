@@ -19,21 +19,21 @@ function LoadingScreen() { return <div className="flex min-h-screen items-center
 function CommercialProtected({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <LoadingScreen />;
-  if (!user || user.role === "oauth_user" || user.role === "platform_admin" || !user.companyId) return <LoginPage />;
+  if (!user || user.role === "platform_admin" || !user.companyId) return <LoginPage />;
   return <>{children}</>;
 }
 
 function AdminProtected({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <LoadingScreen />;
-  if (!user || user.role === "oauth_user") return <LoginPage />;
+  if (!user) return <LoginPage />;
   return <>{children}</>;
 }
 
 function RootRoute() {
   const { user, loading } = useAuth();
   if (loading) return <LoadingScreen />;
-  if (!user || user.role === "oauth_user") return <LoginPage />;
+  if (!user) return <LoginPage />;
   return <Home />;
 }
 

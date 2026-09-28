@@ -86,18 +86,16 @@ declare global {
   }
 }
 
-const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || import.meta.env.VITE_FRONTEND_FORGE_API_KEY;
-const DIRECT_MAPS = Boolean(import.meta.env.VITE_GOOGLE_MAPS_API_KEY);
-const FORGE_BASE_URL =
-  import.meta.env.VITE_FRONTEND_FORGE_API_URL ||
-  "https://forge.butterfly-effect.dev";
-const MAPS_PROXY_URL = `${FORGE_BASE_URL}/v1/maps/proxy`;
+const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
 function loadMapScript() {
   return new Promise(resolve => {
     const script = document.createElement("script");
-    const baseUrl = DIRECT_MAPS ? "https://maps.googleapis.com/maps/api/js" : `${MAPS_PROXY_URL}/maps/api/js`;
-    script.src = `${baseUrl}?key=${API_KEY}&v=weekly&libraries=marker,places,geocoding,geometry`;
+    if (!API_KEY) {
+      resolve(null);
+      return;
+    }
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${API_KEY}&v=weekly&libraries=marker,places,geocoding,geometry`;
     script.async = true;
     script.crossOrigin = "anonymous";
     script.onload = () => {
@@ -128,11 +126,13 @@ export function MapView({
   const map = useRef<google.maps.Map | null>(null);
 
   const init = usePersistFn(async () => {
+    if (!API_KEY) return;
     await loadMapScript();
     if (!mapContainer.current) {
       console.error("Map container not found");
       return;
     }
+    if (!window.google) return;
     map.current = new window.google.maps.Map(mapContainer.current, {
       zoom: initialZoom,
       center: initialCenter,
@@ -152,6 +152,8 @@ export function MapView({
   }, [init]);
 
   return (
-    <div ref={mapContainer} className={cn("w-full h-[500px]", className)} />
+    <div ref={mapContainer} className={cn("w-full h-[500px]", className)}>
+      {!API_KEY && <div className="flex h-full items-center justify-center rounded-lg bg-slate-100 p-6 text-sm text-slate-600">Mapa desativado: configure VITE_GOOGLE_MAPS_API_KEY.</div>}
+    </div>
   );
 }

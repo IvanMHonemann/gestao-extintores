@@ -6,9 +6,9 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { sdk } from "./sdk";
 import { runScheduledMaintenance } from "../scheduledMaintenance";
 import { notifyOwner } from "./notification";
+import crypto from "node:crypto";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -32,30 +32,24 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
-  const manusIntegrationsEnabled = process.env.MANUS_INTEGRATIONS === "true";
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   app.post("/api/scheduled/database-maintenance", async (req, res) => {
     try {
-      const user = await sdk.authenticateRequest(req);
-      if (!user.isCron || !user.taskUid) return res.status(403).json({ error: "Cron session required" });
+      const configuredSecret = process.env.SCHEDULE_SECRET;
+      const suppliedSecret = req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.headers["x-schedule-secret"];
+      if (!configuredSecret || typeof suppliedSecret !== "string" || suppliedSecret.length !== configuredSecret.length || !crypto.timingSafeEqual(Buffer.from(suppliedSecret), Buffer.from(configuredSecret))) {
+        return res.status(401).json({ error: "Schedule authentication required" });
+      }
       const result = await runScheduledMaintenance();
-      return res.json({ ok: true, taskUid: user.taskUid, result });
+      return res.json({ ok: true, result });
     } catch (error) {
       console.error("[Maintenance] Scheduled backup failed:", error);
       await notifyOwner({ title: "Falha no backup diário", content: "O backup automático e a limpeza programada falharam. Verifique os logs do projeto e o armazenamento persistente configurado." }).catch(() => undefined);
       return res.status(500).json({ error: "Scheduled maintenance failed" });
     }
   });
-  if (manusIntegrationsEnabled) {
-    const [{ registerOAuthRoutes }, { registerStorageProxy }] = await Promise.all([
-      import("./oauth"),
-      import("./storageProxy"),
-    ]);
-    registerStorageProxy(app);
-    registerOAuthRoutes(app);
-  }
   // tRPC API
   app.use(
     "/api/trpc",

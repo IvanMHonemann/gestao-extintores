@@ -1,52 +1,46 @@
-# Handoff — Gestão de Extintores
+# Handoff operacional independente
 
-## O que este projeto é
+## Arquitetura
 
-Aplicação full-stack para gestão de empresas, clientes, extintores, alertas de vencimento e ordens de serviço. Multiempresa com isolamento por `companyId/accountId`.
+Aplicação full-stack multiempresa para clientes, extintores, alertas e ordens de serviço. O login é próprio da aplicação, com sessões armazenadas por hash. O frontend e a API são servidos pelo mesmo processo Node.js.
 
-## Arquivos de entrada
+## Arquivos principais
 
 - `client/src/App.tsx` — rotas e controle de sessão.
 - `client/src/pages/` — telas.
 - `server/routers.ts` — contrato tRPC.
-- `server/memberAuth.ts` — login, recuperação, sessões e criação de empresas.
-- `server/db.ts` — consultas e mutações Drizzle.
+- `server/memberAuth.ts` — login, recuperação e sessões.
+- `server/db.ts` — consultas e pool Drizzle.
 - `drizzle/schema.ts` — fonte de verdade do banco.
-- `drizzle/schema.ts` — fonte de verdade atual; os SQL em `drizzle/` são migrações históricas e devem ser revisados antes de qualquer aplicação.
-- `PORTABILITY.md` — procedimento de troca de host.
-- `Dockerfile` / `docker-compose.yml` — execução fora da Manus.
-- `scripts/backup-db.mjs` / `scripts/restore-db.mjs` — proteção de dados.
+- `server/storage.ts` — storage S3 compatível.
+- `scripts/backup-db.mjs` e `scripts/restore-db.mjs` — proteção de dados.
+- `PORTABILITY.md` — migração de hospedagem.
 
-## Estado conhecido
+## Execução
 
-- Login comercial próprio e banco externo configurado.
-- Banco TiDB atual: schema `test` em `gateway01.sa-east-1.prod.aws.tidbcloud.com:4000`, acessado por `EXTERNAL_DATABASE_URL` com TLS validado.
-- `MANUS_INTEGRATIONS` pode ser `false` fora da Manus.
-- `EXTERNAL_DATABASE_URL` é priorizada pelo runtime e pelo Drizzle.
-- Build: `pnpm run check && pnpm run build`.
-- Teste de conexão: `pnpm exec vitest run server/external-db.test.ts`.
-- Migração futura: backup privado, `pnpm exec drizzle-kit generate`, revisão do SQL e `pnpm exec drizzle-kit push --strict`; não aplicar a cadeia histórica em sequência nem usar `pnpm db:push` automaticamente.
-- Testes de negócio que esperam registros demonstrativos não devem ser executados contra produção vazia; use uma cópia do banco ou fixtures isoladas.
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+cp config/env.example .env
+pnpm run check
+pnpm run build
+pnpm start
+```
 
-## Contrato mínimo de ambiente
+## Ambiente
 
-Obrigatório:
+Obrigatórios: `EXTERNAL_DATABASE_URL`, `JWT_SECRET`, `SCHEDULE_SECRET`, `NODE_ENV` e `PORT`.
 
-- `EXTERNAL_DATABASE_URL`
-- `JWT_SECRET`
-- `NODE_ENV`
-- `PORT`
+Opcionais: `S3_*` para backup remoto, `ALERT_WEBHOOK_URL` para alertas e `VITE_GOOGLE_MAPS_API_KEY` para mapas.
 
-Opcional:
+## Release e manutenção
 
-- `MANUS_INTEGRATIONS` — `false` fora da Manus.
-- `S3_*` — para storage compatível.
-- `VITE_GOOGLE_MAPS_API_KEY` — para mapas sem proxy Manus.
+```bash
+pnpm test
+pnpm run build
+docker compose up -d --build
+```
 
-## Riscos e próximos trabalhos
+Use `pnpm test:ci` com um banco CI separado. Faça backup e revise o SQL antes de qualquer migração. Configure um cron externo para `/api/scheduled/database-maintenance` usando `Authorization: Bearer $SCHEDULE_SECRET`.
 
-1. **Storage:** `server/storage.ts` ainda tem implementação Forge/S3 da Manus. O fluxo atual não depende dela; substituir antes de adicionar upload de documentos.
-2. **Mapas:** `client/src/components/Map.tsx` usa proxy Forge por padrão. Criar um provider direto Google Maps ou Leaflet antes de depender de mapas fora da Manus.
-3. **Scaffold legado:** `server/_core/llm.ts`, `notification.ts`, `dataApi.ts`, `heartbeat.ts`, `oauth.ts` e `sdk.ts` são compatibilidade/infra opcionais. Não remover sem verificar imports.
-4. **Observabilidade:** configurar logs, métricas, alertas e TLS no novo host.
-5. **Segredos:** rotacionar a senha do banco que foi exposta nesta conversa.
+Não copie dados reais, backups, cookies, hashes ou secrets para o repositório. A senha do banco compartilhada anteriormente deve ser rotacionada.
