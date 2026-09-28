@@ -12,7 +12,7 @@ Aplicação full-stack para gestão de empresas, clientes, extintores, alertas d
 - `server/memberAuth.ts` — login, recuperação, sessões e criação de empresas.
 - `server/db.ts` — consultas e mutações Drizzle.
 - `drizzle/schema.ts` — fonte de verdade do banco.
-- `drizzle/0000_shallow_leo.sql` — migração inicial versionada.
+- `drizzle/schema.ts` — fonte de verdade atual; os SQL em `drizzle/` são migrações históricas e devem ser revisados antes de qualquer aplicação.
 - `PORTABILITY.md` — procedimento de troca de host.
 - `Dockerfile` / `docker-compose.yml` — execução fora da Manus.
 - `scripts/backup-db.mjs` / `scripts/restore-db.mjs` — proteção de dados.
@@ -20,10 +20,12 @@ Aplicação full-stack para gestão de empresas, clientes, extintores, alertas d
 ## Estado conhecido
 
 - Login comercial próprio e banco externo configurado.
+- Banco TiDB atual: schema `test` em `gateway01.sa-east-1.prod.aws.tidbcloud.com:4000`, acessado por `EXTERNAL_DATABASE_URL` com TLS validado.
 - `MANUS_INTEGRATIONS` pode ser `false` fora da Manus.
 - `EXTERNAL_DATABASE_URL` é priorizada pelo runtime e pelo Drizzle.
 - Build: `pnpm run check && pnpm run build`.
 - Teste de conexão: `pnpm exec vitest run server/external-db.test.ts`.
+- Migração futura: backup privado, `pnpm exec drizzle-kit generate`, revisão do SQL e `pnpm exec drizzle-kit push --strict`; não aplicar a cadeia histórica em sequência nem usar `pnpm db:push` automaticamente.
 - Testes de negócio que esperam registros demonstrativos não devem ser executados contra produção vazia; use uma cópia do banco ou fixtures isoladas.
 
 ## Contrato mínimo de ambiente

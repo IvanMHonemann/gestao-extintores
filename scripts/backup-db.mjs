@@ -9,7 +9,10 @@ const outputArg = process.argv.find(arg => arg.startsWith("--output="));
 const schemaOnly = process.argv.includes("--schema-only");
 const output = outputArg?.slice("--output=".length) ?? `backups/extintores-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.json`;
 
-const connection = await mysql.createConnection(url);
+const connection = await mysql.createConnection({
+  uri: url,
+  ssl: { rejectUnauthorized: true },
+});
 try {
   const [tableRows] = await connection.query("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'");
   const tableNames = tableRows.map(row => Object.values(row)[0]).filter(name => name !== "__drizzle_migrations");

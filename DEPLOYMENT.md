@@ -10,7 +10,7 @@ O workflow `Database smoke test` é manual. Ele usa o secret `EXTERNAL_DATABASE_
 
 ## Como cadastrar o secret do banco
 
-No GitHub, abra **Settings → Secrets and variables → Actions → New repository secret** e crie `EXTERNAL_DATABASE_URL`. Use uma credencial de leitura ou uma credencial limitada para o smoke test, se possível. A URL deve permanecer somente no secret manager.
+No GitHub, abra **Settings → Secrets and variables → Actions → New repository secret** e crie `EXTERNAL_DATABASE_URL`. Para o ambiente atual, a URL deve apontar para o schema TiDB `test` em `gateway01.sa-east-1.prod.aws.tidbcloud.com:4000`; nunca use o schema de sistema `sys`. Use uma credencial de leitura ou uma credencial limitada para o smoke test, se possível. A URL completa e a senha devem permanecer somente no secret manager; o runtime e o Drizzle Kit exigem TLS validado.
 
 ## Publicação da aplicação
 
@@ -30,8 +30,9 @@ A hospedagem Manus/WebDev atual continua sendo gerenciada pela plataforma e não
 2. Aguardar o CI passar.
 3. Revisar e fazer merge em `main`.
 4. Confirmar que a imagem `latest` foi publicada no GHCR.
-5. Fazer backup antes de qualquer migração de schema.
-6. Promover a imagem no host de produção, mantendo o mesmo banco externo.
-7. Rodar o smoke test manual após a publicação.
+5. Fazer backup privado antes de qualquer migração de schema.
+6. Gerar e revisar o SQL; aplicar somente com `pnpm exec drizzle-kit push --strict` após autorização explícita.
+7. Promover a imagem no host de produção, mantendo o mesmo banco externo.
+8. Rodar o smoke test manual após a publicação.
 
-Migrações de banco continuam sendo uma operação separada, revisada e protegida por backup. O CI não deve executar `db:push` automaticamente contra produção.
+Migrações de banco continuam sendo uma operação separada, revisada e protegida por backup. O CI não deve executar `db:push`, `drizzle-kit migrate` ou SQL destrutivo automaticamente contra produção. Consulte `DATABASE_MIGRATION_GUIDE.md` para o fluxo completo.

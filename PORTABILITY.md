@@ -8,7 +8,7 @@ Este projeto pode ser executado fora da Manus com **Node.js 22, pnpm, Docker e u
 
 | Área | Estado | Como migrar |
 |---|---|---|
-| Banco | MySQL/TiDB via Drizzle + `mysql2` | Copiar `EXTERNAL_DATABASE_URL`; executar `pnpm db:push`; validar com `pnpm test -- server/external-db.test.ts` |
+| Banco | TiDB Cloud/MySQL via Drizzle + `mysql2` | Configurar `EXTERNAL_DATABASE_URL` apontando para o schema `test` com TLS; fazer backup, revisar SQL e aplicar `pnpm exec drizzle-kit push --strict`; validar com `pnpm exec vitest run server/external-db.test.ts` |
 | Autenticação comercial | Própria (`member_accounts`, `platform_admins`, sessões com hash) | Não depende da Manus; preservar tabelas e `JWT_SECRET` apenas se outros cookies forem usados |
 | Frontend/API | React, Vite, Express, tRPC | Executar `pnpm install --frozen-lockfile`, `pnpm run build`, `pnpm start` |
 | Arquivos | Helper legado usa Forge/S3 da Manus | O produto atual não usa upload no fluxo principal; para arquivos futuros, configurar S3 compatível e substituir `server/storage.ts` |
@@ -21,7 +21,7 @@ Este projeto pode ser executado fora da Manus com **Node.js 22, pnpm, Docker e u
 
 1. Exporte o repositório Git completo, incluindo `drizzle/schema.ts`, `drizzle/0000_shallow_leo.sql`, `server/`, `client/`, `shared/`, `package.json` e `pnpm-lock.yaml`.
 2. Crie um `.env` a partir de [`config/env.example`](config/env.example). Nunca faça commit do `.env`.
-3. Aponte `EXTERNAL_DATABASE_URL` para o banco atual. Não rode migrações destrutivas sem backup.
+3. Aponte `EXTERNAL_DATABASE_URL` para o banco atual, schema `test` (`gateway01.sa-east-1.prod.aws.tidbcloud.com:4000`) e mantenha TLS validado. Não use `sys` e não rode migrações sem backup.
 4. Instale e valide:
    ```bash
    corepack enable
@@ -30,7 +30,13 @@ Este projeto pode ser executado fora da Manus com **Node.js 22, pnpm, Docker e u
    pnpm run build
    pnpm exec vitest run server/external-db.test.ts
    ```
-5. Inicie:
+5. Para uma mudança de schema, gere e revise o SQL antes de aplicar:
+   ```bash
+   pnpm exec drizzle-kit generate
+   pnpm exec drizzle-kit push --strict
+   ```
+   Não use `pnpm db:push` automaticamente: as migrações históricas incluem transformações de dados e não são uma baseline limpa para banco vazio.
+6. Inicie:
    ```bash
    NODE_ENV=production pnpm start
    ```
@@ -38,7 +44,7 @@ Este projeto pode ser executado fora da Manus com **Node.js 22, pnpm, Docker e u
    ```bash
    docker compose up -d --build
    ```
-6. Teste o login com uma conta existente. Não crie dados demonstrativos em produção.
+7. Teste o login com uma conta existente. Não crie dados demonstrativos em produção.
 
 ## Backup antes de trocar de plataforma
 

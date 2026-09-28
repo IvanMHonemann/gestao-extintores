@@ -16,6 +16,8 @@ cp config/env.example .env
 
 Preencha os secrets somente no ambiente local ou no secret manager do novo host. Fora da Manus, mantenha `MANUS_INTEGRATIONS=false`.
 
+O banco TiDB atual usa o schema `test` no host `gateway01.sa-east-1.prod.aws.tidbcloud.com:4000`. A URL completa fica somente no secret `EXTERNAL_DATABASE_URL`; TLS com validação de certificado é obrigatório e o schema `sys` não deve ser usado para tabelas da aplicação.
+
 ### Conexão GitHub obrigatória em uma migração
 
 Antes de editar o projeto em outra conta, confirme a origem do código:
@@ -56,9 +58,9 @@ O GitHub Actions repete a validação no servidor. Após CI verde no `main`, a i
 
 ## Regras para a IA
 
-Antes de editar, leia `README.md`, `PORTABILITY.md`, `OPERATIONS.md`, `DEPLOYMENT.md` e `DATABASE_MIGRATION_GUIDE.md`. Preserve `drizzle/schema.ts` e as migrações. Faça backup antes de alterar schema. Nunca execute restauração destrutiva sem `ALLOW_DESTRUCTIVE_RESTORE=true` e confirmação explícita. Nunca coloque `.env`, URLs de banco, chaves, sessões, backups ou dados de clientes no Git.
+Antes de editar, leia `README.md`, `PORTABILITY.md`, `OPERATIONS.md`, `DEPLOYMENT.md` e `DATABASE_MIGRATION_GUIDE.md`. Preserve `drizzle/schema.ts` e as migrações. Faça backup antes de alterar schema. Para este banco, valide o secret, execute o smoke test read-only, revise o SQL e prefira `pnpm exec drizzle-kit push --strict`; não use `pnpm db:push` automaticamente porque a cadeia histórica contém transformações de dados. Nunca execute restauração destrutiva sem `ALLOW_DESTRUCTIVE_RESTORE=true` e confirmação explícita. Nunca coloque `.env`, URLs de banco, chaves, sessões, backups ou dados de clientes no Git.
 
-O guia de banco contém apenas host, porta, schema e placeholders. A senha precisa ser rotacionada e cadastrada somente no secret manager da nova conta.
+O guia de banco contém apenas host, porta, schema e placeholders. A senha precisa ser cadastrada somente no secret manager da nova conta; nunca registrar a URL completa ou hashes de senha no repositório.
 
 ## Contratos importantes
 

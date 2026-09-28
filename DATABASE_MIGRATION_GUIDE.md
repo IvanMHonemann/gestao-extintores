@@ -1,57 +1,174 @@
-# Guia de conexão do banco para outra conta ou IA
+# Guia de banco e migrações — Gestão de Extintores
 
-Este arquivo existe para evitar que a próxima conta precise descobrir a arquitetura do projeto por tentativa e erro.
+Este arquivo é a referência operacional para outra conta, hospedagem ou IA trabalhar no banco sem descobrir a arquitetura por tentativa e erro.
 
-## Banco atual
+## Banco conectado atualmente
 
-O projeto usa um banco MySQL/TiDB externo. **Os dados não ficam no GitHub e a senha não deve ser colocada neste arquivo.**
+O projeto usa um banco MySQL/TiDB externo. Os dados não ficam no GitHub e a senha nunca deve ser colocada neste arquivo.
+
+| Item | Valor não secreto |
+|---|---|
+| Provedor | TiDB Cloud |
+| Host | `gateway01.sa-east-1.prod.aws.tidbcloud.com` |
+| Porta | `4000` |
+| Schema/banco da aplicação | `test` |
+| Transporte | TLS obrigatório, com validação do certificado |
+| Secret usado pelo projeto | `EXTERNAL_DATABASE_URL` |
+
+A URL completa deve ser cadastrada somente no secret manager do ambiente. Ela deve apontar para o schema `/test`, não para `/sys`:
 
 ```dotenv
-# Perfil do banco atual — metadados não secretos para facilitar a configuração
-# Host: gateway05.us-east-1.prod.aws.tidbcloud.com
-# Porta: 4000
-# Banco/schema: VQ74gbx2JGcCSFKb6jYEZ9
-# Usuário: root
-# TLS: obrigatório
-#
-# Preencha a senha somente no secret manager da nova plataforma:
-EXTERNAL_DATABASE_URL=mysql://root:<COLOQUE_A_SENHA_NO_SECRET_MANAGER>@gateway05.us-east-1.prod.aws.tidbcloud.com:4000/VQ74gbx2JGcCSFKb6jYEZ9?ssl={"rejectUnauthorized":true}
+# Exemplo estrutural; nunca commitar a senha ou a URL real
+EXTERNAL_DATABASE_URL=mysql://<usuario>:<senha>@gateway01.sa-east-1.prod.aws.tidbcloud.com:4000/test
 ```
 
-> A senha que foi compartilhada durante a configuração deve ser considerada exposta e **rotacionada no TiDB Cloud** antes de usar a nova conta. Depois da rotação, coloque a nova URL somente como secret `EXTERNAL_DATABASE_URL`.
+O código força TLS com `rejectUnauthorized: true` em:
 
-## Configuração mínima na nova conta
+- `server/db.ts`, no acesso da aplicação;
+- `scripts/backup-db.mjs`, nos backups;
+- `drizzle.config.ts`, nas operações do Drizzle Kit.
+
+Não é necessário colocar a senha, certificados ou uma URL completa em arquivos versionados. Em outra hospedagem, preserve a validação TLS equivalente.
+
+## Estado atual do schema
+
+O schema `test` foi inicializado sem seed e contém as 12 tabelas definidas em `drizzle/schema.ts`:
+
+```text
+clients
+companies
+extinguishers
+member_accounts
+member_sessions
+platform_admins
+platform_sessions
+service_order_items
+service_orders
+system_settings
+trash_items
+users
+```
+
+Não executar `server/seed.ts` em produção. Ele contém dados demonstrativos e CPFs/CNPJs fictícios para desenvolvimento.
+
+O login comercial é próprio da aplicação. A conta inicial de `platform_admin` já foi criada fora do código; nunca registrar a senha neste repositório.
+
+## Configuração mínima em uma nova conta/hospedagem
 
 1. Importe o repositório privado `IvanMHonemann/gestao-extintores`.
-2. Crie os secrets, sem salvar os valores no código:
-   - `EXTERNAL_DATABASE_URL`: URL completa do banco atual, com a senha nova.
-   - `DATABASE_URL`: opcional; o runtime usa `EXTERNAL_DATABASE_URL` primeiro.
-   - `JWT_SECRET`: um segredo longo; preserve o atual apenas se for necessário manter sessões.
+2. Configure no secret manager:
+   - `EXTERNAL_DATABASE_URL`: URL do TiDB apontando para `/test` ou para o schema de produção escolhido explicitamente;
+   - `JWT_SECRET`: segredo longo para os cookies da aplicação;
    - `MANUS_INTEGRATIONS=false` quando a hospedagem não for Manus.
 3. Instale e valide:
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm run check
-pnpm test
 pnpm run build
+pnpm exec vitest run server/external-db.test.ts
+pnpm exec vitest run server/auth.logout.test.ts server/memberAuth.test.ts
 ```
 
-4. Na prévia, teste nesta ordem:
+4. Teste, nesta ordem, uma conta real e os fluxos principais:
    - login do administrador geral;
    - seleção de empresa ativa;
    - criação de cliente;
    - criação de extintor;
-   - criação de OS;
-   - aba de OS após recarregar a página;
-   - impressão do documento;
-   - compartilhamento no celular usando Chrome Android ou Safari iOS.
+   - criação de ordem de serviço;
+   - recarga da tela e conferência dos dados;
+   - impressão do documento.
 
-## Conectar ao GitHub em toda migração
+## Fluxo obrigatório antes de qualquer migração
 
-O repositório principal é `IvanMHonemann/gestao-extintores`. O GitHub guarda o código e o histórico; ele não guarda o banco nem os secrets.
+### 1. Confirmar o alvo sem expor secrets
 
-### Em uma máquina ou conta nova
+```bash
+# Confirma somente a presença do secret; não imprima o valor
+printenv | cut -d= -f1 | grep -E '^(EXTERNAL_DATABASE_URL|DATABASE_URL|JWT_SECRET)$' | sort
+```
+
+Confirme que `EXTERNAL_DATABASE_URL` aponta para o schema de aplicação correto. Nunca use `sys` como banco da aplicação no TiDB Cloud; neste projeto, o schema conectado é `test`.
+
+### 2. Validar conexão em modo read-only
+
+```bash
+pnpm exec vitest run server/external-db.test.ts
+```
+
+O teste deve executar somente uma consulta leve. Se falhar, pare e corrija o secret/TLS antes de continuar.
+
+### 3. Fazer backup fora do repositório
+
+Use um diretório privado, com permissões restritas e retenção controlada:
+
+```bash
+set -euo pipefail
+backup_dir="$HOME/.private-backups/gestao-extintores"
+umask 077
+mkdir -p "$backup_dir"
+chmod 700 "$backup_dir"
+output="$backup_dir/pre-migration-$(date +%Y%m%d%H%M%S).json"
+pnpm backup:db -- --output="$output"
+stat -c 'backup=%n tamanho=%s bytes modo=%a' "$output"
+```
+
+Para uma alteração apenas estrutural, ainda prefira registrar um backup completo antes da mudança. Nunca coloque o arquivo `json` no GitHub, no diretório de publicação ou em anexos públicos.
+
+### 4. Comparar o schema real com o código
+
+```bash
+pnpm exec drizzle-kit pull
+```
+
+Leia o SQL gerado antes de executar qualquer alteração. Pare se aparecer `DROP`, `TRUNCATE`, `DELETE`, mudança destrutiva de coluna ou alteração de dados que não tenha sido planejada.
+
+### 5. Gerar e revisar a alteração
+
+Depois de editar `drizzle/schema.ts`:
+
+```bash
+pnpm exec drizzle-kit generate
+```
+
+Leia integralmente o novo SQL em `drizzle/`. Não aplique uma migração que dependa de tabelas ou dados que não existem no banco real.
+
+### 6. Aplicar somente após revisão e autorização
+
+Para o banco atual, vazio ou já alinhado ao schema, o fluxo interativo recomendado é:
+
+```bash
+pnpm exec drizzle-kit push --strict
+```
+
+Na confirmação interativa, aprove somente mudanças estruturais previamente revisadas. Não use `--force` para silenciar alertas de perda de dados.
+
+O script `pnpm db:push` do projeto combina geração e migração histórica. Não use esse script automaticamente contra produção: os arquivos históricos `drizzle/0000`–`drizzle/0006` contêm transformações de dados, inserts de configuração e operações que não são uma baseline limpa para um banco vazio.
+
+### 7. Validar depois da alteração
+
+```bash
+pnpm run check
+pnpm run build
+pnpm exec vitest run server/external-db.test.ts server/memberAuth.test.ts
+```
+
+Depois, confirme em modo read-only o número e os nomes das tabelas. Teste login e os fluxos de criação/consulta na prévia antes de publicar.
+
+## Regras de segurança
+
+- Nunca executar `DROP`, `TRUNCATE`, `DELETE` amplo ou restauração destrutiva sem backup e confirmação explícita.
+- Nunca executar migração de produção sem validar o alvo do secret e TLS.
+- Nunca executar seed/dados demonstrativos em produção.
+- Nunca copiar senha, `.env`, token, cookie, hash de senha, backup ou dados de clientes para o Git.
+- Nunca compartilhar a URL completa do banco em chat ou logs.
+- Preferir `EXTERNAL_DATABASE_URL` a `DATABASE_URL`; esse é o contrato portátil do projeto.
+- Se uma migração histórica parecer necessária, primeiro compare o schema real e produza uma baseline limpa revisada; não aplique os arquivos em sequência por tentativa e erro.
+- O CI pode testar o código, mas não deve executar alteração de schema automaticamente contra produção.
+
+## GitHub e nova conta
+
+O repositório principal é `IvanMHonemann/gestao-extintores`. O GitHub guarda código e histórico; o TiDB guarda dados e o secret manager guarda credenciais.
 
 ```bash
 git clone https://github.com/IvanMHonemann/gestao-extintores.git
@@ -60,16 +177,7 @@ corepack enable
 pnpm install --frozen-lockfile
 ```
 
-Se for necessário conectar uma cópia local a outro repositório GitHub:
-
-```bash
-gh auth login
-./scripts/git-connect.sh NOVO_USUARIO_OU_ORG/NOVO_REPOSITORIO --private
-```
-
-O script configura o remote `github`, cria o repositório privado quando autorizado e envia o branch `main`. Ele não contém token e não deve receber senha ou token como argumento.
-
-### Antes de enviar qualquer alteração
+Antes de enviar alterações:
 
 ```bash
 ./scripts/ci-local.sh
@@ -80,35 +188,22 @@ git commit -m "descreva a alteração"
 git push github main
 ```
 
-Se a nova IA trabalhar diretamente no repositório já clonado, não é preciso criar outro repositório: basta confirmar que `git remote -v` aponta para `IvanMHonemann/gestao-extintores` e fazer o push para `main` após o CI local.
-
-### Regras de segurança do GitHub
-
-- Usar repositório privado, salvo decisão explícita em contrário.
-- Nunca colocar token pessoal, senha do banco, `.env`, backups ou URLs completas de banco em commits.
-- Usar `gh auth login` ou o gerenciador de credenciais do Git; nunca colar tokens em arquivos do projeto.
-- Na nova conta Manus, reconectar o GitHub e importar este mesmo repositório; conectar o GitHub na Manus não transfere automaticamente o banco.
-
-## Regras para outra IA
-
-- Não substituir `EXTERNAL_DATABASE_URL` por um banco novo.
-- Não executar `pnpm db:push`, `drizzle-kit migrate` ou SQL destrutivo antes de fazer backup e revisar o schema.
-- Não copiar dados reais, senha, `.env`, tokens ou backups para GitHub.
-- O GitHub guarda o código; o banco guarda os dados. Nunca tentar versionar o banco dentro do repositório.
-- O administrador geral usa a rota `platform.data.*`; não exigir `tenantKey` para as operações globais.
-- Depois de criar uma OS global, invalidar/recarregar `platform.data.orders` da empresa selecionada; caso contrário a OS pode estar salva e parecer desaparecida da tela.
-- O endereço publicado de uma conta não é atualizado pela prévia de outra conta. Sempre testar a URL da prévia atual antes de publicar.
-- O compartilhamento de PDF no celular depende do `navigator.share` do navegador; não redirecionar para `wa.me` nem exigir download manual como caminho principal.
+Mantenha o repositório privado e nunca passe tokens ou senhas como argumentos de comandos.
 
 ## Diagnóstico rápido
 
-Se a OS mostrar sucesso mas não aparecer:
+Se o login falhar:
 
-1. confirmar que a empresa selecionada está ativa;
-2. confirmar que o cliente pertence à empresa selecionada;
-3. recarregar a aba de OS;
-4. verificar a chamada `platform.data.createOrder` no console/rede;
-5. verificar a chamada `platform.data.orders` após o sucesso;
-6. consultar o banco somente em modo leitura antes de alterar qualquer coisa.
+1. confirme que o servidor foi reiniciado após atualizar `EXTERNAL_DATABASE_URL`;
+2. confirme que a URL aponta para `/test` ou para o schema de produção correto, nunca `/sys`;
+3. execute `pnpm exec vitest run server/external-db.test.ts`;
+4. valide em modo read-only se a conta existe e está ativa, sem imprimir `passwordHash`;
+5. não redefina a senha nem crie outra conta sem autorização do proprietário.
 
-Se a URL pública mostrar uma tela antiga, o problema é publicação/domínio, não o banco: comparar a URL pública com a URL da prévia e publicar o checkpoint correto na conta que controla o domínio.
+Se uma OS mostrar sucesso mas não aparecer:
+
+1. confirme que a empresa selecionada está ativa;
+2. confirme que o cliente pertence à empresa;
+3. recarregue a aba de OS;
+4. verifique as chamadas `platform.data.createOrder` e `platform.data.orders`;
+5. consulte o banco somente em modo read-only antes de alterar qualquer coisa.

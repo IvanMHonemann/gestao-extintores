@@ -26,6 +26,8 @@ Colocar o projeto em funcionamento nesta nova conta ou hospedagem preservando:
 
 **Não crie outro banco. Não faça seed em produção. Não apague ou substitua dados existentes.**
 
+O ambiente WebDev atual usa o TiDB Cloud em `gateway01.sa-east-1.prod.aws.tidbcloud.com:4000`, schema `test`. A URL completa é um secret; TLS com validação de certificado é obrigatório. Nunca use o schema de sistema `sys` para a aplicação.
+
 ---
 
 ## 1. Regras obrigatórias
@@ -36,7 +38,7 @@ Colocar o projeto em funcionamento nesta nova conta ou hospedagem preservando:
 4. Fora da Manus, use `MANUS_INTEGRATIONS=false`. O login comercial próprio não deve depender de Manus OAuth.
 5. Preserve o `JWT_SECRET` atual somente se for necessário manter sessões existentes. Se trocar, informe que as sessões serão invalidadas.
 6. Nunca execute `DROP`, `TRUNCATE`, delete amplo, restauração destrutiva ou migração de schema sem backup recente e autorização explícita.
-7. Não execute `pnpm db:push` ou `drizzle-kit migrate` automaticamente contra produção. Primeiro compare o schema local com o banco real e apresente o impacto.
+7. Não execute `pnpm db:push` ou `drizzle-kit migrate` automaticamente contra produção. Primeiro faça backup, compare o schema local com o banco real, gere/revise o SQL e aplique somente com `pnpm exec drizzle-kit push --strict` após autorização explícita.
 8. Nunca faça `git push --force`.
 9. Não use Vite HMR, websocket de desenvolvimento, `localhost:5173` ou `@vite/client` em produção/preview. O servidor deve servir `dist/public`.
 10. Não altere o layout de login, o método de autenticação, o isolamento por tenant ou o fluxo offline sem solicitação específica.
@@ -107,7 +109,9 @@ MANUS_INTEGRATIONS=false
 PORT=3000
 ```
 
-Opcional somente se realmente utilizado:
+No ambiente atual, `EXTERNAL_DATABASE_URL` deve apontar para `/test`. Nunca registre a URL completa, senha ou certificados no Git.
+
+O opcional somente se realmente utilizado:
 
 ```text
 VITE_GOOGLE_MAPS_API_KEY=<chave do mapa>
@@ -167,6 +171,8 @@ Plano de rollback:
 ```
 
 Não corrija divergência de banco por tentativa e erro.
+
+Depois de editar `drizzle/schema.ts`, execute `pnpm exec drizzle-kit generate`, leia integralmente o SQL e só então use `pnpm exec drizzle-kit push --strict`. Os arquivos históricos em `drizzle/0000`–`drizzle/0006` contêm transformações de dados e não devem ser aplicados em sequência como baseline de um banco vazio.
 
 ---
 
