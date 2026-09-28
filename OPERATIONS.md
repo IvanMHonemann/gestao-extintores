@@ -24,18 +24,25 @@ A aplicação expõe o procedimento público `system.health` pelo endpoint tRPC.
 
 ## Atualizações de schema
 
-1. Faça backup.
-2. Atualize `drizzle/schema.ts`.
-3. Gere a migração:
+O banco TiDB atual usa o schema `test` no host `gateway01.sa-east-1.prod.aws.tidbcloud.com:4000`. A URL fica somente em `EXTERNAL_DATABASE_URL` e o código exige TLS com validação de certificado. Nunca use `sys` para as tabelas da aplicação.
+
+1. Valide o secret e execute o teste read-only:
+   ```bash
+   pnpm exec vitest run server/external-db.test.ts
+   ```
+2. Faça backup fora do repositório, com modo 600.
+3. Atualize `drizzle/schema.ts`.
+4. Gere a migração:
    ```bash
    pnpm exec drizzle-kit generate
    ```
-4. Revise o SQL gerado.
-5. Aplique:
+5. Revise integralmente o SQL gerado. Pare diante de `DROP`, `TRUNCATE`, `DELETE` amplo ou alteração de dados não planejada.
+6. Aplique somente após revisão e autorização:
    ```bash
-   pnpm exec drizzle-kit migrate
+   pnpm exec drizzle-kit push --strict
    ```
-6. Rode check/build e teste de conexão.
+   Não use `pnpm db:push` automaticamente: a cadeia histórica pode conter transformações de dados e não é uma baseline limpa para banco vazio.
+7. Rode check/build, testes e validação read-only do schema.
 
 ## Segurança
 
