@@ -18,9 +18,13 @@ import {
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
+let _dbUrl: string | null = null;
 
 export async function getDb() {
   const databaseUrl = process.env.EXTERNAL_DATABASE_URL ?? process.env.DATABASE_URL;
+  if (_db && _dbUrl !== databaseUrl) {
+    _db = null;
+  }
   if (!_db && databaseUrl) {
     try {
       _db = drizzle({
@@ -29,9 +33,11 @@ export async function getDb() {
           ssl: { rejectUnauthorized: true },
         },
       });
+      _dbUrl = databaseUrl;
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
+      _dbUrl = null;
     }
   }
   return _db;
