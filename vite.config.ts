@@ -1,10 +1,8 @@
-import { jsxLocPlugin } from "@builder.io/vite-plugin-jsx-loc";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import fs from "node:fs";
 import path from "node:path";
 import { defineConfig, type Plugin, type ViteDevServer } from "vite";
-import { vitePluginManusRuntime } from "vite-plugin-manus-runtime";
 
 // =============================================================================
 // Manus Debug Collector - Vite Plugin
@@ -150,7 +148,12 @@ function vitePluginManusDebugCollector(): Plugin {
   };
 }
 
-const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()];
+// O runtime de host injeta um proxy HTML com o cliente HMR e tenta conectar
+// em localhost:5173 no preview HTTPS. O aplicativo não depende dele para
+// funcionar; mantemos somente os plugins necessários ao produto.
+// O coletor de debug pertence apenas ao ambiente de desenvolvimento e injeta
+// o overlay "Console Error" no visualizador embutido. Não faz parte do app.
+const plugins = [react(), tailwindcss()];
 
 export default defineConfig({
   plugins,
@@ -170,6 +173,7 @@ export default defineConfig({
   },
   server: {
     host: true,
+    hmr: false,
     allowedHosts: [
       ".manuspre.computer",
       ".manus.computer",
