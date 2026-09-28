@@ -18,6 +18,8 @@ Para usar Docker, consulte `docker-compose.yml`. Para migrar para outra IA, cont
 
 Para conectar este código a outra conta ou repositório GitHub sem expor tokens, autentique a GitHub CLI e execute `./scripts/git-connect.sh OWNER/REPOSITORY --private`. Para validar antes do push, execute `./scripts/ci-local.sh`. O guia completo para outra IA está em `AI_HANDOFF.md`.
 
+
+Use primeiro o prompt operacional [`PROMPT-MIGRACAO-IA.md`](PROMPT-MIGRACAO-IA.md) ao transferir o projeto para outra conta, IA ou hospedagem.
 ## Banco de dados
 
 O runtime prioriza `EXTERNAL_DATABASE_URL` e usa `DATABASE_URL` apenas como fallback. O schema vive em `drizzle/schema.ts`; as migrações futuras devem ser geradas e revisadas com Drizzle.

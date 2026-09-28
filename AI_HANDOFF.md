@@ -4,6 +4,8 @@ Este repositório é a fonte principal do código do Gestão de Extintores. O ba
 
 ## Primeiros passos
 
+> Para uma migração completa para outra conta ou IA, copie o prompt operacional de [`PROMPT-MIGRACAO-IA.md`](PROMPT-MIGRACAO-IA.md). Ele reúne o fluxo de GitHub, banco, secrets, validações, publicação e as correções que não podem ser regressadas.
+
 ```bash
 git clone https://github.com/IvanMHonemann/gestao-extintores.git
 cd gestao-extintores
