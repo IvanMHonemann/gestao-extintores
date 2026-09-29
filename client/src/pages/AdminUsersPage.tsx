@@ -48,8 +48,7 @@ export default function AdminUsersPage() {
   const isCreating = createCompanyMutation.isPending || createUserMutation.isPending;
   const isResetting = platformResetMutation.isPending || companyResetMutation.isPending;
   const goBack = () => {
-    if (window.history.length > 1) window.history.back();
-    else navigate("/");
+    navigate("/");
   };
 
   return (
