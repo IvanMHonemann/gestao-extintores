@@ -124,6 +124,7 @@ export const appRouter = router({
       }),
     }),
     billing: router({
+      features: platformProcedure.query(() => billing.BILLING_FEATURES),
       plans: router({
         list: platformProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input }) => billing.listPlans(input?.includeInactive ?? false)),
         create: platformProcedure.input(z.object({ name: z.string().min(2), description: z.string().optional(), price: z.string(), billingInterval: z.enum(["MONTHLY", "YEARLY"]), maxUsers: z.number().int().positive().nullable().optional(), maxClients: z.number().int().positive().nullable().optional(), maxExtinguishers: z.number().int().positive().nullable().optional(), features: z.string().optional(), active: z.boolean().optional() })).mutation(({ input }) => billing.createPlan(input)),
@@ -131,6 +132,7 @@ export const appRouter = router({
       }),
       subscriptions: router({
         list: platformProcedure.query(() => billing.listSubscriptions()),
+        entitlements: platformProcedure.input(z.object({ companyId: z.number().int().positive() })).query(({ input }) => billing.getCompanyEntitlements(input.companyId)),
         access: platformProcedure.input(z.object({ companyId: z.number().int().positive() })).query(({ input }) => billing.getSubscriptionAccess(input.companyId)),
         create: platformProcedure.input(z.object({ companyId: z.number().int().positive(), planId: z.number().int().positive(), startsAt: z.string(), currentPeriodStart: z.string(), currentPeriodEnd: z.string(), trialEndsAt: z.string().nullable().optional(), gracePeriodEndsAt: z.string().nullable().optional(), autoRenew: z.boolean().optional(), status: z.enum(["TRIAL", "ACTIVE"]).optional() })).mutation(({ input }) => billing.createManualSubscription({ ...input, startsAt: new Date(input.startsAt), currentPeriodStart: new Date(input.currentPeriodStart), currentPeriodEnd: new Date(input.currentPeriodEnd), trialEndsAt: asDate(input.trialEndsAt), gracePeriodEndsAt: asDate(input.gracePeriodEndsAt), status: input.status })),
         renew: platformProcedure.input(z.object({ companyId: z.number().int().positive(), days: z.number().int().positive().max(3660) })).mutation(({ input, ctx }) => billing.renewSubscription(input.companyId, input.days, ctx.user.email || "PLATFORM_ADMIN")),

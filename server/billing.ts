@@ -4,6 +4,18 @@ import { payments, plans, subscriptionEvents, subscriptions, type Plan, type Sub
 
 export type BillingStatus = "UNCONFIGURED" | "TRIAL" | "ACTIVE" | "PAST_DUE" | "GRACE_PERIOD" | "SUSPENDED" | "CANCELED" | "EXPIRED";
 
+export const BILLING_FEATURES = [
+  { key: "dashboard", label: "Painel e indicadores" },
+  { key: "clients", label: "Cadastro de clientes" },
+  { key: "extinguishers", label: "Cadastro de extintores" },
+  { key: "orders", label: "Ordens de serviço" },
+  { key: "alerts", label: "Alertas de vencimento" },
+  { key: "reports", label: "Relatórios e impressão" },
+  { key: "team", label: "Gestão de usuários" },
+  { key: "backup", label: "Backup e restauração" },
+  { key: "offline", label: "Operação offline/PWA" },
+] as const;
+
 export type SubscriptionAccess = {
   configured: boolean;
   allowed: boolean;
@@ -74,6 +86,33 @@ export async function listPayments(companyId: number) {
   const database = await getDb();
   if (!database) return [];
   return database.select().from(payments).where(eq(payments.companyId, companyId)).orderBy(desc(payments.createdAt));
+}
+
+export function parsePlanFeatures(features: string | null | undefined): string[] {
+  if (!features) return [];
+  try {
+    const parsed = JSON.parse(features);
+    if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === "string");
+  } catch { /* compatibilidade com planos antigos em CSV */ }
+  return features.split(",").map(item => item.trim()).filter(Boolean);
+}
+
+export async function getCompanyEntitlements(companyId: number) {
+  const access = await getSubscriptionAccess(companyId);
+  return {
+    ...access,
+    features: parsePlanFeatures(access.plan?.features),
+    limits: {
+      maxUsers: access.plan?.maxUsers ?? null,
+      maxClients: access.plan?.maxClients ?? null,
+      maxExtinguishers: access.plan?.maxExtinguishers ?? null,
+    },
+  };
+}
+
+export async function companyHasFeature(companyId: number, feature: string) {
+  const entitlements = await getCompanyEntitlements(companyId);
+  return !entitlements.configured || entitlements.features.includes(feature);
 }
 
 export async function listSubscriptionEvents(companyId: number, subscriptionId: number) {
