@@ -28,6 +28,13 @@ export type SubscriptionAccess = {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const toDays = (date: Date, now = new Date()) => Math.ceil((date.getTime() - now.getTime()) / DAY_MS);
+const LEGACY_UNLIMITED_LIMIT = 999999;
+
+export function normalizePlanLimit(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || value === 0 || value >= LEGACY_UNLIMITED_LIMIT) return null;
+  if (!Number.isInteger(value) || value < 1) throw new Error("Os limites do plano devem ser inteiros positivos ou ilimitados.");
+  return value;
+}
 
 export function resolveSubscriptionAccess(subscription: Subscription | null, plan: Plan | null, now = new Date()): SubscriptionAccess {
   if (!subscription) return { configured: false, allowed: true, status: "UNCONFIGURED", subscription: null, plan: null, daysRemaining: null, reason: "NO_SUBSCRIPTION" };
@@ -124,14 +131,14 @@ export async function listSubscriptionEvents(companyId: number, subscriptionId: 
 export async function createPlan(input: { name: string; description?: string; price: string; billingInterval: "MONTHLY" | "YEARLY"; maxUsers?: number | null; maxClients?: number | null; maxExtinguishers?: number | null; features?: string; active?: boolean }) {
   const database = await getDb();
   if (!database) throw new Error("Database not connected");
-  const result = await database.insert(plans).values({ ...input, description: input.description || null, features: input.features || null, active: input.active ?? true });
+  const result = await database.insert(plans).values({ ...input, maxUsers: normalizePlanLimit(input.maxUsers), maxClients: normalizePlanLimit(input.maxClients), maxExtinguishers: normalizePlanLimit(input.maxExtinguishers), description: input.description || null, features: input.features || null, active: input.active ?? true });
   return Number(result[0].insertId);
 }
 
 export async function updatePlan(id: number, input: Partial<{ name: string; description: string | null; price: string; billingInterval: "MONTHLY" | "YEARLY"; maxUsers: number | null; maxClients: number | null; maxExtinguishers: number | null; features: string | null; active: boolean }>) {
   const database = await getDb();
   if (!database) throw new Error("Database not connected");
-  await database.update(plans).set(input).where(eq(plans.id, id));
+  await database.update(plans).set({ ...input, ...(input.maxUsers !== undefined ? { maxUsers: normalizePlanLimit(input.maxUsers) } : {}), ...(input.maxClients !== undefined ? { maxClients: normalizePlanLimit(input.maxClients) } : {}), ...(input.maxExtinguishers !== undefined ? { maxExtinguishers: normalizePlanLimit(input.maxExtinguishers) } : {}) }).where(eq(plans.id, id));
 }
 
 async function recordEvent(companyId: number, subscriptionId: number, eventType: string, source: string, referenceId?: string, payload?: unknown) {

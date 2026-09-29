@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSubscriptionAccess } from "./billing";
+import { normalizePlanLimit, resolveSubscriptionAccess } from "./billing";
 
 const plan = { id: 1, name: "Essencial" } as any;
 const baseSubscription = (overrides: Record<string, unknown> = {}) => ({
@@ -24,5 +24,19 @@ describe("subscription access rules", () => {
     expect(resolveSubscriptionAccess(baseSubscription({ currentPeriodEnd: new Date("2026-01-10T00:00:00Z") }), plan, now).allowed).toBe(false);
     expect(resolveSubscriptionAccess(baseSubscription({ status: "SUSPENDED" }), plan, now).allowed).toBe(false);
     expect(resolveSubscriptionAccess(baseSubscription({ status: "CANCELED" }), plan, now).allowed).toBe(false);
+  });
+});
+
+describe("plan limits", () => {
+  it("uses NULL for unlimited limits, including legacy sentinel values", () => {
+    expect(normalizePlanLimit(null)).toBeNull();
+    expect(normalizePlanLimit(0)).toBeNull();
+    expect(normalizePlanLimit(999999)).toBeNull();
+    expect(normalizePlanLimit(25)).toBe(25);
+  });
+
+  it("rejects invalid negative or fractional limits", () => {
+    expect(() => normalizePlanLimit(-1)).toThrow();
+    expect(() => normalizePlanLimit(1.5)).toThrow();
   });
 });
