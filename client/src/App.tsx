@@ -10,6 +10,8 @@ import LoginPage from "./pages/LoginPage";
 import AdminUsersPage from "./pages/AdminUsersPage";
 import BackupPage from "./pages/BackupPage";
 import SyncStatusPage from "./pages/SyncStatusPage";
+import SubscriptionPage from "./pages/SubscriptionPage";
+import AdminSubscriptionsPage from "./pages/AdminSubscriptionsPage";
 import { PwaStatusBar } from "./components/PwaStatusBar";
 import { useAuth } from "./_core/hooks/useAuth";
 import { Loader2 } from "lucide-react";
@@ -43,8 +45,10 @@ function Router() {
       <Route path="/login" component={LoginPage} />
       <Route path="/"><RootRoute /></Route>
       <Route path="/admin/usuarios"><AdminProtected><AdminUsersPage /></AdminProtected></Route>
+      <Route path="/admin/assinaturas"><AdminProtected><AdminSubscriptionsPage /></AdminProtected></Route>
       <Route path="/backup"><CommercialProtected><BackupPage /></CommercialProtected></Route>
       <Route path="/sync-status"><CommercialProtected><SyncStatusPage /></CommercialProtected></Route>
+      <Route path="/assinatura"><CommercialProtected><SubscriptionPage /></CommercialProtected></Route>
       <Route path="/os/:id"><CommercialProtected><PrintOrderPage /></CommercialProtected></Route>
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />

@@ -1,4 +1,7 @@
 import mysql from "mysql2/promise";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const sourceUrl = process.env.EXTERNAL_DATABASE_URL ?? process.env.DATABASE_URL;
 const targetUrl = process.env.TEST_DATABASE_URL;
@@ -31,6 +34,12 @@ try {
   for (const table of definitions) {
     await targetConnection.query(`CREATE TABLE IF NOT EXISTS ${quote(table.name)} ${table.sql.slice(table.sql.indexOf("("))}`);
     if (existing.length) await targetConnection.query(`TRUNCATE TABLE ${quote(table.name)}`);
+  }
+  const [billingTables] = await targetConnection.query("SHOW TABLES LIKE 'plans'");
+  if (!billingTables.length) {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const migration = await readFile(resolve(here, "../drizzle/0007_wet_hammerhead.sql"), "utf8");
+    for (const statement of migration.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) await targetConnection.query(statement);
   }
   const now = new Date();
   const date = (days) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);

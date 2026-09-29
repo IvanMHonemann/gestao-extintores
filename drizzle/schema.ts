@@ -216,3 +216,93 @@ export const systemSettings = mysqlTable("system_settings", {
   accountKeyUnique: uniqueIndex("system_settings_account_key_unique").on(table.accountId, table.settingKey),
   accountIdx: index("system_settings_account_idx").on(table.accountId),
 }));
+
+export type SystemSetting = typeof systemSettings.$inferSelect;
+export type InsertSystemSetting = typeof systemSettings.$inferInsert;
+
+export const plans = mysqlTable("plans", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 120 }).notNull(),
+  description: text("description"),
+  price: decimal("price", { precision: 10, scale: 2 }).default("0.00").notNull(),
+  billingInterval: mysqlEnum("billingInterval", ["MONTHLY", "YEARLY"]).default("MONTHLY").notNull(),
+  maxUsers: int("maxUsers"),
+  maxClients: int("maxClients"),
+  maxExtinguishers: int("maxExtinguishers"),
+  features: text("features"),
+  active: boolean("active").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({ activeIdx: index("plans_active_idx").on(table.active) }));
+
+export type Plan = typeof plans.$inferSelect;
+export type InsertPlan = typeof plans.$inferInsert;
+
+export const subscriptions = mysqlTable("subscriptions", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull().references(() => companies.id, { onDelete: "restrict" }),
+  planId: int("planId").notNull().references(() => plans.id, { onDelete: "restrict" }),
+  status: mysqlEnum("status", ["TRIAL", "ACTIVE", "PAST_DUE", "GRACE_PERIOD", "SUSPENDED", "CANCELED", "EXPIRED"]).default("TRIAL").notNull(),
+  startsAt: timestamp("startsAt").notNull(),
+  currentPeriodStart: timestamp("currentPeriodStart").notNull(),
+  currentPeriodEnd: timestamp("currentPeriodEnd").notNull(),
+  trialEndsAt: timestamp("trialEndsAt"),
+  gracePeriodEndsAt: timestamp("gracePeriodEndsAt"),
+  autoRenew: boolean("autoRenew").default(false).notNull(),
+  provider: varchar("provider", { length: 80 }),
+  providerSubscriptionId: varchar("providerSubscriptionId", { length: 255 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  companyIdx: index("subscriptions_company_idx").on(table.companyId),
+  statusIdx: index("subscriptions_status_idx").on(table.status),
+  periodEndIdx: index("subscriptions_period_end_idx").on(table.currentPeriodEnd),
+  providerIdx: index("subscriptions_provider_idx").on(table.provider, table.providerSubscriptionId),
+}));
+
+export type Subscription = typeof subscriptions.$inferSelect;
+export type InsertSubscription = typeof subscriptions.$inferInsert;
+
+export const payments = mysqlTable("payments", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull().references(() => companies.id, { onDelete: "restrict" }),
+  subscriptionId: int("subscriptionId").notNull().references(() => subscriptions.id, { onDelete: "restrict" }),
+  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  status: mysqlEnum("status", ["PENDING", "PAID", "FAILED", "CANCELED", "REFUNDED", "OVERDUE"]).default("PENDING").notNull(),
+  paymentMethod: varchar("paymentMethod", { length: 80 }),
+  dueAt: timestamp("dueAt"),
+  paidAt: timestamp("paidAt"),
+  periodStart: timestamp("periodStart"),
+  periodEnd: timestamp("periodEnd"),
+  provider: varchar("provider", { length: 80 }),
+  providerPaymentId: varchar("providerPaymentId", { length: 255 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  companyIdx: index("payments_company_idx").on(table.companyId),
+  subscriptionIdx: index("payments_subscription_idx").on(table.subscriptionId),
+  statusIdx: index("payments_status_idx").on(table.status),
+  providerIdx: index("payments_provider_idx").on(table.provider, table.providerPaymentId),
+}));
+
+export type Payment = typeof payments.$inferSelect;
+export type InsertPayment = typeof payments.$inferInsert;
+
+export const subscriptionEvents = mysqlTable("subscription_events", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull().references(() => companies.id, { onDelete: "restrict" }),
+  subscriptionId: int("subscriptionId").notNull().references(() => subscriptions.id, { onDelete: "restrict" }),
+  eventType: varchar("eventType", { length: 80 }).notNull(),
+  source: varchar("source", { length: 80 }).notNull(),
+  referenceId: varchar("referenceId", { length: 255 }),
+  payload: text("payload"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({
+  companyIdx: index("subscription_events_company_idx").on(table.companyId),
+  subscriptionIdx: index("subscription_events_subscription_idx").on(table.subscriptionId),
+  referenceUnique: uniqueIndex("subscription_events_reference_unique").on(table.source, table.referenceId),
+  createdIdx: index("subscription_events_created_idx").on(table.createdAt),
+}));
+
+export type SubscriptionEvent = typeof subscriptionEvents.$inferSelect;
+export type InsertSubscriptionEvent = typeof subscriptionEvents.$inferInsert;
