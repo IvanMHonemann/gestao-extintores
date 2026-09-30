@@ -1,4 +1,4 @@
-import { boolean, date, decimal, index, int, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
+import { boolean, date, decimal, index, int, json, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
 /** Identidades OAuth do provedor; somente a identidade do proprietário pode ser platform_admin. */
 export const users = mysqlTable("users", {
@@ -229,7 +229,7 @@ export const plans = mysqlTable("plans", {
   maxUsers: int("maxUsers"),
   maxClients: int("maxClients"),
   maxExtinguishers: int("maxExtinguishers"),
-  features: text("features"),
+  features: json("features").$type<string[] | null>(),
   active: boolean("active").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -242,15 +242,15 @@ export const subscriptions = mysqlTable("subscriptions", {
   id: int("id").autoincrement().primaryKey(),
   companyId: int("companyId").notNull().references(() => companies.id, { onDelete: "restrict" }),
   planId: int("planId").notNull().references(() => plans.id, { onDelete: "restrict" }),
-  status: mysqlEnum("status", ["TRIAL", "ACTIVE", "PAST_DUE", "GRACE_PERIOD", "SUSPENDED", "CANCELED", "EXPIRED"]).default("TRIAL").notNull(),
+  status: mysqlEnum("status", ["TRIAL", "ACTIVE", "PAST_DUE", "GRACE_PERIOD", "SUSPENDED", "CANCELED", "EXPIRED"]).default("ACTIVE").notNull(),
   startsAt: timestamp("startsAt").notNull(),
   currentPeriodStart: timestamp("currentPeriodStart").notNull(),
   currentPeriodEnd: timestamp("currentPeriodEnd").notNull(),
   trialEndsAt: timestamp("trialEndsAt"),
   gracePeriodEndsAt: timestamp("gracePeriodEndsAt"),
-  autoRenew: boolean("autoRenew").default(false).notNull(),
-  provider: varchar("provider", { length: 80 }),
-  providerSubscriptionId: varchar("providerSubscriptionId", { length: 255 }),
+  autoRenew: boolean("autoRenew").default(true).notNull(),
+  provider: varchar("provider", { length: 40 }).default("manual").notNull(),
+  providerSubscriptionId: varchar("providerSubscriptionId", { length: 120 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (table) => ({
@@ -293,14 +293,14 @@ export const subscriptionEvents = mysqlTable("subscription_events", {
   companyId: int("companyId").notNull().references(() => companies.id, { onDelete: "restrict" }),
   subscriptionId: int("subscriptionId").notNull().references(() => subscriptions.id, { onDelete: "restrict" }),
   eventType: varchar("eventType", { length: 80 }).notNull(),
-  source: varchar("source", { length: 80 }).notNull(),
-  referenceId: varchar("referenceId", { length: 255 }),
-  payload: text("payload"),
+  source: mysqlEnum("source", ["MANUAL", "SYSTEM", "GATEWAY"]).default("MANUAL").notNull(),
+  referenceId: varchar("referenceId", { length: 120 }),
+  payload: json("payload").$type<Record<string, unknown> | null>(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => ({
   companyIdx: index("subscription_events_company_idx").on(table.companyId),
   subscriptionIdx: index("subscription_events_subscription_idx").on(table.subscriptionId),
-  referenceUnique: uniqueIndex("subscription_events_reference_unique").on(table.source, table.referenceId),
+  referenceUnique: uniqueIndex("subscription_events_reference_unique").on(table.referenceId),
   createdIdx: index("subscription_events_created_idx").on(table.createdAt),
 }));
 

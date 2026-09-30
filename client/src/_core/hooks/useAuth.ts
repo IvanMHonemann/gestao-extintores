@@ -33,10 +33,12 @@ export function useAuth(options?: UseAuthOptions) {
     const handleOnline = () => {
       setCachedUser(readCachedUser());
       setIsOffline(false);
+      window.dispatchEvent(new Event("gestao-extintores:network-online"));
     };
     const handleOffline = () => {
       setIsOffline(true);
       setCachedUser(readCachedUser());
+      window.dispatchEvent(new Event("gestao-extintores:network-offline"));
     };
     const handleAuthLogout = () => setCachedUser(null);
     window.addEventListener("online", handleOnline);
@@ -65,9 +67,9 @@ export function useAuth(options?: UseAuthOptions) {
     // uma falha de cookie, iframe ou rede não transforma o modo offline em
     // uma tela de login.
     const code = meQuery.error instanceof TRPCClientError ? meQuery.error.data?.code : undefined;
-    if (!isOffline && cachedUser && meQuery.error && code !== "UNAUTHORIZED") {
+    if (!isOffline && cachedUser && meQuery.error && !code) {
       setIsOffline(true);
-      window.dispatchEvent(new Event("offline"));
+      window.dispatchEvent(new Event("gestao-extintores:network-offline"));
     }
   }, [cachedUser, isOffline, meQuery.data, meQuery.error, meQuery.isFetched]);
 

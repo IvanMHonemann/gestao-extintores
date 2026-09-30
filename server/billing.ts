@@ -95,13 +95,15 @@ export async function listPayments(companyId: number) {
   return database.select().from(payments).where(eq(payments.companyId, companyId)).orderBy(desc(payments.createdAt));
 }
 
-export function parsePlanFeatures(features: string | null | undefined): string[] {
+export function parsePlanFeatures(features: unknown): string[] {
   if (!features) return [];
+  if (Array.isArray(features)) return features.filter((item): item is string => typeof item === "string");
+  if (typeof features === "object") return [];
   try {
-    const parsed = JSON.parse(features);
+    const parsed = JSON.parse(String(features));
     if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === "string");
   } catch { /* compatibilidade com planos antigos em CSV */ }
-  return features.split(",").map(item => item.trim()).filter(Boolean);
+  return String(features).split(",").map(item => item.trim()).filter(Boolean);
 }
 
 export async function getCompanyEntitlements(companyId: number) {
@@ -131,36 +133,55 @@ export async function listSubscriptionEvents(companyId: number, subscriptionId: 
 export async function createPlan(input: { name: string; description?: string; price: string; billingInterval: "MONTHLY" | "YEARLY"; maxUsers?: number | null; maxClients?: number | null; maxExtinguishers?: number | null; features?: string; active?: boolean }) {
   const database = await getDb();
   if (!database) throw new Error("Database not connected");
-  const result = await database.insert(plans).values({ ...input, maxUsers: normalizePlanLimit(input.maxUsers), maxClients: normalizePlanLimit(input.maxClients), maxExtinguishers: normalizePlanLimit(input.maxExtinguishers), description: input.description || null, features: input.features || null, active: input.active ?? true });
+  const result = await database.insert(plans).values({ name: input.name.trim(), price: input.price, billingInterval: input.billingInterval, maxUsers: normalizePlanLimit(input.maxUsers), maxClients: normalizePlanLimit(input.maxClients), maxExtinguishers: normalizePlanLimit(input.maxExtinguishers), description: input.description?.trim() || null, features: parsePlanFeatures(input.features), active: input.active ?? true });
   return Number(result[0].insertId);
 }
 
 export async function updatePlan(id: number, input: Partial<{ name: string; description: string | null; price: string; billingInterval: "MONTHLY" | "YEARLY"; maxUsers: number | null; maxClients: number | null; maxExtinguishers: number | null; features: string | null; active: boolean }>) {
   const database = await getDb();
   if (!database) throw new Error("Database not connected");
-  await database.update(plans).set({ ...input, ...(input.maxUsers !== undefined ? { maxUsers: normalizePlanLimit(input.maxUsers) } : {}), ...(input.maxClients !== undefined ? { maxClients: normalizePlanLimit(input.maxClients) } : {}), ...(input.maxExtinguishers !== undefined ? { maxExtinguishers: normalizePlanLimit(input.maxExtinguishers) } : {}) }).where(eq(plans.id, id));
+  const { features, ...rest } = input;
+  await database.update(plans).set({ ...rest, ...(input.name !== undefined ? { name: input.name.trim() } : {}), ...(input.description !== undefined ? { description: input.description?.trim() || null } : {}), ...(input.maxUsers !== undefined ? { maxUsers: normalizePlanLimit(input.maxUsers) } : {}), ...(input.maxClients !== undefined ? { maxClients: normalizePlanLimit(input.maxClients) } : {}), ...(input.maxExtinguishers !== undefined ? { maxExtinguishers: normalizePlanLimit(input.maxExtinguishers) } : {}), ...(features !== undefined ? { features: parsePlanFeatures(features) } : {}) }).where(eq(plans.id, id));
 }
 
-async function recordEvent(companyId: number, subscriptionId: number, eventType: string, source: string, referenceId?: string, payload?: unknown) {
-  const database = await getDb();
-  if (!database) throw new Error("Database not connected");
+type SubscriptionEventSource = "MANUAL" | "SYSTEM" | "GATEWAY";
+
+async function recordEventWithDatabase(database: any, companyId: number, subscriptionId: number, eventType: string, source: SubscriptionEventSource, referenceId?: string, payload?: unknown) {
   if (referenceId) {
-    const previous = await database.select().from(subscriptionEvents).where(and(eq(subscriptionEvents.source, source), eq(subscriptionEvents.referenceId, referenceId))).limit(1);
+    const previous = await database.select().from(subscriptionEvents).where(eq(subscriptionEvents.referenceId, referenceId)).limit(1);
     if (previous[0]) return { id: previous[0].id, duplicate: true };
   }
-  const result = await database.insert(subscriptionEvents).values({ companyId, subscriptionId, eventType, source, referenceId: referenceId || null, payload: payload === undefined ? null : JSON.stringify(payload) });
+  const result = await database.insert(subscriptionEvents).values({ companyId, subscriptionId, eventType, source, referenceId: referenceId || null, payload: payload === undefined ? null : payload as Record<string, unknown> });
   return { id: Number(result[0].insertId), duplicate: false };
+}
+
+async function recordEvent(companyId: number, subscriptionId: number, eventType: string, source: SubscriptionEventSource, referenceId?: string, payload?: unknown) {
+  const database = await getDb();
+  if (!database) throw new Error("Database not connected");
+  return recordEventWithDatabase(database, companyId, subscriptionId, eventType, source, referenceId, payload);
 }
 
 export async function createManualSubscription(input: { companyId: number; planId: number; startsAt: Date; currentPeriodStart: Date; currentPeriodEnd: Date; trialEndsAt?: Date | null; gracePeriodEndsAt?: Date | null; autoRenew?: boolean; status?: "TRIAL" | "ACTIVE" }) {
   const database = await getDb();
   if (!database) throw new Error("Database not connected");
   const existing = await getLatestSubscription(input.companyId);
-  if (existing && ["TRIAL", "ACTIVE", "PAST_DUE", "GRACE_PERIOD"].includes(existing.subscription.status)) throw new Error("A empresa já possui uma assinatura ativa ou em tolerância.");
-  const result = await database.insert(subscriptions).values({ ...input, status: input.status || "ACTIVE", autoRenew: input.autoRenew ?? false });
-  const id = Number(result[0].insertId);
-  await recordEvent(input.companyId, id, "SUBSCRIPTION_CREATED", "PLATFORM_ADMIN", undefined, input);
-  return id;
+  if (input.currentPeriodEnd.getTime() < input.currentPeriodStart.getTime()) throw new Error("O vencimento deve ser posterior ao início do período.");
+  if (existing) throw new Error("A empresa já possui uma assinatura. Use Editar na assinatura existente para alterar plano ou datas.");
+  return database.transaction(async (transaction: any) => {
+    const result = await transaction.insert(subscriptions).values({ ...input, status: input.status || "ACTIVE", autoRenew: input.autoRenew ?? false });
+    const id = Number(result[0].insertId);
+    await recordEventWithDatabase(transaction, input.companyId, id, "SUBSCRIPTION_CREATED", "MANUAL", undefined, input);
+    return id;
+  });
+}
+
+export async function updateManualSubscription(input: { subscriptionId: number; companyId: number; planId: number; startsAt: Date; currentPeriodStart: Date; currentPeriodEnd: Date; trialEndsAt?: Date | null; gracePeriodEndsAt?: Date | null; autoRenew?: boolean; status?: "TRIAL" | "ACTIVE" }) {
+  const database = await getDb();
+  if (!database) throw new Error("Database not connected");
+  const current = await database.select().from(subscriptions).where(and(eq(subscriptions.id, input.subscriptionId), eq(subscriptions.companyId, input.companyId))).limit(1);
+  if (!current[0]) throw new Error("Assinatura não encontrada para esta empresa.");
+  await database.update(subscriptions).set({ planId: input.planId, startsAt: input.startsAt, currentPeriodStart: input.currentPeriodStart, currentPeriodEnd: input.currentPeriodEnd, trialEndsAt: input.trialEndsAt ?? null, gracePeriodEndsAt: input.gracePeriodEndsAt ?? null, autoRenew: input.autoRenew ?? false, status: input.status || "ACTIVE" }).where(and(eq(subscriptions.id, input.subscriptionId), eq(subscriptions.companyId, input.companyId)));
+  await recordEvent(input.companyId, input.subscriptionId, "SUBSCRIPTION_UPDATED", "MANUAL", undefined, { previous: current[0], next: input });
 }
 
 function addPeriod(start: Date, days?: number, months?: number) {
@@ -179,7 +200,7 @@ export async function renewSubscription(companyId: number, days: number, execute
   const base = new Date(current.subscription.currentPeriodEnd).getTime() > now.getTime() ? new Date(current.subscription.currentPeriodEnd) : now;
   const end = addPeriod(base, days);
   await database.update(subscriptions).set({ currentPeriodEnd: end, status: "ACTIVE", gracePeriodEndsAt: null }).where(eq(subscriptions.id, current.subscription.id));
-  await recordEvent(companyId, current.subscription.id, "SUBSCRIPTION_RENEWED", executedBy, undefined, { previousEnd: current.subscription.currentPeriodEnd, newEnd: end, days });
+  await recordEvent(companyId, current.subscription.id, "SUBSCRIPTION_RENEWED", "MANUAL", undefined, { executedBy, previousEnd: current.subscription.currentPeriodEnd, newEnd: end, days });
   return end;
 }
 
@@ -189,7 +210,7 @@ export async function setSubscriptionStatus(companyId: number, status: "ACTIVE" 
   const current = await getLatestSubscription(companyId);
   if (!current) throw new Error("A empresa ainda não possui assinatura.");
   await database.update(subscriptions).set({ status }).where(eq(subscriptions.id, current.subscription.id));
-  await recordEvent(companyId, current.subscription.id, `SUBSCRIPTION_${status}`, executedBy, undefined, { previousStatus: current.subscription.status, status });
+  await recordEvent(companyId, current.subscription.id, `SUBSCRIPTION_${status}`, "MANUAL", undefined, { executedBy, previousStatus: current.subscription.status, status });
 }
 
 export async function changeSubscriptionPlan(companyId: number, planId: number, executedBy = "PLATFORM_ADMIN") {
@@ -198,18 +219,18 @@ export async function changeSubscriptionPlan(companyId: number, planId: number, 
   const current = await getLatestSubscription(companyId);
   if (!current) throw new Error("A empresa ainda não possui assinatura.");
   await database.update(subscriptions).set({ planId }).where(eq(subscriptions.id, current.subscription.id));
-  await recordEvent(companyId, current.subscription.id, "PLAN_CHANGED", executedBy, undefined, { previousPlanId: current.subscription.planId, planId });
+  await recordEvent(companyId, current.subscription.id, "PLAN_CHANGED", "MANUAL", undefined, { executedBy, previousPlanId: current.subscription.planId, planId });
 }
 
 export async function createPayment(input: { companyId: number; subscriptionId: number; amount: string; status?: "PENDING" | "PAID" | "FAILED" | "CANCELED" | "REFUNDED" | "OVERDUE"; paymentMethod?: string; dueAt?: Date | null; paidAt?: Date | null; periodStart?: Date | null; periodEnd?: Date | null; provider?: string | null; providerPaymentId?: string | null }, referenceId?: string) {
   const database = await getDb();
   if (!database) throw new Error("Database not connected");
   if (referenceId) {
-    const duplicate = await database.select().from(subscriptionEvents).where(and(eq(subscriptionEvents.source, "PAYMENT"), eq(subscriptionEvents.referenceId, referenceId))).limit(1);
+    const duplicate = await database.select().from(subscriptionEvents).where(eq(subscriptionEvents.referenceId, referenceId)).limit(1);
     if (duplicate[0]) return { id: duplicate[0].id, duplicate: true };
   }
   const result = await database.insert(payments).values({ ...input, status: input.status || "PENDING", paymentMethod: input.paymentMethod || null, provider: input.provider || null, providerPaymentId: input.providerPaymentId || null });
-  await recordEvent(input.companyId, input.subscriptionId, input.status === "PAID" ? "PAYMENT_RECEIVED" : "PAYMENT_CREATED", "PAYMENT", referenceId, input);
+  await recordEvent(input.companyId, input.subscriptionId, input.status === "PAID" ? "PAYMENT_RECEIVED" : "PAYMENT_CREATED", input.provider ? "GATEWAY" : "MANUAL", referenceId, input);
   return { id: Number(result[0].insertId), duplicate: false };
 }
 

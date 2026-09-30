@@ -5,11 +5,38 @@ import { offlineDb, pruneOfflineMutations, saveOnlineSnapshot, type LocalOrderRo
 export function useOnlineStatus() {
   const [isOnline, setIsOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   useEffect(() => {
-    const online = () => setIsOnline(true);
+    let disposed = false;
+    let checking = false;
+    const checkConnection = async () => {
+      if (checking || disposed) return;
+      if (!navigator.onLine) { setIsOnline(false); return; }
+      checking = true;
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 5000);
+      try {
+        const input = encodeURIComponent(JSON.stringify({ json: { timestamp: Date.now() } }));
+        const response = await fetch(`/api/trpc/system.health?input=${input}`, { cache: "no-store", credentials: "include", signal: controller.signal });
+        if (!disposed) setIsOnline(response.ok);
+      } catch {
+        if (!disposed) setIsOnline(false);
+      } finally {
+        window.clearTimeout(timeout);
+        checking = false;
+      }
+    };
+    const online = () => { setIsOnline(true); void checkConnection(); };
     const offline = () => setIsOnline(false);
+    const customOnline = () => { setIsOnline(true); void checkConnection(); };
+    const customOffline = () => setIsOnline(false);
     window.addEventListener("online", online);
     window.addEventListener("offline", offline);
-    return () => { window.removeEventListener("online", online); window.removeEventListener("offline", offline); };
+    window.addEventListener("gestao-extintores:network-online", customOnline);
+    window.addEventListener("gestao-extintores:network-offline", customOffline);
+    window.addEventListener("focus", checkConnection);
+    document.addEventListener("visibilitychange", checkConnection);
+    const interval = window.setInterval(checkConnection, 30000);
+    void checkConnection();
+    return () => { disposed = true; window.clearInterval(interval); window.removeEventListener("online", online); window.removeEventListener("offline", offline); window.removeEventListener("gestao-extintores:network-online", customOnline); window.removeEventListener("gestao-extintores:network-offline", customOffline); window.removeEventListener("focus", checkConnection); document.removeEventListener("visibilitychange", checkConnection); };
   }, []);
   return isOnline;
 }

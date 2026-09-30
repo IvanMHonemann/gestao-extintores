@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizePlanLimit, resolveSubscriptionAccess } from "./billing";
+import { normalizePlanLimit, parsePlanFeatures, resolveSubscriptionAccess } from "./billing";
 
 const plan = { id: 1, name: "Essencial" } as any;
 const baseSubscription = (overrides: Record<string, unknown> = {}) => ({
@@ -38,5 +38,14 @@ describe("plan limits", () => {
   it("rejects invalid negative or fractional limits", () => {
     expect(() => normalizePlanLimit(-1)).toThrow();
     expect(() => normalizePlanLimit(1.5)).toThrow();
+  });
+});
+
+describe("plan features", () => {
+  it("accepts JSON arrays returned by TiDB and legacy JSON strings", () => {
+    expect(parsePlanFeatures(["dashboard", "clients"])).toEqual(["dashboard", "clients"]);
+    expect(parsePlanFeatures('["orders","alerts"]')).toEqual(["orders", "alerts"]);
+    expect(parsePlanFeatures("dashboard,clients")).toEqual(["dashboard", "clients"]);
+    expect(parsePlanFeatures({})).toEqual([]);
   });
 });

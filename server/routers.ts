@@ -13,7 +13,13 @@ const emptyToNull = (value?: string) => value?.trim() || null;
 const companyUserRole = z.enum(["company_admin", "operator", "technician"]);
 const billingStatus = z.enum(["ACTIVE", "SUSPENDED", "CANCELED"]);
 const paymentStatus = z.enum(["PENDING", "PAID", "FAILED", "CANCELED", "REFUNDED", "OVERDUE"]);
-const asDate = (value?: string | null) => value ? new Date(value) : null;
+const asDate = (value?: string | null) => {
+  if (!value) return null;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) throw new TRPCError({ code: "BAD_REQUEST", message: "Data inválida." });
+  return parsed;
+};
+const requiredDate = (value: string) => asDate(value) ?? (() => { throw new TRPCError({ code: "BAD_REQUEST", message: "Data obrigatória." }); })();
 
 const clientInput = z.object({
   companyName: z.string().min(1, "Nome da empresa é obrigatório"),
@@ -134,7 +140,8 @@ export const appRouter = router({
         list: platformProcedure.query(() => billing.listSubscriptions()),
         entitlements: platformProcedure.input(z.object({ companyId: z.number().int().positive() })).query(({ input }) => billing.getCompanyEntitlements(input.companyId)),
         access: platformProcedure.input(z.object({ companyId: z.number().int().positive() })).query(({ input }) => billing.getSubscriptionAccess(input.companyId)),
-        create: platformProcedure.input(z.object({ companyId: z.number().int().positive(), planId: z.number().int().positive(), startsAt: z.string(), currentPeriodStart: z.string(), currentPeriodEnd: z.string(), trialEndsAt: z.string().nullable().optional(), gracePeriodEndsAt: z.string().nullable().optional(), autoRenew: z.boolean().optional(), status: z.enum(["TRIAL", "ACTIVE"]).optional() })).mutation(({ input }) => billing.createManualSubscription({ ...input, startsAt: new Date(input.startsAt), currentPeriodStart: new Date(input.currentPeriodStart), currentPeriodEnd: new Date(input.currentPeriodEnd), trialEndsAt: asDate(input.trialEndsAt), gracePeriodEndsAt: asDate(input.gracePeriodEndsAt), status: input.status })),
+        create: platformProcedure.input(z.object({ companyId: z.number().int().positive(), planId: z.number().int().positive(), startsAt: z.string().min(1), currentPeriodStart: z.string().min(1), currentPeriodEnd: z.string().min(1), trialEndsAt: z.string().nullable().optional(), gracePeriodEndsAt: z.string().nullable().optional(), autoRenew: z.boolean().optional(), status: z.enum(["TRIAL", "ACTIVE"]).optional() })).mutation(({ input }) => billing.createManualSubscription({ ...input, startsAt: requiredDate(input.startsAt), currentPeriodStart: requiredDate(input.currentPeriodStart), currentPeriodEnd: requiredDate(input.currentPeriodEnd), trialEndsAt: asDate(input.trialEndsAt), gracePeriodEndsAt: asDate(input.gracePeriodEndsAt), status: input.status })),
+        update: platformProcedure.input(z.object({ subscriptionId: z.number().int().positive(), companyId: z.number().int().positive(), planId: z.number().int().positive(), startsAt: z.string().min(1), currentPeriodStart: z.string().min(1), currentPeriodEnd: z.string().min(1), trialEndsAt: z.string().nullable().optional(), gracePeriodEndsAt: z.string().nullable().optional(), autoRenew: z.boolean().optional(), status: z.enum(["TRIAL", "ACTIVE"]).optional() })).mutation(({ input }) => billing.updateManualSubscription({ ...input, startsAt: requiredDate(input.startsAt), currentPeriodStart: requiredDate(input.currentPeriodStart), currentPeriodEnd: requiredDate(input.currentPeriodEnd), trialEndsAt: asDate(input.trialEndsAt), gracePeriodEndsAt: asDate(input.gracePeriodEndsAt), status: input.status })),
         renew: platformProcedure.input(z.object({ companyId: z.number().int().positive(), days: z.number().int().positive().max(3660) })).mutation(({ input, ctx }) => billing.renewSubscription(input.companyId, input.days, ctx.user.email || "PLATFORM_ADMIN")),
         setStatus: platformProcedure.input(z.object({ companyId: z.number().int().positive(), status: billingStatus })).mutation(({ input, ctx }) => billing.setSubscriptionStatus(input.companyId, input.status, ctx.user.email || "PLATFORM_ADMIN")),
         changePlan: platformProcedure.input(z.object({ companyId: z.number().int().positive(), planId: z.number().int().positive() })).mutation(({ input, ctx }) => billing.changeSubscriptionPlan(input.companyId, input.planId, ctx.user.email || "PLATFORM_ADMIN")),
