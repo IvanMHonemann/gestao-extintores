@@ -306,3 +306,53 @@ export const subscriptionEvents = mysqlTable("subscription_events", {
 
 export type SubscriptionEvent = typeof subscriptionEvents.$inferSelect;
 export type InsertSubscriptionEvent = typeof subscriptionEvents.$inferInsert;
+
+
+/** Arquitetura de planos do pacote ZIP, mantida em tabelas próprias durante a migração. */
+export const subscriptionPlans = mysqlTable("subscription_plans", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 120 }).notNull(),
+  description: text("description"),
+  price: decimal("price", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  billingCycle: mysqlEnum("billingCycle", ["monthly", "yearly"]).notNull().default("monthly"),
+  maxUsers: int("maxUsers"),
+  maxClients: int("maxClients"),
+  maxExtinguishers: int("maxExtinguishers"),
+  featureDashboard: boolean("featureDashboard").notNull().default(false),
+  featureClients: boolean("featureClients").notNull().default(false),
+  featureExtinguishers: boolean("featureExtinguishers").notNull().default(false),
+  featureServiceOrders: boolean("featureServiceOrders").notNull().default(false),
+  featureAlerts: boolean("featureAlerts").notNull().default(false),
+  featureReports: boolean("featureReports").notNull().default(false),
+  featureUsers: boolean("featureUsers").notNull().default(false),
+  featureBackup: boolean("featureBackup").notNull().default(false),
+  featureOfflinePwa: boolean("featureOfflinePwa").notNull().default(false),
+  availableForNew: boolean("availableForNew").notNull().default(true),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  nameIdx: index("subscription_plans_name_idx").on(table.name),
+  availableIdx: index("subscription_plans_available_idx").on(table.availableForNew, table.active),
+}));
+export type SubscriptionPlan = typeof subscriptionPlans.$inferSelect;
+export type InsertSubscriptionPlan = typeof subscriptionPlans.$inferInsert;
+
+export const companySubscriptions = mysqlTable("company_subscriptions", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  planId: int("planId").notNull().references(() => subscriptionPlans.id, { onDelete: "restrict" }),
+  status: mysqlEnum("status", ["active", "test", "suspended", "expired"]).notNull().default("active"),
+  startsAt: date("startsAt").notNull(),
+  endsAt: date("endsAt"),
+  notes: text("notes"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  companyIdx: index("company_subscriptions_company_idx").on(table.companyId),
+  planIdx: index("company_subscriptions_plan_idx").on(table.planId),
+  statusIdx: index("company_subscriptions_status_idx").on(table.status),
+  endsAtIdx: index("company_subscriptions_ends_at_idx").on(table.endsAt),
+}));
+export type CompanySubscription = typeof companySubscriptions.$inferSelect;
+export type InsertCompanySubscription = typeof companySubscriptions.$inferInsert;

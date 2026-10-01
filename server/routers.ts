@@ -4,22 +4,12 @@ import { parse as parseCookie } from "cookie";
 import { TRPCError } from "@trpc/server";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { adminProcedure, companyAdminProcedure, commercialProcedure, platformProcedure, publicProcedure, router, subscriptionProcedure } from "./_core/trpc";
+import { adminProcedure, companyAdminProcedure, commercialProcedure, platformProcedure, publicProcedure, router } from "./_core/trpc";
 import * as db from "./db";
 import * as memberAuth from "./memberAuth";
-import * as billing from "./billing";
 
 const emptyToNull = (value?: string) => value?.trim() || null;
 const companyUserRole = z.enum(["company_admin", "operator", "technician"]);
-const billingStatus = z.enum(["ACTIVE", "SUSPENDED", "CANCELED"]);
-const paymentStatus = z.enum(["PENDING", "PAID", "FAILED", "CANCELED", "REFUNDED", "OVERDUE"]);
-const asDate = (value?: string | null) => {
-  if (!value) return null;
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  if (Number.isNaN(parsed.getTime())) throw new TRPCError({ code: "BAD_REQUEST", message: "Data inválida." });
-  return parsed;
-};
-const requiredDate = (value: string) => asDate(value) ?? (() => { throw new TRPCError({ code: "BAD_REQUEST", message: "Data obrigatória." }); })();
 
 const clientInput = z.object({
   companyName: z.string().min(1, "Nome da empresa é obrigatório"),
@@ -80,6 +70,78 @@ export const appRouter = router({
   }),
 
   platform: router({
+    plans: router({
+      list: platformProcedure.query(() => db.listSubscriptionPlans()),
+      create: platformProcedure.input(z.object({
+        name: z.string().min(2),
+        description: z.string().optional().nullable(),
+        price: z.string().default("0.00"),
+        billingCycle: z.enum(["monthly", "yearly"]).default("monthly"),
+        maxUsers: z.number().int().positive().optional().nullable(),
+        maxClients: z.number().int().positive().optional().nullable(),
+        maxExtinguishers: z.number().int().positive().optional().nullable(),
+        featureDashboard: z.boolean().default(false),
+        featureClients: z.boolean().default(false),
+        featureExtinguishers: z.boolean().default(false),
+        featureServiceOrders: z.boolean().default(false),
+        featureAlerts: z.boolean().default(false),
+        featureReports: z.boolean().default(false),
+        featureUsers: z.boolean().default(false),
+        featureBackup: z.boolean().default(false),
+        featureOfflinePwa: z.boolean().default(false),
+        availableForNew: z.boolean().default(true),
+      })).mutation(({ input }) => db.createSubscriptionPlan(input)),
+      update: platformProcedure.input(z.object({
+        id: z.number().int().positive(),
+        name: z.string().min(2).optional(),
+        description: z.string().optional().nullable(),
+        price: z.string().optional(),
+        billingCycle: z.enum(["monthly", "yearly"]).optional(),
+        maxUsers: z.number().int().positive().optional().nullable(),
+        maxClients: z.number().int().positive().optional().nullable(),
+        maxExtinguishers: z.number().int().positive().optional().nullable(),
+        featureDashboard: z.boolean().optional(),
+        featureClients: z.boolean().optional(),
+        featureExtinguishers: z.boolean().optional(),
+        featureServiceOrders: z.boolean().optional(),
+        featureAlerts: z.boolean().optional(),
+        featureReports: z.boolean().optional(),
+        featureUsers: z.boolean().optional(),
+        featureBackup: z.boolean().optional(),
+        featureOfflinePwa: z.boolean().optional(),
+        availableForNew: z.boolean().optional(),
+        active: z.boolean().optional(),
+      })).mutation(async ({ input }) => {
+        const { id, ...data } = input;
+        return db.updateSubscriptionPlan(id, data);
+      }),
+    }),
+
+    subscriptions: router({
+      list: platformProcedure.query(() => db.listCompanySubscriptions()),
+      stats: platformProcedure.query(() => db.getSubscriptionStats()),
+      create: platformProcedure.input(z.object({
+        companyId: z.number().int().positive(),
+        planId: z.number().int().positive(),
+        status: z.enum(["active", "test", "suspended", "expired"]).default("active"),
+        startsAt: z.string().min(8),
+        endsAt: z.string().optional().nullable(),
+        notes: z.string().optional().nullable(),
+      })).mutation(({ input }) => db.createCompanySubscription(input)),
+      update: platformProcedure.input(z.object({
+        id: z.number().int().positive(),
+        planId: z.number().int().positive().optional(),
+        status: z.enum(["active", "test", "suspended", "expired"]).optional(),
+        startsAt: z.string().min(8).optional(),
+        endsAt: z.string().optional().nullable(),
+        notes: z.string().optional().nullable(),
+      })).mutation(async ({ input }) => {
+        const { id, ...data } = input;
+        return db.updateCompanySubscription(id, data);
+      }),
+    }),
+
+    /** Compatibilidade do painel administrativo: somente platform_admin acessa estas operações globais. */
     identity: platformProcedure.query(({ ctx }) => ({ id: ctx.platformAdminId ?? ctx.user.id, role: "platform_admin" as const, global: true })),
     companies: router({
       list: platformProcedure.query(() => db.listCompanies()),
@@ -129,35 +191,10 @@ export const appRouter = router({
         permanentlyDelete: platformProcedure.input(z.object({ companyId: z.number().int().positive(), id: z.number().int().positive() })).mutation(async ({ input }) => { await db.permanentlyDeleteTrashItem(input.id, input.companyId); return { success: true } as const; }),
       }),
     }),
-    billing: router({
-      features: platformProcedure.query(() => billing.BILLING_FEATURES),
-      plans: router({
-        list: platformProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input }) => billing.listPlans(input?.includeInactive ?? false)),
-        create: platformProcedure.input(z.object({ name: z.string().min(2), description: z.string().optional(), price: z.string(), billingInterval: z.enum(["MONTHLY", "YEARLY"]), maxUsers: z.number().int().positive().nullable().optional(), maxClients: z.number().int().positive().nullable().optional(), maxExtinguishers: z.number().int().positive().nullable().optional(), features: z.string().optional(), active: z.boolean().optional() })).mutation(({ input }) => billing.createPlan(input)),
-        update: platformProcedure.input(z.object({ id: z.number().int().positive(), name: z.string().min(2).optional(), description: z.string().nullable().optional(), price: z.string().optional(), billingInterval: z.enum(["MONTHLY", "YEARLY"]).optional(), maxUsers: z.number().int().positive().nullable().optional(), maxClients: z.number().int().positive().nullable().optional(), maxExtinguishers: z.number().int().positive().nullable().optional(), features: z.string().nullable().optional(), active: z.boolean().optional() })).mutation(async ({ input }) => { const { id, ...data } = input; await billing.updatePlan(id, data); return { success: true } as const; }),
-      }),
-      subscriptions: router({
-        list: platformProcedure.query(() => billing.listSubscriptions()),
-        entitlements: platformProcedure.input(z.object({ companyId: z.number().int().positive() })).query(({ input }) => billing.getCompanyEntitlements(input.companyId)),
-        access: platformProcedure.input(z.object({ companyId: z.number().int().positive() })).query(({ input }) => billing.getSubscriptionAccess(input.companyId)),
-        create: platformProcedure.input(z.object({ companyId: z.number().int().positive(), planId: z.number().int().positive(), startsAt: z.string().min(1), currentPeriodStart: z.string().min(1), currentPeriodEnd: z.string().min(1), trialEndsAt: z.string().nullable().optional(), gracePeriodEndsAt: z.string().nullable().optional(), autoRenew: z.boolean().optional(), status: z.enum(["TRIAL", "ACTIVE"]).optional() })).mutation(({ input }) => billing.createManualSubscription({ ...input, startsAt: requiredDate(input.startsAt), currentPeriodStart: requiredDate(input.currentPeriodStart), currentPeriodEnd: requiredDate(input.currentPeriodEnd), trialEndsAt: asDate(input.trialEndsAt), gracePeriodEndsAt: asDate(input.gracePeriodEndsAt), status: input.status })),
-        update: platformProcedure.input(z.object({ subscriptionId: z.number().int().positive(), companyId: z.number().int().positive(), planId: z.number().int().positive(), startsAt: z.string().min(1), currentPeriodStart: z.string().min(1), currentPeriodEnd: z.string().min(1), trialEndsAt: z.string().nullable().optional(), gracePeriodEndsAt: z.string().nullable().optional(), autoRenew: z.boolean().optional(), status: z.enum(["TRIAL", "ACTIVE"]).optional() })).mutation(({ input }) => billing.updateManualSubscription({ ...input, startsAt: requiredDate(input.startsAt), currentPeriodStart: requiredDate(input.currentPeriodStart), currentPeriodEnd: requiredDate(input.currentPeriodEnd), trialEndsAt: asDate(input.trialEndsAt), gracePeriodEndsAt: asDate(input.gracePeriodEndsAt), status: input.status })),
-        renew: platformProcedure.input(z.object({ companyId: z.number().int().positive(), days: z.number().int().positive().max(3660) })).mutation(({ input, ctx }) => billing.renewSubscription(input.companyId, input.days, ctx.user.email || "PLATFORM_ADMIN")),
-        setStatus: platformProcedure.input(z.object({ companyId: z.number().int().positive(), status: billingStatus })).mutation(({ input, ctx }) => billing.setSubscriptionStatus(input.companyId, input.status, ctx.user.email || "PLATFORM_ADMIN")),
-        changePlan: platformProcedure.input(z.object({ companyId: z.number().int().positive(), planId: z.number().int().positive() })).mutation(({ input, ctx }) => billing.changeSubscriptionPlan(input.companyId, input.planId, ctx.user.email || "PLATFORM_ADMIN")),
-        payments: platformProcedure.input(z.object({ companyId: z.number().int().positive() })).query(({ input }) => billing.listPayments(input.companyId)),
-        events: platformProcedure.input(z.object({ companyId: z.number().int().positive(), subscriptionId: z.number().int().positive() })).query(({ input }) => billing.listSubscriptionEvents(input.companyId, input.subscriptionId)),
-      }),
-    }),
   }),
 
-  subscription: router({
-    current: subscriptionProcedure.query(({ ctx }) => billing.getSubscriptionAccess(ctx.accountId)),
-    payments: subscriptionProcedure.query(({ ctx }) => billing.listPayments(ctx.accountId)),
-    events: subscriptionProcedure.query(async ({ ctx }) => { const current = await billing.getLatestSubscription(ctx.accountId); return current ? billing.listSubscriptionEvents(ctx.accountId, current.subscription.id) : []; }),
-  }),
 
-  /** Compatibilidade do painel administrativo: somente platform_admin acessa estas operações globais. */
+
   accounts: router({
     list: platformProcedure.query(() => memberAuth.listMemberAccounts()),
     create: platformProcedure.input(z.object({ companyName: z.string().min(2), userName: z.string().min(2), email: z.string().email(), password: z.string().min(8) })).mutation(async ({ input }) => memberAuth.createCompanyWithAdmin(input)),

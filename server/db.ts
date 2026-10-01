@@ -12,6 +12,10 @@ import {
   trashItems,
   systemSettings,
   users,
+  subscriptionPlans,
+  companySubscriptions,
+  type InsertSubscriptionPlan,
+  type InsertCompanySubscription,
   type InsertClient,
   type InsertExtinguisher,
   type InsertServiceOrder,
@@ -670,4 +674,120 @@ export async function getDashboardStats(accountId: number) {
   const nearExpirationCount = Number(nearRows[0]?.total || 0);
   const orders = await getServiceOrders(undefined, tenant);
   return { totalClients: allClients.length, totalCities: cityCount, totalExtinguishers, nearExpirationCount, expiredCount, totalOrders: orders.length, alertDaysConfig: daysAhead };
+}
+
+
+/* Assinaturas do pacote ZIP */
+export async function listSubscriptionPlans() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(subscriptionPlans).orderBy(subscriptionPlans.name);
+}
+
+export async function createSubscriptionPlan(input: InsertSubscriptionPlan) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const result = await db.insert(subscriptionPlans).values({
+    name: input.name.trim(),
+    description: input.description ?? null,
+    price: input.price ?? "0.00",
+    billingCycle: input.billingCycle ?? "monthly",
+    maxUsers: input.maxUsers ?? null,
+    maxClients: input.maxClients ?? null,
+    maxExtinguishers: input.maxExtinguishers ?? null,
+    featureDashboard: input.featureDashboard ?? false,
+    featureClients: input.featureClients ?? false,
+    featureExtinguishers: input.featureExtinguishers ?? false,
+    featureServiceOrders: input.featureServiceOrders ?? false,
+    featureAlerts: input.featureAlerts ?? false,
+    featureReports: input.featureReports ?? false,
+    featureUsers: input.featureUsers ?? false,
+    featureBackup: input.featureBackup ?? false,
+    featureOfflinePwa: input.featureOfflinePwa ?? false,
+    availableForNew: input.availableForNew ?? true,
+    active: input.active ?? true,
+  });
+  return { id: Number(result[0].insertId) };
+}
+
+export async function updateSubscriptionPlan(id: number, input: Partial<InsertSubscriptionPlan>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const values: Record<string, unknown> = { ...input };
+  if (input.name !== undefined) values.name = input.name.trim();
+  await db.update(subscriptionPlans).set(values as any).where(eq(subscriptionPlans.id, id));
+  return { success: true } as const;
+}
+
+export async function listCompanySubscriptions() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({
+    id: companySubscriptions.id,
+    companyId: companySubscriptions.companyId,
+    planId: companySubscriptions.planId,
+    status: companySubscriptions.status,
+    startsAt: companySubscriptions.startsAt,
+    endsAt: companySubscriptions.endsAt,
+    notes: companySubscriptions.notes,
+    createdAt: companySubscriptions.createdAt,
+    updatedAt: companySubscriptions.updatedAt,
+    companyName: companies.name,
+    planName: subscriptionPlans.name,
+    planPrice: subscriptionPlans.price,
+    billingCycle: subscriptionPlans.billingCycle,
+  })
+    .from(companySubscriptions)
+    .innerJoin(companies, eq(companySubscriptions.companyId, companies.id))
+    .innerJoin(subscriptionPlans, eq(companySubscriptions.planId, subscriptionPlans.id))
+    .orderBy(desc(companySubscriptions.createdAt));
+}
+
+export async function getSubscriptionStats() {
+  const rows = await listCompanySubscriptions();
+  const now = Date.now();
+  return {
+    registered: rows.length,
+    activeOrTest: rows.filter((subscription) => ["active", "test"].includes(subscription.status)).length,
+    suspended: rows.filter((subscription) => subscription.status === "suspended").length,
+    nearExpiry: rows.filter((subscription) => subscription.endsAt && new Date(`${subscription.endsAt}T23:59:59Z`).getTime() - now <= 7 * 86400000 && new Date(`${subscription.endsAt}T23:59:59Z`).getTime() >= now).length,
+  };
+}
+
+type CompanySubscriptionInput = Omit<InsertCompanySubscription, "startsAt" | "endsAt"> & { startsAt: string | Date; endsAt?: string | Date | null };
+
+function dateOnly(value: string | Date | null | undefined): Date | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) throw new Error("Data inválida.");
+  return date;
+}
+
+export async function createCompanySubscription(input: CompanySubscriptionInput) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const startsAt = dateOnly(input.startsAt);
+  if (!startsAt) throw new Error("Data inicial obrigatória.");
+  const endsAt = dateOnly(input.endsAt);
+  if (endsAt && endsAt.getTime() < startsAt.getTime()) throw new Error("O vencimento deve ser posterior ao início.");
+  const result = await db.insert(companySubscriptions).values({
+    companyId: input.companyId,
+    planId: input.planId,
+    status: input.status ?? "active",
+    startsAt,
+    endsAt,
+    notes: input.notes ?? null,
+  });
+  return { id: Number(result[0].insertId) };
+}
+
+export async function updateCompanySubscription(id: number, input: Partial<CompanySubscriptionInput>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const values: Record<string, unknown> = { ...input };
+  if (input.startsAt !== undefined) values.startsAt = dateOnly(input.startsAt);
+  if (input.endsAt !== undefined) values.endsAt = dateOnly(input.endsAt);
+  if (values.startsAt instanceof Date && values.endsAt instanceof Date && values.endsAt.getTime() < values.startsAt.getTime()) throw new Error("O vencimento deve ser posterior ao início.");
+  await db.update(companySubscriptions).set(values as any).where(eq(companySubscriptions.id, id));
+  return { success: true } as const;
 }

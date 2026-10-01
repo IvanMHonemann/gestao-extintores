@@ -1,5 +1,5 @@
 import "dotenv/config";
-import express from "express";
+import express, { type Express } from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
@@ -29,12 +29,18 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
-async function startServer() {
+/** Build the Express app (shared by local server and Vercel serverless). */
+export async function createApp(): Promise<Express> {
   const app = express();
-  const server = createServer(app);
-  // Configure body parser with larger size limit for file uploads
+  // Required behind reverse proxies so req.protocol and secure cookies work on HTTPS.
+  app.set("trust proxy", 1);
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+  app.get("/healthz", (_req, res) => {
+    res.status(200).json({ ok: true });
+  });
+
   app.post("/api/scheduled/database-maintenance", async (req, res) => {
     try {
       const configuredSecret = process.env.SCHEDULE_SECRET;
@@ -50,7 +56,7 @@ async function startServer() {
       return res.status(500).json({ error: "Scheduled maintenance failed" });
     }
   });
-  // tRPC API
+
   app.use(
     "/api/trpc",
     createExpressMiddleware({
@@ -58,9 +64,18 @@ async function startServer() {
       createContext,
     })
   );
-  // A prévia deve usar o bundle estático validado. Isso evita que o Vite de
-  // desenvolvimento injete HMR/proxies no navegador móvel. Para trabalhar
-  // explicitamente com Vite, defina VITE_DEV_SERVER=true.
+
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ error: "Not found" });
+  });
+
+  return app;
+}
+
+async function startServer() {
+  const app = await createApp();
+  const server = createServer(app);
+
   if (process.env.NODE_ENV === "development" && process.env.VITE_DEV_SERVER === "true") {
     await setupVite(app, server);
   } else {
@@ -79,4 +94,8 @@ async function startServer() {
   });
 }
 
-startServer().catch(console.error);
+// Local / Docker: start HTTP server. Vercel imports createApp() instead.
+const isVercel = Boolean(process.env.VERCEL);
+if (!isVercel) {
+  startServer().catch(console.error);
+}
