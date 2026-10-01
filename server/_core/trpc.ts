@@ -1,0 +1,56 @@
+import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from "@shared/const";
+import type { AccessLevel } from "@shared/auth";
+import { initTRPC, TRPCError } from "@trpc/server";
+import superjson from "superjson";
+import type { TrpcContext } from "./context";
+import { getSubscriptionAccess } from "../billing";
+
+const t = initTRPC.context<TrpcContext>().create({ transformer: superjson });
+
+export const router = t.router;
+export const publicProcedure = t.procedure;
+
+const requireUser = t.middleware(async opts => {
+  if (!opts.ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
+});
+
+const requireCompanyUser = t.middleware(async opts => {
+  const user = opts.ctx.user;
+  if (!user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  if (!opts.ctx.accountId || !Number.isInteger(opts.ctx.accountId) || opts.ctx.accountId <= 0 || user.role === "platform_admin") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Usuário sem empresa associada para acessar dados comerciais." });
+  }
+  const companyRoles: AccessLevel[] = ["company_admin", "operator", "technician"];
+  if (!companyRoles.includes(user.role)) throw new TRPCError({ code: "FORBIDDEN", message: "Perfil sem permissão comercial." });
+  return opts.next({ ctx: { ...opts.ctx, user, accountId: opts.ctx.accountId } });
+});
+
+const requireCompanyAdmin = t.middleware(async opts => {
+  const user = opts.ctx.user;
+  if (!user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  if (user.role !== "company_admin" || !opts.ctx.accountId) throw new TRPCError({ code: "FORBIDDEN", message: "Somente o administrador da empresa pode executar esta operação." });
+  return opts.next({ ctx: { ...opts.ctx, user, accountId: opts.ctx.accountId } });
+});
+
+const requireSubscriptionAccess = t.middleware(async opts => {
+  const access = await getSubscriptionAccess(opts.ctx.accountId!);
+  if (!access.allowed) throw new TRPCError({ code: "FORBIDDEN", message: `A assinatura da empresa está ${access.status.toLowerCase()}. Acesse Minha assinatura para renovar.` });
+  return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user!, accountId: opts.ctx.accountId!, subscriptionAccess: access } });
+});
+
+const requirePlatformAdmin = t.middleware(async opts => {
+  const user = opts.ctx.user;
+  if (!user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  if (user.role !== "platform_admin" || !opts.ctx.isPlatformAdmin) throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+  return opts.next({ ctx: { ...opts.ctx, user } });
+});
+
+export const protectedProcedure = t.procedure.use(requireUser);
+export const commercialProcedure = t.procedure.use(requireCompanyUser).use(requireSubscriptionAccess);
+export const subscriptionProcedure = t.procedure.use(requireCompanyUser);
+export const commercialWithSubscriptionProcedure = t.procedure.use(requireCompanyUser).use(requireSubscriptionAccess);
+export const companyAdminProcedure = t.procedure.use(requireCompanyAdmin);
+export const adminCommercialProcedure = companyAdminProcedure;
+export const platformProcedure = t.procedure.use(requirePlatformAdmin);
+export const adminProcedure = platformProcedure;

@@ -1,0 +1,18 @@
+{
+  "name": "Gestão de Extintores",
+  "short_name": "Extintores",
+  "description": "Cadastro de clientes, extintores e ordens de serviço.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "browser"],
+  "launch_handler": { "client_mode": ["focus-existing", "auto"] },
+  "orientation": "portrait-primary",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "/icon-192.svg", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "/icon-512.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

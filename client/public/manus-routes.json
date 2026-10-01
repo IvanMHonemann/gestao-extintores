@@ -1,0 +1,12 @@
+{
+  "routes": [
+    { "path": "/", "title": "Painel" },
+    { "path": "/login", "title": "Login" },
+    { "path": "/admin/usuarios", "title": "Usuários" },
+    { "path": "/admin/assinaturas", "title": "Assinaturas" },
+    { "path": "/backup", "title": "Backup e Restauração" },
+    { "path": "/sync-status", "title": "Status da sincronização" },
+    { "path": "/os/:id", "title": "Ordem de serviço" },
+    { "path": "/404", "title": "Não encontrado" }
+  ]
+}
