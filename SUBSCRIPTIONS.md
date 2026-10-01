@@ -10,10 +10,9 @@
 
 ## Tabelas
 
-- `plans`: catálogo de planos e limites configuráveis.
-- `subscriptions`: período, status, tolerância e identificadores opcionais de provedor.
-- `payments`: histórico imutável de cobranças e pagamentos.
-- `subscription_events`: trilha de auditoria e base para webhooks idempotentes.
+- `subscription_plans`: catálogo de planos, limites e recursos liberados.
+- `company_subscriptions`: plano, status, período e observações de cada empresa.
+- `plans`, `subscriptions`, `payments` e `subscription_events`: modelo legado reservado para compatibilidade; não é consultado pela administração atual quando o modelo novo está disponível.
 
 Os IDs internos continuam sendo as chaves primárias. IDs futuros do Asaas, Stripe ou outro gateway ficam em `providerSubscriptionId`, `providerPaymentId` e `referenceId`.
 
@@ -38,7 +37,7 @@ A interface está em `/admin/assinaturas`. A interface da empresa está em `/ass
 
 ## Migração
 
-A migração `drizzle/0007_wet_hammerhead.sql` é aditiva e cria apenas as quatro tabelas de billing, seus índices e foreign keys. Ela deve ser revisada e aplicada em uma janela controlada, após backup:
+A migração `drizzle/0010_many_invisible_woman.sql` é aditiva e cria apenas `subscription_plans` e `company_subscriptions`, seus índices e foreign keys. Ela deve ser revisada e aplicada em uma janela controlada, após backup:
 
 ```bash
 pnpm exec drizzle-kit generate
@@ -50,4 +49,4 @@ Não aplicar a migração contra `sys`, não usar o banco CI para dados comercia
 
 ## Gateway futuro
 
-`futureBillingProvider` define a interface conceitual para criar, atualizar, cancelar, consultar assinaturas, consultar pagamentos e processar webhooks. A etapa atual não exige API key e não realiza cobrança real. Um gateway futuro deve validar assinatura/origem do webhook, persistir o evento antes de processá-lo, usar `source + referenceId` para idempotência e liberar acesso somente depois da confirmação do evento do provedor.
+`futureBillingProvider` define a interface conceitual para criar, atualizar, cancelar, consultar assinaturas, consultar pagamentos e processar webhooks. A etapa atual não exige API key e não realiza cobrança real. Um gateway futuro deve validar assinatura/origem do webhook, persistir o evento antes de processá-lo, usar `source + referenceId` para idempotência e liberar acesso somente depois da confirmação do evento do provedor. Até essa integração, as assinaturas são **manuais** no painel do administrador da plataforma.

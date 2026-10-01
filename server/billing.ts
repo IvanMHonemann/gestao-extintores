@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "./db";
-import { payments, plans, subscriptionEvents, subscriptions, type Plan, type Subscription } from "../drizzle/schema";
+import { companySubscriptions, payments, plans, subscriptionEvents, subscriptionPlans, subscriptions, type Plan, type Subscription } from "../drizzle/schema";
 
 export type BillingStatus = "UNCONFIGURED" | "TRIAL" | "ACTIVE" | "PAST_DUE" | "GRACE_PERIOD" | "SUSPENDED" | "CANCELED" | "EXPIRED";
 
@@ -63,8 +63,54 @@ export async function getLatestSubscription(companyId: number) {
       .limit(1);
     return rows[0] ?? null;
   } catch (error: any) {
-    if (error?.code === "ER_NO_SUCH_TABLE" || error?.errno === 1146) return null;
-    throw error;
+    const message = `${String(error?.message ?? "")} ${String(error?.cause?.message ?? "")} ${String(error)}`;
+    const missingLegacyTables = error?.code === "ER_NO_SUCH_TABLE" || error?.errno === 1146 || /doesn't exist|no such table/i.test(message);
+    if (!missingLegacyTables) throw error;
+
+    // A versão comercial atual usa company_subscriptions/subscription_plans.
+    // Mantemos a leitura legada acima para instalações antigas, mas usamos as
+    // tabelas novas quando elas são as únicas existentes no banco.
+    let rows;
+    try {
+      rows = await database.select({ subscription: companySubscriptions, plan: subscriptionPlans })
+        .from(companySubscriptions)
+        .innerJoin(subscriptionPlans, eq(subscriptionPlans.id, companySubscriptions.planId))
+        .where(eq(companySubscriptions.companyId, companyId))
+        .orderBy(desc(companySubscriptions.createdAt), desc(companySubscriptions.id))
+        .limit(1);
+    } catch (newSchemaError: any) {
+      const newSchemaMessage = `${String(newSchemaError?.message ?? "")} ${String(newSchemaError?.cause?.message ?? "")} ${String(newSchemaError)}`;
+      if (newSchemaError?.code === "ER_NO_SUCH_TABLE" || newSchemaError?.errno === 1146 || /doesn't exist|no such table/i.test(newSchemaMessage)) return null;
+      throw newSchemaError;
+    }
+    const row = rows[0];
+    if (!row) return null;
+
+    const statusMap: Record<string, Subscription["status"]> = { active: "ACTIVE", test: "TRIAL", suspended: "SUSPENDED", expired: "EXPIRED" };
+    const featureMap = [
+      ["featureDashboard", "dashboard"], ["featureClients", "clients"], ["featureExtinguishers", "extinguishers"],
+      ["featureServiceOrders", "orders"], ["featureAlerts", "alerts"], ["featureReports", "reports"],
+      ["featureUsers", "team"], ["featureBackup", "backup"], ["featureOfflinePwa", "offline"],
+    ] as const;
+    const features = featureMap.filter(([key]) => Boolean((row.plan as any)[key])).map(([, value]) => value);
+    const periodStart = new Date(`${row.subscription.startsAt}T00:00:00.000Z`);
+    const periodEnd = new Date(`${row.subscription.endsAt ?? row.subscription.startsAt}T23:59:59.999Z`);
+    return {
+      subscription: {
+        id: row.subscription.id, companyId: row.subscription.companyId, planId: row.subscription.planId,
+        status: statusMap[row.subscription.status] ?? "EXPIRED", startsAt: periodStart,
+        currentPeriodStart: periodStart, currentPeriodEnd: periodEnd,
+        trialEndsAt: row.subscription.status === "test" ? periodEnd : null, gracePeriodEndsAt: null,
+        autoRenew: false, provider: "manual", providerSubscriptionId: null,
+        createdAt: row.subscription.createdAt, updatedAt: row.subscription.updatedAt,
+      } as Subscription,
+      plan: {
+        id: row.plan.id, name: row.plan.name, description: row.plan.description, price: row.plan.price,
+        billingInterval: row.plan.billingCycle === "yearly" ? "YEARLY" : "MONTHLY",
+        maxUsers: row.plan.maxUsers, maxClients: row.plan.maxClients, maxExtinguishers: row.plan.maxExtinguishers,
+        features, active: row.plan.active, createdAt: row.plan.createdAt, updatedAt: row.plan.updatedAt,
+      } as Plan,
+    };
   }
 }
 
