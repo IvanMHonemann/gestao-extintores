@@ -1,6 +1,6 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { and, eq, gt, lte } from "drizzle-orm";
-import { companies, memberAccounts, memberSessions, platformAdmins, platformSessions } from "../drizzle/schema";
+import { companies, companySubscriptions, memberAccounts, memberSessions, platformAdmins, platformSessions, subscriptionPlans } from "../drizzle/schema";
 import { getDb } from "./db";
 
 const SESSION_DAYS = 30;
@@ -200,13 +200,30 @@ export async function recoverPassword(email: string, recoveryCode: string, newPa
   return false;
 }
 
-export async function createCompanyWithAdmin(input: { companyName: string; userName: string; email: string; password: string }) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not connected");
+export async function createCompanyWithAdmin(input: {
+  companyName: string;
+  userName: string;
+  email: string;
+  password: string;
+  planId?: number | null;
+}) {
+  const database = await getDb();
+  if (!database) throw new Error("Database not connected");
   const recoveryCode = `EXT-${randomBytes(12).toString("base64url")}`;
   const normalizedEmail = input.email.trim().toLowerCase();
-  return await db.transaction(async (tx) => {
-    const companyResult = await tx.insert(companies).values({ name: input.companyName.trim(), active: true });
+  return await database.transaction(async (tx) => {
+    const trialEnds = new Date(Date.now() + 14 * 24 * 3600 * 1000);
+    const trialYmd = trialEnds.toISOString().slice(0, 10);
+    const todayYmd = new Date().toISOString().slice(0, 10);
+    const companyResult = await tx.insert(companies).values({
+      name: input.companyName.trim(),
+      active: true,
+      planId: input.planId ?? null,
+      subscriptionStatus: "trial",
+      subscriptionStartedAt: new Date(),
+      trialEndsAt: trialEnds,
+      subscriptionExpiresAt: trialEnds,
+    } as any);
     const companyId = Number(companyResult[0].insertId);
     const accountResult = await tx.insert(memberAccounts).values({
       companyId,
@@ -217,7 +234,26 @@ export async function createCompanyWithAdmin(input: { companyName: string; userN
       role: "company_admin",
       active: true,
     });
-    return { companyId, accountId: Number(accountResult[0].insertId), recoveryCode };
+    if (input.planId) {
+      const planRows = await tx.select().from(subscriptionPlans).where(eq(subscriptionPlans.id, input.planId)).limit(1);
+      const plan = planRows[0];
+      if (plan) {
+        await tx.insert(companySubscriptions).values({
+          companyId,
+          planId: input.planId,
+          status: "trial",
+          startsAt: todayYmd,
+          endsAt: trialYmd,
+          billingInterval: plan.billingCycle,
+          amount: plan.price,
+          currentPeriodStart: todayYmd,
+          currentPeriodEnd: trialYmd,
+          trialEndsAt: trialYmd,
+          notes: "Cadastro público com plano selecionado (trial 14 dias)",
+        } as any);
+      }
+    }
+    return { companyId, accountId: Number(accountResult[0].insertId), recoveryCode, planId: input.planId ?? null };
   });
 }
 

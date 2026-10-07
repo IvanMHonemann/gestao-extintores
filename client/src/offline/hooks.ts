@@ -1,21 +1,37 @@
 import { useLiveQuery } from "dexie-react-hooks";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { offlineDb, pruneOfflineMutations, saveOnlineSnapshot, type LocalOrderRow, type LocalRecord, type OfflineMutation } from "./localDb";
+import {
+  offlineDb,
+  pruneOfflineMutations,
+  saveOnlineSnapshot,
+  type LocalOrderRow,
+  type LocalRecord,
+  type OfflineMutation,
+} from "./localDb";
 
 export function useOnlineStatus() {
-  const [isOnline, setIsOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
+  const [isOnline, setIsOnline] = useState(() =>
+    typeof navigator === "undefined" ? true : navigator.onLine,
+  );
   useEffect(() => {
     let disposed = false;
     let checking = false;
     const checkConnection = async () => {
       if (checking || disposed) return;
-      if (!navigator.onLine) { setIsOnline(false); return; }
+      if (!navigator.onLine) {
+        setIsOnline(false);
+        return;
+      }
       checking = true;
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 5000);
       try {
         const input = encodeURIComponent(JSON.stringify({ json: { timestamp: Date.now() } }));
-        const response = await fetch(`/api/trpc/system.health?input=${input}`, { cache: "no-store", credentials: "include", signal: controller.signal });
+        const response = await fetch(`/api/trpc/system.health?input=${input}`, {
+          cache: "no-store",
+          credentials: "include",
+          signal: controller.signal,
+        });
         if (!disposed) setIsOnline(response.ok);
       } catch {
         if (!disposed) setIsOnline(false);
@@ -24,9 +40,15 @@ export function useOnlineStatus() {
         checking = false;
       }
     };
-    const online = () => { setIsOnline(true); void checkConnection(); };
+    const online = () => {
+      setIsOnline(true);
+      void checkConnection();
+    };
     const offline = () => setIsOnline(false);
-    const customOnline = () => { setIsOnline(true); void checkConnection(); };
+    const customOnline = () => {
+      setIsOnline(true);
+      void checkConnection();
+    };
     const customOffline = () => setIsOnline(false);
     window.addEventListener("online", online);
     window.addEventListener("offline", offline);
@@ -36,7 +58,16 @@ export function useOnlineStatus() {
     document.addEventListener("visibilitychange", checkConnection);
     const interval = window.setInterval(checkConnection, 30000);
     void checkConnection();
-    return () => { disposed = true; window.clearInterval(interval); window.removeEventListener("online", online); window.removeEventListener("offline", offline); window.removeEventListener("gestao-extintores:network-online", customOnline); window.removeEventListener("gestao-extintores:network-offline", customOffline); window.removeEventListener("focus", checkConnection); document.removeEventListener("visibilitychange", checkConnection); };
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      window.removeEventListener("online", online);
+      window.removeEventListener("offline", offline);
+      window.removeEventListener("gestao-extintores:network-online", customOnline);
+      window.removeEventListener("gestao-extintores:network-offline", customOffline);
+      window.removeEventListener("focus", checkConnection);
+      document.removeEventListener("visibilitychange", checkConnection);
+    };
   }, []);
   return isOnline;
 }
@@ -51,23 +82,29 @@ export function useInstallPrompt() {
     if (launchStarted.current) return;
     launchStarted.current = true;
     const appUrl = `${window.location.origin}/`;
+    // Tenta abrir o PWA instalado; fallback para navegar na mesma aba
     const appWindow = window.open(appUrl, "gestao-extintores-app");
     if (appWindow) {
       appWindow.focus();
-      window.setTimeout(() => { if (!window.matchMedia("(display-mode: standalone)").matches) window.close(); }, 150);
+      window.setTimeout(() => {
+        if (!window.matchMedia("(display-mode: standalone)").matches) {
+          // Se ainda estamos no browser, não fecha a aba atual (pode ser a única)
+        }
+      }, 150);
     } else {
-      // Alguns navegadores bloqueiam uma nova janela após o prompt; nesse
-      // caso, navegar para a URL inicial ainda permite que o sistema abra o
-      // PWA instalado conforme o suporte do dispositivo.
       window.location.replace(appUrl);
     }
   }, []);
 
   useEffect(() => {
-    const handler = (event: Event) => { event.preventDefault(); setDeferredPrompt(event); };
+    const handler = (event: Event) => {
+      event.preventDefault();
+      setDeferredPrompt(event);
+    };
     window.addEventListener("beforeinstallprompt", handler);
     return () => window.removeEventListener("beforeinstallprompt", handler);
   }, []);
+
   useEffect(() => {
     const installed = () => {
       setIsInstalling(false);
@@ -78,6 +115,7 @@ export function useInstallPrompt() {
     window.addEventListener("appinstalled", installed);
     return () => window.removeEventListener("appinstalled", installed);
   }, [openInstalledApp]);
+
   const install = async () => {
     if (!deferredPrompt || isInstalling) return false;
     setIsInstalling(true);
@@ -92,8 +130,7 @@ export function useInstallPrompt() {
       setInstallProgress(100);
       setDeferredPrompt(null);
       setIsInstalling(false);
-      // appinstalled é o caminho principal; este fallback cobre WebViews e
-      // navegadores que concluem a instalação sem emitir esse evento.
+      // Fallback se o navegador não emitir appinstalled
       window.setTimeout(openInstalledApp, 900);
       return true;
     }
@@ -101,6 +138,7 @@ export function useInstallPrompt() {
     setIsInstalling(false);
     return false;
   };
+
   return { canInstall: Boolean(deferredPrompt), install, isInstalling, installProgress };
 }
 
@@ -114,25 +152,103 @@ export function useOfflineSnapshot(remote: {
 }) {
   const isOnline = useOnlineStatus();
   const tenantKey = remote.tenantKey;
-  const localClients = useLiveQuery(() => tenantKey ? offlineDb.clients.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as LocalRecord[]), [tenantKey], [] as LocalRecord[]);
-  const localExtinguishers = useLiveQuery(() => tenantKey ? offlineDb.extinguishers.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as LocalRecord[]), [tenantKey], [] as LocalRecord[]);
-  const localOrders = useLiveQuery(() => tenantKey ? offlineDb.orders.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as LocalOrderRow[]), [tenantKey], [] as LocalOrderRow[]);
-  const localAlerts = useLiveQuery(() => tenantKey ? offlineDb.alerts.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as LocalRecord[]), [tenantKey], [] as LocalRecord[]);
-  const localMutations = useLiveQuery(() => tenantKey ? offlineDb.mutations.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as OfflineMutation[]), [tenantKey], [] as OfflineMutation[]);
-  const localAlertDays = useLiveQuery(() => tenantKey ? offlineDb.settings.get(`${tenantKey}:alertDays`) : Promise.resolve(undefined), [tenantKey], undefined);
+  const localClients = useLiveQuery(
+    () =>
+      tenantKey
+        ? offlineDb.clients.where("tenantKey").equals(tenantKey).toArray()
+        : Promise.resolve([] as LocalRecord[]),
+    [tenantKey],
+    [] as LocalRecord[],
+  );
+  const localExtinguishers = useLiveQuery(
+    () =>
+      tenantKey
+        ? offlineDb.extinguishers.where("tenantKey").equals(tenantKey).toArray()
+        : Promise.resolve([] as LocalRecord[]),
+    [tenantKey],
+    [] as LocalRecord[],
+  );
+  const localOrders = useLiveQuery(
+    () =>
+      tenantKey
+        ? offlineDb.orders.where("tenantKey").equals(tenantKey).toArray()
+        : Promise.resolve([] as LocalOrderRow[]),
+    [tenantKey],
+    [] as LocalOrderRow[],
+  );
+  const localAlerts = useLiveQuery(
+    () =>
+      tenantKey
+        ? offlineDb.alerts.where("tenantKey").equals(tenantKey).toArray()
+        : Promise.resolve([] as LocalRecord[]),
+    [tenantKey],
+    [] as LocalRecord[],
+  );
+  const localMutations = useLiveQuery(
+    () =>
+      tenantKey
+        ? offlineDb.mutations.where("tenantKey").equals(tenantKey).toArray()
+        : Promise.resolve([] as OfflineMutation[]),
+    [tenantKey],
+    [] as OfflineMutation[],
+  );
+  const localAlertDays = useLiveQuery(
+    () => (tenantKey ? offlineDb.settings.get(`${tenantKey}:alertDays`) : Promise.resolve(undefined)),
+    [tenantKey],
+    undefined,
+  );
 
   useEffect(() => {
     if (!isOnline || !tenantKey) return;
     void pruneOfflineMutations(tenantKey);
-    if (remote.clients || remote.extinguishers || remote.orders || remote.alerts) void saveOnlineSnapshot(remote as { tenantKey: string; clients?: LocalRecord[]; extinguishers?: LocalRecord[]; orders?: LocalOrderRow[]; alerts?: LocalRecord[]; alertDays?: number });
-  }, [isOnline, tenantKey, remote.clients, remote.extinguishers, remote.orders, remote.alerts, remote.alertDays]);
+    if (remote.clients || remote.extinguishers || remote.orders || remote.alerts) {
+      void saveOnlineSnapshot(
+        remote as {
+          tenantKey: string;
+          clients?: LocalRecord[];
+          extinguishers?: LocalRecord[];
+          orders?: LocalOrderRow[];
+          alerts?: LocalRecord[];
+          alertDays?: number;
+        },
+      );
+    }
+  }, [
+    isOnline,
+    tenantKey,
+    remote.clients,
+    remote.extinguishers,
+    remote.orders,
+    remote.alerts,
+    remote.alertDays,
+  ]);
 
   return useMemo(() => {
-    const mergePending = (remoteRows: any[] | undefined, localRows: any[], entity: OfflineMutation["entity"], getId: (row: any) => number) => {
-      const mutations = localMutations.filter((mutation) => mutation.entity === entity && (mutation.state || "pending") === "pending");
-      const written = new Set(mutations.filter((mutation) => mutation.action !== "delete").map((mutation) => Number(mutation.payload?.localId ?? mutation.payload?.id)));
-      const deleted = new Set(mutations.filter((mutation) => mutation.action === "delete").map((mutation) => Number(mutation.payload?.id)));
-      const merged = (remoteRows || []).filter((row) => !deleted.has(Number(getId(row))) && !deleted.has(Number(row.clientId ?? row.order?.clientId)) && !written.has(Number(getId(row))));
+    const mergePending = (
+      remoteRows: any[] | undefined,
+      localRows: any[],
+      entity: OfflineMutation["entity"],
+      getId: (row: any) => number,
+    ) => {
+      const mutations = localMutations.filter(
+        (mutation) => mutation.entity === entity && (mutation.state || "pending") === "pending",
+      );
+      const written = new Set(
+        mutations
+          .filter((mutation) => mutation.action !== "delete")
+          .map((mutation) => Number(mutation.payload?.localId ?? mutation.payload?.id)),
+      );
+      const deleted = new Set(
+        mutations
+          .filter((mutation) => mutation.action === "delete")
+          .map((mutation) => Number(mutation.payload?.id)),
+      );
+      const merged = (remoteRows || []).filter(
+        (row) =>
+          !deleted.has(Number(getId(row))) &&
+          !deleted.has(Number(row.clientId ?? row.order?.clientId)) &&
+          !written.has(Number(getId(row))),
+      );
       const remoteIds = new Set(merged.map(getId).map(Number));
       for (const row of localRows) {
         const id = Number(getId(row));
@@ -142,15 +258,41 @@ export function useOfflineSnapshot(remote: {
       return merged;
     };
     const clients = mergePending(remote.clients, localClients, "client", (row) => row.id);
-    const extinguishers = mergePending(remote.extinguishers, localExtinguishers, "extinguisher", (row) => row.id);
-    const orders = mergePending(remote.orders, localOrders, "order", (row) => row.order?.id ?? row.id);
+    const extinguishers = mergePending(
+      remote.extinguishers,
+      localExtinguishers,
+      "extinguisher",
+      (row) => row.id,
+    );
+    const orders = mergePending(
+      remote.orders,
+      localOrders,
+      "order",
+      (row) => row.order?.id ?? row.id,
+    );
     return {
-    isOnline,
-    clients: isOnline && remote.clients ? clients : localClients,
-    extinguishers: isOnline && remote.extinguishers ? extinguishers : localExtinguishers,
-    orders: isOnline && remote.orders ? orders : localOrders,
-    alerts: isOnline && remote.alerts ? remote.alerts : localAlerts,
-    alertDays: isOnline && remote.alertDays !== undefined ? remote.alertDays : ((localAlertDays as any)?.value || remote.alertDays || 30),
+      isOnline,
+      clients: isOnline && remote.clients ? clients : localClients,
+      extinguishers: isOnline && remote.extinguishers ? extinguishers : localExtinguishers,
+      orders: isOnline && remote.orders ? orders : localOrders,
+      alerts: isOnline && remote.alerts ? remote.alerts : localAlerts,
+      alertDays:
+        isOnline && remote.alertDays !== undefined
+          ? remote.alertDays
+          : (localAlertDays as any)?.value || remote.alertDays || 30,
     };
-  }, [isOnline, remote.clients, remote.extinguishers, remote.orders, remote.alerts, remote.alertDays, localClients, localExtinguishers, localOrders, localAlerts, localMutations, localAlertDays]);
+  }, [
+    isOnline,
+    remote.clients,
+    remote.extinguishers,
+    remote.orders,
+    remote.alerts,
+    remote.alertDays,
+    localClients,
+    localExtinguishers,
+    localOrders,
+    localAlerts,
+    localMutations,
+    localAlertDays,
+  ]);
 }

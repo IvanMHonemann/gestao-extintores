@@ -61,3 +61,64 @@ export async function runScheduledMaintenance() {
     await connection.end();
   }
 }
+
+
+/** Envia e-mails de alerta de validade por empresa (admins ativos). */
+export async function runExpirationEmailAlerts(daysAhead = 30) {
+  const { getDb } = await import("./db");
+  const dbmod = await import("./db");
+  const emailService = await import("./email");
+  const schema = await import("../drizzle/schema");
+  const { eq, and } = await import("drizzle-orm");
+
+  const database = await getDb();
+  if (!database) return { companies: 0, emails: 0 };
+
+  const companies = await database
+    .select({ id: schema.companies.id, name: schema.companies.name })
+    .from(schema.companies)
+    .where(eq(schema.companies.active, true));
+
+  let emails = 0;
+  for (const company of companies) {
+    const alerts = await dbmod.getExpiringExtinguishers(daysAhead, company.id);
+    const actionable = alerts.filter((a: any) => a.alertStatus === "expired" || a.alertStatus === "urgent" || a.alertStatus === "warning");
+    if (!actionable.length) continue;
+
+    const admins = await database
+      .select({
+        email: schema.memberAccounts.email,
+        userName: schema.memberAccounts.userName,
+      })
+      .from(schema.memberAccounts)
+      .where(
+        and(
+          eq(schema.memberAccounts.companyId, company.id),
+          eq(schema.memberAccounts.active, true),
+          eq(schema.memberAccounts.role, "company_admin"),
+        ),
+      );
+
+    if (!admins.length) continue;
+
+    const items = actionable.map((a: any) => ({
+      clientName: a.client?.companyName || "Cliente",
+      type: a.extinguisher?.type || a.extinguisher?.extinguisherType || undefined,
+      capacity: a.extinguisher?.capacity || undefined,
+      expirationDate: String(a.extinguisher?.expirationDate || ""),
+      alertMessage: a.alertMessage || "",
+    }));
+
+    for (const admin of admins) {
+      if (!admin.email) continue;
+      const res = await emailService.emailExtinguisherAlerts({
+        to: admin.email,
+        companyName: company.name,
+        userName: admin.userName || admin.email,
+        items,
+      });
+      if (res.ok) emails += 1;
+    }
+  }
+  return { companies: companies.length, emails };
+}

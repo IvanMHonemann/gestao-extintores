@@ -3,12 +3,15 @@ import { Button } from "@/components/ui/button";
 import { Printer, ArrowLeft, MessageCircle } from "lucide-react";
 import { jsPDF } from "jspdf";
 import { toast } from "sonner";
+import { trpc } from "@/lib/trpc";
 
 interface ServiceOrderDocumentProps {
   order: any;
   client: any;
   items: any[];
   onBack?: () => void;
+  /** Nome da empresa que emite a OS (opcional; se omitido, busca via assinatura) */
+  issuerCompanyName?: string;
 }
 
 export function ServiceOrderDocument({
@@ -16,8 +19,19 @@ export function ServiceOrderDocument({
   client,
   items = [],
   onBack,
+  issuerCompanyName,
 }: ServiceOrderDocumentProps) {
   const componentRef = useRef<HTMLDivElement>(null);
+  const mine = trpc.billing.mySubscription.useQuery(undefined, {
+    enabled: !issuerCompanyName,
+    retry: false,
+  });
+  const companyLabel =
+    (issuerCompanyName ||
+      (mine.data as any)?.company?.name ||
+      order?.companyName ||
+      order?.issuerCompanyName ||
+      "").toString().trim() || "Empresa";
 
   const handlePrint = () => {
     window.print();
@@ -80,10 +94,11 @@ export function ServiceOrderDocument({
       pdf.setDrawColor(15, 23, 42);
       pdf.setLineWidth(0.6);
       pdf.setFont("helvetica", "bold");
-      pdf.setFontSize(18);
-      pdf.text("CONTROLE DE EXTINTORES", margin, y + 7);
+      const headerName = companyLabel.length > 28 ? companyLabel.slice(0, 28) + "…" : companyLabel;
+      pdf.setFontSize(headerName.length > 18 ? 14 : 18);
+      pdf.text(headerName, margin, y + 7);
       pdf.setFontSize(9);
-      pdf.text("GESTÃO E MANUTENÇÃO", margin, y + 13);
+      pdf.text("ORDEM DE SERVIÇO / MANUTENÇÃO", margin, y + 13);
       pdf.setFontSize(15);
       pdf.text("ORDEM DE SERVIÇO", pageWidth - margin, y + 7, { align: "right" });
       pdf.setFontSize(9);
@@ -151,10 +166,18 @@ export function ServiceOrderDocument({
       pdf.line(margin, y, margin + 78, y);
       pdf.line(pageWidth - margin - 78, y, pageWidth - margin, y);
       pdf.setFontSize(8);
-      pdf.text("CONTROLE DE EXTINTORES", margin + 39, y + 5, { align: "center" });
+      const signName = companyLabel.length > 32 ? companyLabel.slice(0, 32) + "…" : companyLabel;
+      pdf.text(signName, margin + 39, y + 5, { align: "center" });
       pdf.text("PROPRIETÁRIO OU RESPONSÁVEL", pageWidth - margin - 39, y + 5, { align: "center" });
       pdf.text(`CPF: ${text(order?.responsibleCpf || client?.cpf)}`, pageWidth - margin - 78, y + 10);
       pdf.text(`DATA NASC.: ${text(order?.responsibleBirthDate || client?.birthDate)}`, pageWidth - margin - 78, y + 15);
+
+      // Rodapé com a marca Extinfy
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(100, 116, 139);
+      pdf.text("Extinfy — Gestão de Extintores  •  Documento gerado pelo sistema", pageWidth / 2, pageHeight - 8, { align: "center" });
+      pdf.setTextColor(0, 0, 0);
 
       const orderNumber = String(order?.orderNumber || order?.id || "ordem").padStart(5, "0");
       const fileName = `ordem-servico-${orderNumber}.pdf`;
@@ -294,12 +317,12 @@ export function ServiceOrderDocument({
                   ✓
                 </div>
               </div>
-              <div className="border-l-2 border-slate-700 pl-3">
-                <h1 className="text-base sm:text-2xl font-black tracking-tight text-slate-900 leading-none">
-                  CONTROLE DE EXTINTORES
+              <div className="border-l-2 border-slate-700 pl-3 min-w-0">
+                <h1 className="text-base sm:text-xl font-black tracking-tight text-slate-900 leading-tight break-words">
+                  {companyLabel}
                 </h1>
                 <p className="text-xs font-bold tracking-wider text-slate-800 uppercase mt-1">
-                  GESTÃO E MANUTENÇÃO
+                  Ordem de serviço / Manutenção
                 </p>
               </div>
             </div>
@@ -524,8 +547,8 @@ export function ServiceOrderDocument({
           {/* ÁREA DE ASSINATURAS */}
           <div className="grid grid-cols-2 gap-8 pt-8 pb-4 text-xs text-center font-bold">
             <div>
-              <div className="border-t-2 border-slate-800 pt-1.5 uppercase">
-                CONTROLE DE EXTINTORES PREVENÇÃO<br />CONTRA INCÊNDIO
+              <div className="border-t-2 border-slate-800 pt-1.5 uppercase break-words">
+                {companyLabel}
               </div>
             </div>
 
@@ -543,10 +566,10 @@ export function ServiceOrderDocument({
           </div>
         </div>
 
-        {/* RODAPÉ DA APLICAÇÃO */}
+        {/* RODAPÉ — marca Extinfy */}
         <div className="border-t-2 border-slate-800 pt-2 text-[9px] sm:text-[10.5px] leading-relaxed text-slate-700 text-center">
-          <div className="font-bold text-slate-900">CONTROLE DE EXTINTORES</div>
-          <div>Ordem de Serviço • Controle de manutenção e validade</div>
+          <div className="font-bold text-slate-900">Extinfy — Gestão de Extintores</div>
+          <div>Documento gerado pelo sistema • Controle de manutenção e validade</div>
         </div>
 
       </div>

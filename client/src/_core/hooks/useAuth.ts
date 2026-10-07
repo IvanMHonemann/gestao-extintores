@@ -33,12 +33,10 @@ export function useAuth(options?: UseAuthOptions) {
     const handleOnline = () => {
       setCachedUser(readCachedUser());
       setIsOffline(false);
-      window.dispatchEvent(new Event("gestao-extintores:network-online"));
     };
     const handleOffline = () => {
       setIsOffline(true);
       setCachedUser(readCachedUser());
-      window.dispatchEvent(new Event("gestao-extintores:network-offline"));
     };
     const handleAuthLogout = () => setCachedUser(null);
     window.addEventListener("online", handleOnline);
@@ -67,9 +65,9 @@ export function useAuth(options?: UseAuthOptions) {
     // uma falha de cookie, iframe ou rede não transforma o modo offline em
     // uma tela de login.
     const code = meQuery.error instanceof TRPCClientError ? meQuery.error.data?.code : undefined;
-    if (!isOffline && cachedUser && meQuery.error && !code) {
+    if (!isOffline && cachedUser && meQuery.error && code !== "UNAUTHORIZED") {
       setIsOffline(true);
-      window.dispatchEvent(new Event("gestao-extintores:network-offline"));
+      window.dispatchEvent(new Event("offline"));
     }
   }, [cachedUser, isOffline, meQuery.data, meQuery.error, meQuery.isFetched]);
 
@@ -88,6 +86,10 @@ export function useAuth(options?: UseAuthOptions) {
       utils.auth.me.setData(undefined, null);
       window.dispatchEvent(new Event("gestao-extintores:logout"));
       if (!isOffline) await utils.auth.me.invalidate();
+      // Volta para a landing (login no modal da página inicial)
+      if (typeof window !== "undefined") {
+        window.location.replace("/landing-site.html?from=logout");
+      }
     }
   }, [isOffline, logoutMutation, utils]);
 
@@ -118,7 +120,7 @@ export function useAuth(options?: UseAuthOptions) {
   useEffect(() => {
     if (!redirectOnUnauthenticated || isOffline || state.loading || state.user || typeof window === "undefined") return;
     if (redirectPath && window.location.pathname === redirectPath) return;
-    window.location.href = redirectPath || "/login";
+    window.location.href = redirectPath || "/";
   }, [redirectOnUnauthenticated, isOffline, redirectPath, state.loading, state.user]);
 
   return { ...state, refresh: () => meQuery.refetch(), logout };

@@ -68,7 +68,7 @@ export default function DashboardLayout({
             </p>
           </div>
           <Button
-            onClick={() => { window.location.href = "/login"; }}
+            onClick={() => { window.location.href = "/?login=1"; }}
             size="lg"
             className="w-full shadow-lg hover:shadow-xl transition-all"
           >

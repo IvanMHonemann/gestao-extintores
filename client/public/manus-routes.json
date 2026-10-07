@@ -1,12 +1,68 @@
 {
   "routes": [
-    { "path": "/", "title": "Painel" },
-    { "path": "/login", "title": "Login" },
-    { "path": "/admin/usuarios", "title": "Usuários" },
-    { "path": "/admin/assinaturas", "title": "Assinaturas" },
-    { "path": "/backup", "title": "Backup e Restauração" },
-    { "path": "/sync-status", "title": "Status da sincronização" },
-    { "path": "/os/:id", "title": "Ordem de serviço" },
-    { "path": "/404", "title": "Não encontrado" }
+    {
+      "path": "/",
+      "title": "Landing/Painel"
+    },
+    {
+      "path": "/login",
+      "title": "Login"
+    },
+    {
+      "path": "/cadastro",
+      "title": "Cadastro"
+    },
+    {
+      "path": "/planos",
+      "title": "Planos públicos"
+    },
+    {
+      "path": "/e/:token",
+      "title": "Extintor público"
+    },
+    {
+      "path": "/admin/usuarios",
+      "title": "Usuários"
+    },
+    {
+      "path": "/admin/assinaturas",
+      "title": "Assinaturas"
+    },
+    {
+      "path": "/conta/planos",
+      "title": "Planos da conta"
+    },
+    {
+      "path": "/upgrade",
+      "title": "Upgrade"
+    },
+    {
+      "path": "/minha-assinatura",
+      "title": "Minha assinatura"
+    },
+    {
+      "path": "/pagamentos",
+      "title": "Pagamentos"
+    },
+    {
+      "path": "/backup",
+      "title": "Backup e Restauração"
+    },
+    {
+      "path": "/auditoria",
+      "title": "Auditoria"
+    },
+    {
+      "path": "/sync-status",
+      "title": "Status da sincronização"
+    },
+    {
+      "path": "/os/:id",
+      "title": "Ordem de serviço"
+    },
+    {
+      "path": "/404",
+      "title": "Não encontrado"
+    }
   ]
 }

@@ -1,4 +1,4 @@
-import { boolean, date, decimal, index, int, json, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
+import { boolean, date, decimal, index, int, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
 /** Identidades OAuth do provedor; somente a identidade do proprietário pode ser platform_admin. */
 export const users = mysqlTable("users", {
@@ -21,11 +21,21 @@ export const companies = mysqlTable("companies", {
   id: int("id").autoincrement().primaryKey(),
   name: varchar("name", { length: 255 }).notNull(),
   active: boolean("active").default(true).notNull(),
+  planId: int("planId"),
+  subscriptionStatus: mysqlEnum("subscriptionStatus", ["trial", "active", "pending", "overdue", "suspended", "canceled", "test", "expired"]),
+  asaasCustomerId: varchar("asaasCustomerId", { length: 64 }),
+  asaasSubscriptionId: varchar("asaasSubscriptionId", { length: 64 }),
+  subscriptionStartedAt: timestamp("subscriptionStartedAt"),
+  subscriptionExpiresAt: timestamp("subscriptionExpiresAt"),
+  trialEndsAt: timestamp("trialEndsAt"),
+  gracePeriodEndsAt: timestamp("gracePeriodEndsAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (table) => ({
   activeIdx: index("companies_active_idx").on(table.active),
   nameIdx: index("companies_name_idx").on(table.name),
+  planIdx: index("companies_plan_idx").on(table.planId),
+  subscriptionStatusIdx: index("companies_subscription_status_idx").on(table.subscriptionStatus),
 }));
 
 export type Company = typeof companies.$inferSelect;
@@ -122,6 +132,8 @@ export const extinguishers = mysqlTable("extinguishers", {
   id: int("id").autoincrement().primaryKey(),
   accountId: int("accountId").notNull().references(() => companies.id, { onDelete: "restrict" }),
   clientId: int("clientId").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  /** Token público opaco para QR Code (/e/:token). Nunca sequencial. */
+  publicToken: varchar("publicToken", { length: 32 }),
   typeModel: varchar("typeModel", { length: 100 }).notNull(),
   capacity: varchar("capacity", { length: 50 }),
   serialNumber: varchar("serialNumber", { length: 100 }),
@@ -136,6 +148,7 @@ export const extinguishers = mysqlTable("extinguishers", {
   accountIdx: index("extinguishers_account_idx").on(table.accountId),
   clientIdx: index("extinguishers_client_idx").on(table.clientId),
   expirationIdx: index("extinguishers_account_expiration_idx").on(table.accountId, table.expirationDate),
+  publicTokenIdx: index("extinguishers_public_token_idx").on(table.publicToken),
 }));
 
 export type Extinguisher = typeof extinguishers.$inferSelect;
@@ -217,98 +230,8 @@ export const systemSettings = mysqlTable("system_settings", {
   accountIdx: index("system_settings_account_idx").on(table.accountId),
 }));
 
-export type SystemSetting = typeof systemSettings.$inferSelect;
-export type InsertSystemSetting = typeof systemSettings.$inferInsert;
 
-export const plans = mysqlTable("plans", {
-  id: int("id").autoincrement().primaryKey(),
-  name: varchar("name", { length: 120 }).notNull(),
-  description: text("description"),
-  price: decimal("price", { precision: 10, scale: 2 }).default("0.00").notNull(),
-  billingInterval: mysqlEnum("billingInterval", ["MONTHLY", "YEARLY"]).default("MONTHLY").notNull(),
-  maxUsers: int("maxUsers"),
-  maxClients: int("maxClients"),
-  maxExtinguishers: int("maxExtinguishers"),
-  features: json("features").$type<string[] | null>(),
-  active: boolean("active").default(true).notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-}, (table) => ({ activeIdx: index("plans_active_idx").on(table.active) }));
-
-export type Plan = typeof plans.$inferSelect;
-export type InsertPlan = typeof plans.$inferInsert;
-
-export const subscriptions = mysqlTable("subscriptions", {
-  id: int("id").autoincrement().primaryKey(),
-  companyId: int("companyId").notNull().references(() => companies.id, { onDelete: "restrict" }),
-  planId: int("planId").notNull().references(() => plans.id, { onDelete: "restrict" }),
-  status: mysqlEnum("status", ["TRIAL", "ACTIVE", "PAST_DUE", "GRACE_PERIOD", "SUSPENDED", "CANCELED", "EXPIRED"]).default("ACTIVE").notNull(),
-  startsAt: timestamp("startsAt").notNull(),
-  currentPeriodStart: timestamp("currentPeriodStart").notNull(),
-  currentPeriodEnd: timestamp("currentPeriodEnd").notNull(),
-  trialEndsAt: timestamp("trialEndsAt"),
-  gracePeriodEndsAt: timestamp("gracePeriodEndsAt"),
-  autoRenew: boolean("autoRenew").default(true).notNull(),
-  provider: varchar("provider", { length: 40 }).default("manual").notNull(),
-  providerSubscriptionId: varchar("providerSubscriptionId", { length: 120 }),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-}, (table) => ({
-  companyIdx: index("subscriptions_company_idx").on(table.companyId),
-  statusIdx: index("subscriptions_status_idx").on(table.status),
-  periodEndIdx: index("subscriptions_period_end_idx").on(table.currentPeriodEnd),
-  providerIdx: index("subscriptions_provider_idx").on(table.provider, table.providerSubscriptionId),
-}));
-
-export type Subscription = typeof subscriptions.$inferSelect;
-export type InsertSubscription = typeof subscriptions.$inferInsert;
-
-export const payments = mysqlTable("payments", {
-  id: int("id").autoincrement().primaryKey(),
-  companyId: int("companyId").notNull().references(() => companies.id, { onDelete: "restrict" }),
-  subscriptionId: int("subscriptionId").notNull().references(() => subscriptions.id, { onDelete: "restrict" }),
-  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
-  status: mysqlEnum("status", ["PENDING", "PAID", "FAILED", "CANCELED", "REFUNDED", "OVERDUE"]).default("PENDING").notNull(),
-  paymentMethod: varchar("paymentMethod", { length: 80 }),
-  dueAt: timestamp("dueAt"),
-  paidAt: timestamp("paidAt"),
-  periodStart: timestamp("periodStart"),
-  periodEnd: timestamp("periodEnd"),
-  provider: varchar("provider", { length: 80 }),
-  providerPaymentId: varchar("providerPaymentId", { length: 255 }),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-}, (table) => ({
-  companyIdx: index("payments_company_idx").on(table.companyId),
-  subscriptionIdx: index("payments_subscription_idx").on(table.subscriptionId),
-  statusIdx: index("payments_status_idx").on(table.status),
-  providerIdx: index("payments_provider_idx").on(table.provider, table.providerPaymentId),
-}));
-
-export type Payment = typeof payments.$inferSelect;
-export type InsertPayment = typeof payments.$inferInsert;
-
-export const subscriptionEvents = mysqlTable("subscription_events", {
-  id: int("id").autoincrement().primaryKey(),
-  companyId: int("companyId").notNull().references(() => companies.id, { onDelete: "restrict" }),
-  subscriptionId: int("subscriptionId").notNull().references(() => subscriptions.id, { onDelete: "restrict" }),
-  eventType: varchar("eventType", { length: 80 }).notNull(),
-  source: mysqlEnum("source", ["MANUAL", "SYSTEM", "GATEWAY"]).default("MANUAL").notNull(),
-  referenceId: varchar("referenceId", { length: 120 }),
-  payload: json("payload").$type<Record<string, unknown> | null>(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-}, (table) => ({
-  companyIdx: index("subscription_events_company_idx").on(table.companyId),
-  subscriptionIdx: index("subscription_events_subscription_idx").on(table.subscriptionId),
-  referenceUnique: uniqueIndex("subscription_events_reference_unique").on(table.referenceId),
-  createdIdx: index("subscription_events_created_idx").on(table.createdAt),
-}));
-
-export type SubscriptionEvent = typeof subscriptionEvents.$inferSelect;
-export type InsertSubscriptionEvent = typeof subscriptionEvents.$inferInsert;
-
-
-/** Arquitetura de planos do pacote ZIP, mantida em tabelas próprias durante a migração. */
+/** Planos comerciais da plataforma (limites e funções liberadas). */
 export const subscriptionPlans = mysqlTable("subscription_plans", {
   id: int("id").autoincrement().primaryKey(),
   name: varchar("name", { length: 120 }).notNull(),
@@ -335,16 +258,28 @@ export const subscriptionPlans = mysqlTable("subscription_plans", {
   nameIdx: index("subscription_plans_name_idx").on(table.name),
   availableIdx: index("subscription_plans_available_idx").on(table.availableForNew, table.active),
 }));
+
 export type SubscriptionPlan = typeof subscriptionPlans.$inferSelect;
 export type InsertSubscriptionPlan = typeof subscriptionPlans.$inferInsert;
 
+/** Assinatura de uma empresa a um plano. */
 export const companySubscriptions = mysqlTable("company_subscriptions", {
   id: int("id").autoincrement().primaryKey(),
   companyId: int("companyId").notNull().references(() => companies.id, { onDelete: "cascade" }),
   planId: int("planId").notNull().references(() => subscriptionPlans.id, { onDelete: "restrict" }),
-  status: mysqlEnum("status", ["active", "test", "suspended", "expired"]).notNull().default("active"),
+  status: mysqlEnum("status", ["trial", "active", "pending", "overdue", "suspended", "canceled", "test", "expired"]).notNull().default("active"),
   startsAt: date("startsAt").notNull(),
   endsAt: date("endsAt"),
+  asaasCustomerId: varchar("asaasCustomerId", { length: 64 }),
+  asaasSubscriptionId: varchar("asaasSubscriptionId", { length: 64 }),
+  billingInterval: mysqlEnum("billingInterval", ["monthly", "yearly"]),
+  amount: decimal("amount", { precision: 12, scale: 2 }),
+  currentPeriodStart: date("currentPeriodStart"),
+  currentPeriodEnd: date("currentPeriodEnd"),
+  trialEndsAt: date("trialEndsAt"),
+  gracePeriodEndsAt: date("gracePeriodEndsAt"),
+  cancelAtPeriodEnd: boolean("cancelAtPeriodEnd").notNull().default(false),
+  canceledAt: timestamp("canceledAt"),
   notes: text("notes"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -353,6 +288,88 @@ export const companySubscriptions = mysqlTable("company_subscriptions", {
   planIdx: index("company_subscriptions_plan_idx").on(table.planId),
   statusIdx: index("company_subscriptions_status_idx").on(table.status),
   endsAtIdx: index("company_subscriptions_ends_at_idx").on(table.endsAt),
+  asaasSubIdx: index("company_subscriptions_asaas_sub_idx").on(table.asaasSubscriptionId),
 }));
+
 export type CompanySubscription = typeof companySubscriptions.$inferSelect;
 export type InsertCompanySubscription = typeof companySubscriptions.$inferInsert;
+
+/** Cobranças/pagamentos (Asaas ou mock). */
+export const payments = mysqlTable("payments", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  subscriptionId: int("subscriptionId").references(() => companySubscriptions.id, { onDelete: "set null" }),
+  asaasPaymentId: varchar("asaasPaymentId", { length: 64 }),
+  asaasCustomerId: varchar("asaasCustomerId", { length: 64 }),
+  asaasSubscriptionId: varchar("asaasSubscriptionId", { length: 64 }),
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  netAmount: decimal("netAmount", { precision: 12, scale: 2 }),
+  billingType: mysqlEnum("billingType", ["BOLETO", "CREDIT_CARD", "PIX", "UNDEFINED", "MOCK"]).notNull().default("MOCK"),
+  status: mysqlEnum("status", ["PENDING", "CONFIRMED", "RECEIVED", "OVERDUE", "REFUNDED", "DELETED", "MOCK_APPROVED", "MOCK_PENDING", "MOCK_OVERDUE"]).notNull().default("PENDING"),
+  dueDate: date("dueDate"),
+  paymentDate: date("paymentDate"),
+  invoiceUrl: text("invoiceUrl"),
+  bankSlipUrl: text("bankSlipUrl"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  companyIdx: index("payments_company_idx").on(table.companyId),
+  subscriptionIdx: index("payments_subscription_idx").on(table.subscriptionId),
+  asaasPaymentIdx: index("payments_asaas_payment_idx").on(table.asaasPaymentId),
+  statusIdx: index("payments_status_idx").on(table.status),
+}));
+
+export type Payment = typeof payments.$inferSelect;
+export type InsertPayment = typeof payments.$inferInsert;
+
+/** Eventos de webhook (idempotência por eventId). */
+export const paymentEvents = mysqlTable("payment_events", {
+  id: int("id").autoincrement().primaryKey(),
+  eventId: varchar("eventId", { length: 128 }).notNull().unique(),
+  event: varchar("event", { length: 120 }).notNull(),
+  paymentId: int("paymentId"),
+  subscriptionId: int("subscriptionId"),
+  payload: text("payload").notNull(),
+  processed: boolean("processed").notNull().default(false),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({
+  processedIdx: index("payment_events_processed_idx").on(table.processed),
+}));
+
+export type PaymentEvent = typeof paymentEvents.$inferSelect;
+export type InsertPaymentEvent = typeof paymentEvents.$inferInsert;
+
+/**
+ * Registro imutável de auditoria (append-only).
+ * companyId isola o tenant; platform admin consulta com companyId opcional.
+ * Nunca armazenar senhas, tokens ou dados sensíveis em oldData/newData.
+ */
+export const auditLogs = mysqlTable("audit_logs", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").references(() => companies.id, { onDelete: "cascade" }),
+  userId: int("userId"),
+  userName: varchar("userName", { length: 255 }),
+  userEmail: varchar("userEmail", { length: 320 }),
+  action: varchar("action", { length: 64 }).notNull(),
+  module: varchar("module", { length: 64 }).notNull(),
+  entityType: varchar("entityType", { length: 64 }).notNull(),
+  entityId: int("entityId"),
+  entityLabel: varchar("entityLabel", { length: 255 }),
+  description: text("description").notNull(),
+  oldData: text("oldData"),
+  newData: text("newData"),
+  ipAddress: varchar("ipAddress", { length: 64 }),
+  userAgent: varchar("userAgent", { length: 512 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({
+  companyIdx: index("audit_logs_company_idx").on(table.companyId),
+  companyCreatedIdx: index("audit_logs_company_created_idx").on(table.companyId, table.createdAt),
+  userIdx: index("audit_logs_user_idx").on(table.userId),
+  entityIdx: index("audit_logs_entity_idx").on(table.entityType, table.entityId),
+  actionIdx: index("audit_logs_action_idx").on(table.action),
+  moduleIdx: index("audit_logs_module_idx").on(table.module),
+  createdIdx: index("audit_logs_created_idx").on(table.createdAt),
+}));
+
+export type AuditLog = typeof auditLogs.$inferSelect;
+export type InsertAuditLog = typeof auditLogs.$inferInsert;

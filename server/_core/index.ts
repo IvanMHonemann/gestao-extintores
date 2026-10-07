@@ -41,7 +41,37 @@ export async function createApp(): Promise<Express> {
     res.status(200).json({ ok: true });
   });
 
-  app.post("/api/scheduled/database-maintenance", async (req, res) => {
+  
+  app.post("/api/webhooks/asaas", express.json(), async (req, res) => {
+    try {
+      const token = process.env.ASAAS_WEBHOOK_TOKEN || "";
+      const headerToken = String(req.headers["asaas-access-token"] || req.headers["x-asaas-token"] || "");
+      if (token && headerToken && token !== headerToken) {
+        return res.status(401).json({ error: "Invalid webhook token" });
+      }
+      const body = req.body || {};
+      const eventId = String(body.id || body.eventId || body.payment?.id || `${body.event || "evt"}_${Date.now()}`);
+      const event = String(body.event || body.type || "UNKNOWN");
+      const recorded = await (await import("../db")).recordPaymentEvent({
+        eventId,
+        event,
+        paymentId: body.payment?.id ? undefined : undefined,
+        subscriptionId: undefined,
+        payload: JSON.stringify(body),
+        processed: true,
+      });
+      if (recorded.duplicate) {
+        return res.json({ ok: true, duplicate: true });
+      }
+      // Future: map Asaas events to subscription status updates
+      return res.json({ ok: true, duplicate: false });
+    } catch (error) {
+      console.error("[Asaas webhook]", error);
+      return res.status(500).json({ error: "Webhook processing failed" });
+    }
+  });
+
+app.post("/api/scheduled/database-maintenance", async (req, res) => {
     try {
       const configuredSecret = process.env.SCHEDULE_SECRET;
       const suppliedSecret = req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.headers["x-schedule-secret"];

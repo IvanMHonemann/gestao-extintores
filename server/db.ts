@@ -1,6 +1,7 @@
-import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
+import { nanoid } from "nanoid";
 import {
   clients,
   companies,
@@ -11,11 +12,11 @@ import {
   serviceOrderItems,
   trashItems,
   systemSettings,
-  users,
   subscriptionPlans,
   companySubscriptions,
-  type InsertSubscriptionPlan,
-  type InsertCompanySubscription,
+  payments,
+  paymentEvents,
+  users,
   type InsertClient,
   type InsertExtinguisher,
   type InsertServiceOrder,
@@ -23,6 +24,16 @@ import {
   type InsertUser,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
+
+/** Token público opaco (URL-safe). 21 chars ≈ 126 bits de entropia. */
+export function generateExtinguisherPublicToken(): string {
+  return nanoid(21);
+}
+
+export function buildExtinguisherPublicUrl(token: string): string {
+  const base = (ENV.appPublicUrl || "").replace(/\/$/, "");
+  return `${base}/e/${token}`;
+}
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _dbUrl: string | null = null;
@@ -49,27 +60,42 @@ function monitoredPool(pool: mysql.Pool): mysql.Pool {
 
 export async function getDb() {
   const databaseUrl = process.env.EXTERNAL_DATABASE_URL ?? process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    console.warn("[Database] EXTERNAL_DATABASE_URL is not set");
+    return null;
+  }
   if (_db && _dbUrl !== databaseUrl) {
     await _pool?.end().catch(() => undefined);
     _pool = null;
     _db = null;
     _dbUrl = null;
   }
-  if (!_db && databaseUrl) {
+  if (!_db) {
     try {
+      // TiDB Cloud / managed MySQL: TLS required; keep pool small and with keep-alive
+      // to avoid dropped idle connections behind cloud gateways.
       _pool = monitoredPool(mysql.createPool({
         uri: databaseUrl,
-        ssl: { rejectUnauthorized: true },
+        ssl: { rejectUnauthorized: true, minVersion: "TLSv1.2" as any },
         connectionLimit: Math.max(1, Number(process.env.DB_CONNECTION_LIMIT || 10)),
-        queueLimit: Math.max(0, Number(process.env.DB_QUEUE_LIMIT || 50)),
-        connectTimeout: Math.max(1000, Number(process.env.DB_CONNECT_TIMEOUT_MS || 10000)),
+        queueLimit: Math.max(0, Number(process.env.DB_QUEUE_LIMIT || 100)),
+        connectTimeout: Math.max(1000, Number(process.env.DB_CONNECT_TIMEOUT_MS || 15000)),
         enableKeepAlive: true,
         keepAliveInitialDelay: Math.max(1000, Number(process.env.DB_KEEP_ALIVE_MS || 10000)),
+        waitForConnections: true,
+        idleTimeout: 60000,
+        maxIdle: 2,
       }));
+      // Fail fast if credentials/network are wrong instead of serving a broken pool
+      const probe = await (_pool as mysql.Pool).query("SELECT 1 AS ok");
+      if (!probe) throw new Error("Database probe returned empty result");
       _db = drizzle(_pool as any) as ReturnType<typeof drizzle>;
       _dbUrl = databaseUrl;
+      console.log("[Database] Connected successfully");
     } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
+      console.error("[Database] Failed to connect:", error instanceof Error ? error.message : error);
+      await _pool?.end().catch(() => undefined);
+      _pool = null;
       _db = null;
       _dbUrl = null;
     }
@@ -227,7 +253,7 @@ export async function getClients(cityFilter: string | undefined, accountId: numb
   if (!db) return [];
   const conditions = [eq(clients.accountId, tenant)];
   if (cityFilter && cityFilter !== "TODAS") conditions.push(eq(clients.city, cityFilter));
-  return await db.select().from(clients).where(and(...conditions)).orderBy(desc(clients.createdAt));
+  return await db.select().from(clients).where(and(...conditions)).orderBy(desc(clients.createdAt)).limit(500);
 }
 
 export async function getClientById(id: number, accountId: number) {
@@ -309,7 +335,15 @@ export async function getExtinguishers(accountId: number) {
   const tenant = requireAccountId(accountId);
   const db = await getDb();
   if (!db) return [];
-  return await db.select().from(extinguishers).where(eq(extinguishers.accountId, tenant)).orderBy(extinguishers.expirationDate);
+  return await db.select().from(extinguishers).where(eq(extinguishers.accountId, tenant)).orderBy(extinguishers.expirationDate).limit(500);
+}
+
+export async function getExtinguisherById(id: number, accountId: number) {
+  const tenant = requireAccountId(accountId);
+  const db = await getDb();
+  if (!db) return undefined;
+  const rows = await db.select().from(extinguishers).where(and(eq(extinguishers.id, id), eq(extinguishers.accountId, tenant))).limit(1);
+  return rows[0];
 }
 
 export async function getExtinguishersByClient(clientId: number, accountId: number) {
@@ -325,8 +359,110 @@ export async function createExtinguisher(data: InsertExtinguisher, accountId: nu
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
   if (data.accountId !== tenant || !(await getClientById(data.clientId, tenant))) throw new Error("Cliente sem permissão");
-  const result = await db.insert(extinguishers).values({ ...data, accountId: tenant });
+  const publicToken = data.publicToken?.trim() || generateExtinguisherPublicToken();
+  const result = await db.insert(extinguishers).values({ ...data, accountId: tenant, publicToken });
   return Number(result[0].insertId);
+}
+
+/** Garante publicToken no extintor do tenant; não regenera se já existir. */
+export async function ensureExtinguisherPublicToken(id: number, accountId: number): Promise<string> {
+  const tenant = requireAccountId(accountId);
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const rows = await db
+    .select()
+    .from(extinguishers)
+    .where(and(eq(extinguishers.id, id), eq(extinguishers.accountId, tenant)))
+    .limit(1);
+  const row = rows[0];
+  if (!row) throw new Error("Extintor sem permissão");
+  if (row.publicToken) return row.publicToken;
+  const token = generateExtinguisherPublicToken();
+  await db
+    .update(extinguishers)
+    .set({ publicToken: token })
+    .where(and(eq(extinguishers.id, id), eq(extinguishers.accountId, tenant), isNull(extinguishers.publicToken)));
+  const after = await db
+    .select({ publicToken: extinguishers.publicToken })
+    .from(extinguishers)
+    .where(and(eq(extinguishers.id, id), eq(extinguishers.accountId, tenant)))
+    .limit(1);
+  return after[0]?.publicToken || token;
+}
+
+/** Backfill de tokens faltantes em um tenant (ou todos se accountId omitido no backfill global). */
+export async function backfillExtinguisherPublicTokens(accountId: number): Promise<{ updated: number }> {
+  const tenant = requireAccountId(accountId);
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const missing = await db
+    .select({ id: extinguishers.id })
+    .from(extinguishers)
+    .where(and(eq(extinguishers.accountId, tenant), or(isNull(extinguishers.publicToken), eq(extinguishers.publicToken, ""))!));
+  let updated = 0;
+  for (const row of missing) {
+    const token = generateExtinguisherPublicToken();
+    await db
+      .update(extinguishers)
+      .set({ publicToken: token })
+      .where(and(eq(extinguishers.id, row.id), eq(extinguishers.accountId, tenant)));
+    updated += 1;
+  }
+  return { updated };
+}
+
+/**
+ * Consulta pública por token. Não exige login.
+ * Foco em dados operacionais da empresa de manutenção (diferente do selo Inmetro).
+ */
+export async function getPublicExtinguisherByToken(token: string) {
+  const clean = (token || "").trim();
+  if (!clean || clean.length < 10 || clean.length > 32) return null;
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select({
+      id: extinguishers.id,
+      accountId: extinguishers.accountId,
+      publicToken: extinguishers.publicToken,
+      typeModel: extinguishers.typeModel,
+      capacity: extinguishers.capacity,
+      serialNumber: extinguishers.serialNumber,
+      locationInBuilding: extinguishers.locationInBuilding,
+      expirationDate: extinguishers.expirationDate,
+      lastInspectionDate: extinguishers.lastInspectionDate,
+      status: extinguishers.status,
+      notes: extinguishers.notes,
+      clientName: clients.companyName,
+      clientCity: clients.city,
+      clientPhone: clients.phone,
+      companyName: companies.name,
+    })
+    .from(extinguishers)
+    .innerJoin(clients, and(eq(clients.id, extinguishers.clientId), eq(clients.accountId, extinguishers.accountId)))
+    .innerJoin(companies, eq(companies.id, extinguishers.accountId))
+    .where(eq(extinguishers.publicToken, clean))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    publicToken: row.publicToken,
+    typeModel: row.typeModel,
+    capacity: row.capacity,
+    serialNumber: row.serialNumber,
+    locationInBuilding: row.locationInBuilding,
+    expirationDate: row.expirationDate,
+    lastInspectionDate: row.lastInspectionDate,
+    status: row.status,
+    notes: row.notes,
+    clientName: row.clientName,
+    clientCity: row.clientCity,
+    companyName: row.companyName,
+    companyPhone: row.clientPhone, // contato do cliente/unidade (útil para a equipe em campo)
+    _internalId: row.id,
+    _accountId: row.accountId,
+  };
 }
 
 export async function updateExtinguisher(id: number, data: Partial<InsertExtinguisher>, accountId: number) {
@@ -357,7 +493,7 @@ export async function getExpiringExtinguishers(daysAhead: number, accountId: num
   const tenant = requireAccountId(accountId);
   const db = await getDb();
   if (!db) return [];
-  const result = await db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).innerJoin(clients, and(eq(extinguishers.clientId, clients.id), eq(extinguishers.accountId, clients.accountId))).where(and(eq(extinguishers.accountId, tenant), eq(clients.accountId, tenant), sql`${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL ${daysAhead} DAY)`)).orderBy(extinguishers.expirationDate);
+  const result = await db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).innerJoin(clients, and(eq(extinguishers.clientId, clients.id), eq(extinguishers.accountId, clients.accountId))).where(and(eq(extinguishers.accountId, tenant), eq(clients.accountId, tenant), sql`${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL ${daysAhead} DAY)`)).orderBy(extinguishers.expirationDate).limit(300);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return result.map(item => {
@@ -501,7 +637,8 @@ export async function getServiceOrders(clientId: number | undefined, accountId: 
   const query = db.select({ order: serviceOrders, client: clients }).from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id));
   // O histórico deve seguir a data do atendimento informada na OS, não a data
   // técnica em que o registro foi criado ou posteriormente editado.
-  return await query.where(and(...conditions)).orderBy(desc(serviceOrders.orderDate), desc(serviceOrders.createdAt));
+  // Limite de segurança: telas devem usar orders.page para volumes grandes.
+  return await query.where(and(...conditions)).orderBy(desc(serviceOrders.orderDate), desc(serviceOrders.createdAt)).limit(clientId ? 200 : 500);
 }
 
 export async function getServiceOrderHistory(clientId: number, accountId: number) {
@@ -662,132 +799,585 @@ export async function getDashboardStats(accountId: number) {
   const db = await getDb();
   if (!db) return { totalClients: 0, totalCities: 0, totalExtinguishers: 0, nearExpirationCount: 0, expiredCount: 0, totalOrders: 0, alertDaysConfig: 30 };
   const daysAhead = parseInt(await getSetting("alert_days_ahead", tenant, "30"), 10) || 30;
-  const allClients = await getClients(undefined, tenant);
-  const cityCount = new Set(allClients.map(client => client.city)).size;
-  const [extinguisherTotalRows, expiredRows, nearRows] = await Promise.all([
+  // Contagens em SQL — não carrega milhares de linhas em memória
+  const [clientRows, cityRows, extinguisherTotalRows, expiredRows, nearRows, orderRows] = await Promise.all([
+    db.select({ total: sql<number>`count(*)` }).from(clients).where(eq(clients.accountId, tenant)),
+    db.select({ total: sql<number>`count(distinct ${clients.city})` }).from(clients).where(and(eq(clients.accountId, tenant), sql`${clients.city} is not null AND ${clients.city} <> ''`)),
     db.select({ total: sql<number>`count(*)` }).from(extinguishers).where(eq(extinguishers.accountId, tenant)),
     db.select({ total: sql<number>`count(*)` }).from(extinguishers).where(and(eq(extinguishers.accountId, tenant), sql`${extinguishers.expirationDate} < CURRENT_DATE()`)),
     db.select({ total: sql<number>`count(*)` }).from(extinguishers).where(and(eq(extinguishers.accountId, tenant), sql`${extinguishers.expirationDate} >= CURRENT_DATE() AND ${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL ${daysAhead} DAY)`)),
+    db.select({ total: sql<number>`count(*)` }).from(serviceOrders).where(eq(serviceOrders.accountId, tenant)),
   ]);
-  const totalExtinguishers = Number(extinguisherTotalRows[0]?.total || 0);
-  const expiredCount = Number(expiredRows[0]?.total || 0);
-  const nearExpirationCount = Number(nearRows[0]?.total || 0);
-  const orders = await getServiceOrders(undefined, tenant);
-  return { totalClients: allClients.length, totalCities: cityCount, totalExtinguishers, nearExpirationCount, expiredCount, totalOrders: orders.length, alertDaysConfig: daysAhead };
+  return {
+    totalClients: Number(clientRows[0]?.total || 0),
+    totalCities: Number(cityRows[0]?.total || 0),
+    totalExtinguishers: Number(extinguisherTotalRows[0]?.total || 0),
+    nearExpirationCount: Number(nearRows[0]?.total || 0),
+    expiredCount: Number(expiredRows[0]?.total || 0),
+    totalOrders: Number(orderRows[0]?.total || 0),
+    alertDaysConfig: daysAhead,
+  };
 }
 
-
-/* Assinaturas do pacote ZIP */
+/* Planos e assinaturas (admin da plataforma) */
 export async function listSubscriptionPlans() {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(subscriptionPlans).orderBy(subscriptionPlans.name);
+  return db.select().from(subscriptionPlans).orderBy(desc(subscriptionPlans.createdAt));
 }
 
-export async function createSubscriptionPlan(input: InsertSubscriptionPlan) {
+export async function createSubscriptionPlan(data: {
+  name: string;
+  description?: string | null;
+  price: string;
+  billingCycle: "monthly" | "yearly";
+  maxUsers?: number | null;
+  maxClients?: number | null;
+  maxExtinguishers?: number | null;
+  featureDashboard?: boolean;
+  featureClients?: boolean;
+  featureExtinguishers?: boolean;
+  featureServiceOrders?: boolean;
+  featureAlerts?: boolean;
+  featureReports?: boolean;
+  featureUsers?: boolean;
+  featureBackup?: boolean;
+  featureOfflinePwa?: boolean;
+  availableForNew?: boolean;
+}) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  const result = await db.insert(subscriptionPlans).values({
-    name: input.name.trim(),
-    description: input.description ?? null,
-    price: input.price ?? "0.00",
-    billingCycle: input.billingCycle ?? "monthly",
-    maxUsers: input.maxUsers ?? null,
-    maxClients: input.maxClients ?? null,
-    maxExtinguishers: input.maxExtinguishers ?? null,
-    featureDashboard: input.featureDashboard ?? false,
-    featureClients: input.featureClients ?? false,
-    featureExtinguishers: input.featureExtinguishers ?? false,
-    featureServiceOrders: input.featureServiceOrders ?? false,
-    featureAlerts: input.featureAlerts ?? false,
-    featureReports: input.featureReports ?? false,
-    featureUsers: input.featureUsers ?? false,
-    featureBackup: input.featureBackup ?? false,
-    featureOfflinePwa: input.featureOfflinePwa ?? false,
-    availableForNew: input.availableForNew ?? true,
-    active: input.active ?? true,
+  const [result] = await db.insert(subscriptionPlans).values({
+    name: data.name,
+    description: data.description ?? null,
+    price: data.price,
+    billingCycle: data.billingCycle,
+    maxUsers: data.maxUsers ?? null,
+    maxClients: data.maxClients ?? null,
+    maxExtinguishers: data.maxExtinguishers ?? null,
+    featureDashboard: data.featureDashboard ?? false,
+    featureClients: data.featureClients ?? false,
+    featureExtinguishers: data.featureExtinguishers ?? false,
+    featureServiceOrders: data.featureServiceOrders ?? false,
+    featureAlerts: data.featureAlerts ?? false,
+    featureReports: data.featureReports ?? false,
+    featureUsers: data.featureUsers ?? false,
+    featureBackup: data.featureBackup ?? false,
+    featureOfflinePwa: data.featureOfflinePwa ?? false,
+    availableForNew: data.availableForNew ?? true,
+    active: true,
   });
-  return { id: Number(result[0].insertId) };
+  return { id: Number((result as any).insertId) };
 }
 
-export async function updateSubscriptionPlan(id: number, input: Partial<InsertSubscriptionPlan>) {
+export async function updateSubscriptionPlan(id: number, data: Partial<{
+  name: string;
+  description: string | null;
+  price: string;
+  billingCycle: "monthly" | "yearly";
+  maxUsers: number | null;
+  maxClients: number | null;
+  maxExtinguishers: number | null;
+  featureDashboard: boolean;
+  featureClients: boolean;
+  featureExtinguishers: boolean;
+  featureServiceOrders: boolean;
+  featureAlerts: boolean;
+  featureReports: boolean;
+  featureUsers: boolean;
+  featureBackup: boolean;
+  featureOfflinePwa: boolean;
+  availableForNew: boolean;
+  active: boolean;
+}>) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  const values: Record<string, unknown> = { ...input };
-  if (input.name !== undefined) values.name = input.name.trim();
-  await db.update(subscriptionPlans).set(values as any).where(eq(subscriptionPlans.id, id));
-  return { success: true } as const;
+  await db.update(subscriptionPlans).set(data).where(eq(subscriptionPlans.id, id));
+  return { success: true as const };
 }
 
 export async function listCompanySubscriptions() {
   const db = await getDb();
   if (!db) return [];
-  return db.select({
-    id: companySubscriptions.id,
-    companyId: companySubscriptions.companyId,
-    planId: companySubscriptions.planId,
-    status: companySubscriptions.status,
-    startsAt: companySubscriptions.startsAt,
-    endsAt: companySubscriptions.endsAt,
-    notes: companySubscriptions.notes,
-    createdAt: companySubscriptions.createdAt,
-    updatedAt: companySubscriptions.updatedAt,
-    companyName: companies.name,
-    planName: subscriptionPlans.name,
-    planPrice: subscriptionPlans.price,
-    billingCycle: subscriptionPlans.billingCycle,
-  })
+  const rows = await db
+    .select({
+      id: companySubscriptions.id,
+      companyId: companySubscriptions.companyId,
+      planId: companySubscriptions.planId,
+      status: companySubscriptions.status,
+      startsAt: companySubscriptions.startsAt,
+      endsAt: companySubscriptions.endsAt,
+      notes: companySubscriptions.notes,
+      createdAt: companySubscriptions.createdAt,
+      companyName: companies.name,
+      planName: subscriptionPlans.name,
+      planPrice: subscriptionPlans.price,
+      billingCycle: subscriptionPlans.billingCycle,
+      maxUsers: subscriptionPlans.maxUsers,
+      maxClients: subscriptionPlans.maxClients,
+      maxExtinguishers: subscriptionPlans.maxExtinguishers,
+      featureDashboard: subscriptionPlans.featureDashboard,
+      featureClients: subscriptionPlans.featureClients,
+      featureExtinguishers: subscriptionPlans.featureExtinguishers,
+      featureServiceOrders: subscriptionPlans.featureServiceOrders,
+      featureAlerts: subscriptionPlans.featureAlerts,
+      featureReports: subscriptionPlans.featureReports,
+      featureUsers: subscriptionPlans.featureUsers,
+      featureBackup: subscriptionPlans.featureBackup,
+      featureOfflinePwa: subscriptionPlans.featureOfflinePwa,
+    })
     .from(companySubscriptions)
     .innerJoin(companies, eq(companySubscriptions.companyId, companies.id))
     .innerJoin(subscriptionPlans, eq(companySubscriptions.planId, subscriptionPlans.id))
     .orderBy(desc(companySubscriptions.createdAt));
+  return rows;
 }
 
 export async function getSubscriptionStats() {
-  const rows = await listCompanySubscriptions();
-  const now = Date.now();
-  return {
-    registered: rows.length,
-    activeOrTest: rows.filter((subscription) => ["active", "test"].includes(subscription.status)).length,
-    suspended: rows.filter((subscription) => subscription.status === "suspended").length,
-    nearExpiry: rows.filter((subscription) => subscription.endsAt && new Date(`${subscription.endsAt}T23:59:59Z`).getTime() - now <= 7 * 86400000 && new Date(`${subscription.endsAt}T23:59:59Z`).getTime() >= now).length,
-  };
+  const db = await getDb();
+  if (!db) return { registered: 0, activeOrTest: 0, suspended: 0, nearExpiry: 0 };
+  const all = await db.select().from(companySubscriptions);
+  const now = new Date();
+  const in30 = new Date(now.getTime() + 30 * 24 * 3600 * 1000);
+  let activeOrTest = 0;
+  let suspended = 0;
+  let nearExpiry = 0;
+  for (const s of all) {
+    if (s.status === "active" || s.status === "test") activeOrTest += 1;
+    if (s.status === "suspended") suspended += 1;
+    if (s.endsAt && (s.status === "active" || s.status === "test")) {
+      const end = new Date(s.endsAt);
+      if (end >= now && end <= in30) nearExpiry += 1;
+    }
+  }
+  return { registered: all.length, activeOrTest, suspended, nearExpiry };
 }
 
-type CompanySubscriptionInput = Omit<InsertCompanySubscription, "startsAt" | "endsAt"> & { startsAt: string | Date; endsAt?: string | Date | null };
-
-function dateOnly(value: string | Date | null | undefined): Date | null {
-  if (!value) return null;
-  const date = value instanceof Date ? value : new Date(`${value}T00:00:00.000Z`);
-  if (Number.isNaN(date.getTime())) throw new Error("Data inválida.");
-  return date;
-}
-
-export async function createCompanySubscription(input: CompanySubscriptionInput) {
+export async function createCompanySubscription(data: {
+  companyId: number;
+  planId: number;
+  status: "trial" | "active" | "pending" | "overdue" | "suspended" | "canceled" | "test" | "expired";
+  startsAt: string;
+  endsAt?: string | null;
+  notes?: string | null;
+}) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  const startsAt = dateOnly(input.startsAt);
-  if (!startsAt) throw new Error("Data inicial obrigatória.");
-  const endsAt = dateOnly(input.endsAt);
-  if (endsAt && endsAt.getTime() < startsAt.getTime()) throw new Error("O vencimento deve ser posterior ao início.");
-  const result = await db.insert(companySubscriptions).values({
+  const [result] = await db.insert(companySubscriptions).values({
+    companyId: data.companyId,
+    planId: data.planId,
+    status: data.status,
+    startsAt: new Date(data.startsAt),
+    endsAt: data.endsAt ? new Date(data.endsAt) : null,
+    notes: data.notes ?? null,
+  } as any);
+  // Mantém companies.planId / status alinhados com a assinatura vigente
+  await db.update(companies).set({
+    planId: data.planId,
+    subscriptionStatus: data.status,
+    subscriptionStartedAt: new Date(data.startsAt),
+    subscriptionExpiresAt: data.endsAt ? new Date(data.endsAt) : null,
+  } as any).where(eq(companies.id, data.companyId));
+  return { id: Number((result as any).insertId) };
+}
+
+export async function updateCompanySubscription(id: number, data: Partial<{
+  planId: number;
+  status: "trial" | "active" | "pending" | "overdue" | "suspended" | "canceled" | "test" | "expired";
+  startsAt: string;
+  endsAt: string | null;
+  notes: string | null;
+}>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  await db.update(companySubscriptions).set({
+    ...data,
+    startsAt: data.startsAt ? new Date(data.startsAt) : undefined,
+    endsAt: data.endsAt === null ? null : data.endsAt ? new Date(data.endsAt) : undefined,
+  } as any).where(eq(companySubscriptions.id, id));
+  // Sincroniza empresa quando o admin altera a assinatura
+  const rows = await db.select().from(companySubscriptions).where(eq(companySubscriptions.id, id)).limit(1);
+  const sub = rows[0];
+  if (sub) {
+    const patch: Record<string, unknown> = {};
+    if (data.planId !== undefined) patch.planId = data.planId;
+    if (data.status !== undefined) patch.subscriptionStatus = data.status;
+    if (data.endsAt !== undefined) patch.subscriptionExpiresAt = data.endsAt ? new Date(data.endsAt) : null;
+    if (data.startsAt !== undefined) patch.subscriptionStartedAt = new Date(data.startsAt);
+    if (Object.keys(patch).length) {
+      await db.update(companies).set(patch as any).where(eq(companies.id, sub.companyId));
+    }
+  }
+  return { success: true as const };
+}
+
+// --- Billing / Asaas helpers ---
+
+export async function getSubscriptionPlanById(planId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(subscriptionPlans).where(eq(subscriptionPlans.id, planId)).limit(1);
+  return rows[0] ?? null;
+}
+
+/** Resolve plano da empresa: assinatura vigente → companies.planId → auto-cura. */
+export async function resolveCompanyPlan(companyId: number) {
+  const db = await getDb();
+  if (!db) return { company: null, subscription: null, plan: null as any };
+  const companyRows = await db.select().from(companies).where(eq(companies.id, companyId)).limit(1);
+  const company = companyRows[0] ?? null;
+  const sub = await getLatestCompanySubscription(companyId);
+  let planId = sub?.planId ?? company?.planId ?? null;
+  let plan = planId ? await getSubscriptionPlanById(Number(planId)) : null;
+
+  // Se a assinatura tem plano mas a empresa não, alinha (auto-cura)
+  if (company && sub?.planId && !company.planId) {
+    try {
+      await db.update(companies).set({
+        planId: sub.planId,
+        subscriptionStatus: (sub.status as any) || company.subscriptionStatus,
+      } as any).where(eq(companies.id, companyId));
+      (company as any).planId = sub.planId;
+    } catch {
+      /* ignore heal errors */
+    }
+  }
+  // Empresa tem planId mas sem linha de assinatura legível: ainda devolve o plano
+  if (!plan && company?.planId) {
+    plan = await getSubscriptionPlanById(Number(company.planId));
+  }
+  return { company, subscription: sub, plan };
+}
+
+/** Assinatura vigente preferencial; se não houver, a mais recente. */
+export async function getLatestCompanySubscription(companyId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select()
+    .from(companySubscriptions)
+    .where(eq(companySubscriptions.companyId, companyId))
+    .orderBy(desc(companySubscriptions.createdAt));
+  if (!rows.length) return null;
+  const preferred = rows.find((r) =>
+    ["active", "trial", "test", "pending", "overdue"].includes(String(r.status)),
+  );
+  return preferred ?? rows[0];
+}
+
+export async function updateCompanySubscriptionFields(
+  companyId: number,
+  data: Partial<{
+    planId: number | null;
+    subscriptionStatus: "trial" | "active" | "pending" | "overdue" | "suspended" | "canceled" | "test" | "expired" | null;
+    asaasCustomerId: string | null;
+    asaasSubscriptionId: string | null;
+    subscriptionStartedAt: Date | null;
+    subscriptionExpiresAt: Date | null;
+    trialEndsAt: Date | null;
+    gracePeriodEndsAt: Date | null;
+  }>,
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  await db.update(companies).set(data as any).where(eq(companies.id, companyId));
+  return { success: true as const };
+}
+
+export async function listPaymentsForCompany(companyId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(payments).where(eq(payments.companyId, companyId)).orderBy(desc(payments.createdAt));
+}
+
+export async function listAllPayments(limit = 200) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: payments.id,
+      companyId: payments.companyId,
+      subscriptionId: payments.subscriptionId,
+      amount: payments.amount,
+      netAmount: payments.netAmount,
+      billingType: payments.billingType,
+      status: payments.status,
+      dueDate: payments.dueDate,
+      paymentDate: payments.paymentDate,
+      createdAt: payments.createdAt,
+      companyName: companies.name,
+    })
+    .from(payments)
+    .innerJoin(companies, eq(payments.companyId, companies.id))
+    .orderBy(desc(payments.createdAt))
+    .limit(limit);
+}
+
+export async function createPaymentRecord(data: {
+  companyId: number;
+  subscriptionId?: number | null;
+  asaasPaymentId?: string | null;
+  asaasCustomerId?: string | null;
+  asaasSubscriptionId?: string | null;
+  amount: string;
+  netAmount?: string | null;
+  billingType?: "BOLETO" | "CREDIT_CARD" | "PIX" | "UNDEFINED" | "MOCK";
+  status?: "PENDING" | "CONFIRMED" | "RECEIVED" | "OVERDUE" | "REFUNDED" | "DELETED" | "MOCK_APPROVED" | "MOCK_PENDING" | "MOCK_OVERDUE";
+  dueDate?: string | null;
+  paymentDate?: string | null;
+  invoiceUrl?: string | null;
+  bankSlipUrl?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const [result] = await db.insert(payments).values({
+    companyId: data.companyId,
+    subscriptionId: data.subscriptionId ?? null,
+    asaasPaymentId: data.asaasPaymentId ?? null,
+    asaasCustomerId: data.asaasCustomerId ?? null,
+    asaasSubscriptionId: data.asaasSubscriptionId ?? null,
+    amount: data.amount,
+    netAmount: data.netAmount ?? null,
+    billingType: data.billingType ?? "MOCK",
+    status: data.status ?? "PENDING",
+    dueDate: data.dueDate ?? null,
+    paymentDate: data.paymentDate ?? null,
+    invoiceUrl: data.invoiceUrl ?? null,
+    bankSlipUrl: data.bankSlipUrl ?? null,
+  } as any);
+  return { id: Number((result as any).insertId) };
+}
+
+export async function findPaymentEventByEventId(eventId: string) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(paymentEvents).where(eq(paymentEvents.eventId, eventId)).limit(1);
+  return rows[0] ?? null;
+}
+
+export async function recordPaymentEvent(data: {
+  eventId: string;
+  event: string;
+  paymentId?: number | null;
+  subscriptionId?: number | null;
+  payload: string;
+  processed?: boolean;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const existing = await findPaymentEventByEventId(data.eventId);
+  if (existing) return { id: existing.id, duplicate: true as const };
+  const [result] = await db.insert(paymentEvents).values({
+    eventId: data.eventId,
+    event: data.event,
+    paymentId: data.paymentId ?? null,
+    subscriptionId: data.subscriptionId ?? null,
+    payload: data.payload,
+    processed: data.processed ?? true,
+  });
+  return { id: Number((result as any).insertId), duplicate: false as const };
+}
+
+export async function listAvailablePlansForCompanies() {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(subscriptionPlans)
+    .where(and(eq(subscriptionPlans.active, true), eq(subscriptionPlans.availableForNew, true)))
+    .orderBy(subscriptionPlans.price);
+}
+
+export async function applyMockCheckout(input: {
+  companyId: number;
+  planId: number;
+  outcome: "approved" | "pending" | "overdue" | "canceled";
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const planRows = await db.select().from(subscriptionPlans).where(eq(subscriptionPlans.id, input.planId)).limit(1);
+  const plan = planRows[0];
+  if (!plan) throw new Error("Plano não encontrado");
+
+  const today = new Date();
+  const ymd = today.toISOString().slice(0, 10);
+  const periodDays = plan.billingCycle === "yearly" ? 365 : 30;
+  const periodEnd = new Date(today.getTime() + periodDays * 24 * 3600 * 1000);
+  const periodEndYmd = periodEnd.toISOString().slice(0, 10);
+  const grace = new Date(periodEnd.getTime() + 3 * 24 * 3600 * 1000);
+
+  const statusMap = {
+    approved: "active" as const,
+    pending: "pending" as const,
+    overdue: "overdue" as const,
+    canceled: "canceled" as const,
+  };
+  const payStatusMap = {
+    approved: "MOCK_APPROVED" as const,
+    pending: "MOCK_PENDING" as const,
+    overdue: "MOCK_OVERDUE" as const,
+    canceled: "DELETED" as const,
+  };
+
+  const subStatus = statusMap[input.outcome];
+  const [subResult] = await db.insert(companySubscriptions).values({
     companyId: input.companyId,
     planId: input.planId,
-    status: input.status ?? "active",
-    startsAt,
-    endsAt,
-    notes: input.notes ?? null,
-  });
-  return { id: Number(result[0].insertId) };
+    status: subStatus,
+    startsAt: ymd,
+    endsAt: periodEndYmd,
+    billingInterval: plan.billingCycle,
+    amount: plan.price,
+    currentPeriodStart: ymd,
+    currentPeriodEnd: periodEndYmd,
+    gracePeriodEndsAt: grace.toISOString().slice(0, 10),
+    cancelAtPeriodEnd: input.outcome === "canceled",
+    canceledAt: input.outcome === "canceled" ? today : null,
+    asaasCustomerId: `cus_mock_${input.companyId}`,
+    asaasSubscriptionId: `sub_mock_${input.companyId}_${Date.now()}`,
+    notes: `Mock checkout: ${input.outcome}`,
+  } as any);
+  const subscriptionId = Number((subResult as any).insertId);
+
+  const [payResult] = await db.insert(payments).values({
+    companyId: input.companyId,
+    subscriptionId,
+    asaasPaymentId: `pay_mock_${Date.now()}`,
+    asaasCustomerId: `cus_mock_${input.companyId}`,
+    asaasSubscriptionId: `sub_mock_${input.companyId}`,
+    amount: plan.price,
+    netAmount: plan.price,
+    billingType: "MOCK",
+    status: payStatusMap[input.outcome],
+    dueDate: ymd,
+    paymentDate: input.outcome === "approved" ? ymd : null,
+    invoiceUrl: "https://mock.local/invoice",
+  } as any);
+  const paymentId = Number((payResult as any).insertId);
+
+  await db.update(companies).set({
+    planId: input.planId,
+    subscriptionStatus: subStatus,
+    asaasCustomerId: `cus_mock_${input.companyId}`,
+    asaasSubscriptionId: `sub_mock_${input.companyId}`,
+    subscriptionStartedAt: today,
+    subscriptionExpiresAt: periodEnd,
+    gracePeriodEndsAt: grace,
+  } as any).where(eq(companies.id, input.companyId));
+
+  return { subscriptionId, paymentId, status: subStatus };
 }
 
-export async function updateCompanySubscription(id: number, input: Partial<CompanySubscriptionInput>) {
+export async function ensureSeedPlans() {
   const db = await getDb();
-  if (!db) throw new Error("Database not connected");
-  const values: Record<string, unknown> = { ...input };
-  if (input.startsAt !== undefined) values.startsAt = dateOnly(input.startsAt);
-  if (input.endsAt !== undefined) values.endsAt = dateOnly(input.endsAt);
-  if (values.startsAt instanceof Date && values.endsAt instanceof Date && values.endsAt.getTime() < values.startsAt.getTime()) throw new Error("O vencimento deve ser posterior ao início.");
-  await db.update(companySubscriptions).set(values as any).where(eq(companySubscriptions.id, id));
-  return { success: true } as const;
+  if (!db) return;
+
+  const catalog = [
+    {
+      name: "Start",
+      description: "Ideal para quem está começando",
+      price: "59.90",
+      billingCycle: "monthly" as const,
+      maxUsers: 1,
+      maxClients: 1000,
+      maxExtinguishers: 3000,
+      featureDashboard: true,
+      featureClients: true,
+      featureExtinguishers: true,
+      featureServiceOrders: true,
+      featureAlerts: true,
+      featureReports: false,
+      featureUsers: false,
+      featureBackup: true,
+      featureOfflinePwa: true,
+      availableForNew: true,
+      active: true,
+    },
+    {
+      name: "Profissional",
+      description: "Para equipes em operação",
+      price: "99.90",
+      billingCycle: "monthly" as const,
+      maxUsers: 5,
+      maxClients: null,
+      maxExtinguishers: 10000,
+      featureDashboard: true,
+      featureClients: true,
+      featureExtinguishers: true,
+      featureServiceOrders: true,
+      featureAlerts: true,
+      featureReports: true,
+      featureUsers: true,
+      featureBackup: true,
+      featureOfflinePwa: true,
+      availableForNew: true,
+      active: true,
+    },
+    {
+      name: "Empresarial",
+      description: "Para operação maior e crescimento",
+      price: "169.90",
+      billingCycle: "monthly" as const,
+      maxUsers: 10,
+      maxClients: null,
+      maxExtinguishers: null,
+      featureDashboard: true,
+      featureClients: true,
+      featureExtinguishers: true,
+      featureServiceOrders: true,
+      featureAlerts: true,
+      featureReports: true,
+      featureUsers: true,
+      featureBackup: true,
+      featureOfflinePwa: true,
+      availableForNew: true,
+      active: true,
+    },
+  ];
+
+  const existing = await db.select().from(subscriptionPlans);
+  const byName = new Map(existing.map((p) => [String(p.name).toLowerCase().trim(), p]));
+
+  for (const plan of catalog) {
+    const key = plan.name.toLowerCase();
+    const row = byName.get(key);
+    if (row) {
+      await db
+        .update(subscriptionPlans)
+        .set({
+          description: plan.description,
+          price: plan.price,
+          billingCycle: plan.billingCycle,
+          maxUsers: plan.maxUsers,
+          maxClients: plan.maxClients,
+          maxExtinguishers: plan.maxExtinguishers,
+          featureDashboard: plan.featureDashboard,
+          featureClients: plan.featureClients,
+          featureExtinguishers: plan.featureExtinguishers,
+          featureServiceOrders: plan.featureServiceOrders,
+          featureAlerts: plan.featureAlerts,
+          featureReports: plan.featureReports,
+          featureUsers: plan.featureUsers,
+          featureBackup: plan.featureBackup,
+          featureOfflinePwa: plan.featureOfflinePwa,
+          availableForNew: true,
+          active: true,
+        })
+        .where(eq(subscriptionPlans.id, row.id));
+    } else {
+      await db.insert(subscriptionPlans).values(plan);
+    }
+  }
+
+  // Planos legados de seed/teste deixam de aparecer para novas assinaturas
+  const keep = new Set(catalog.map((p) => p.name.toLowerCase()));
+  for (const row of existing) {
+    const key = String(row.name).toLowerCase().trim();
+    if (!keep.has(key) && row.availableForNew) {
+      await db
+        .update(subscriptionPlans)
+        .set({ availableForNew: false })
+        .where(eq(subscriptionPlans.id, row.id));
+    }
+  }
 }
