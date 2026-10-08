@@ -271,6 +271,68 @@ export async function queueOfflineMutation(mutation: Omit<OfflineMutation, "crea
   await offlineDb.mutations.add({ ...mutation, tenantKey, state: "pending", attempts: 0, createdAt: new Date().toISOString() });
 }
 
+function replaceReference(value: any, localId: number, serverId: number, key?: string): any {
+  if (typeof value === "number") return key !== "localId" && value === localId ? serverId : value;
+  if (Array.isArray(value)) return value.map((item) => replaceReference(item, localId, serverId));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [
+    entryKey,
+    replaceReference(entryValue, localId, serverId, entryKey),
+  ]));
+}
+
+/**
+ * Depois que uma criação offline recebe o ID do servidor, atualiza todas as
+ * referências dependentes. Isso permite que uma OS continue sincronizando em
+ * uma tentativa posterior, mesmo que a mutação de criação do cliente já tenha
+ * sido removida da fila.
+ */
+export async function resolveOfflineIdReferences(tenantKey: string, localId: number, serverId: number) {
+  const tenant = requireTenantKey(tenantKey);
+  if (!Number.isFinite(localId) || !Number.isFinite(serverId) || localId >= 0 || serverId <= 0) return;
+  await offlineDb.transaction("rw", [offlineDb.clients, offlineDb.extinguishers, offlineDb.orders, offlineDb.alerts, offlineDb.mutations], async () => {
+    const mutations = await offlineDb.mutations.where("tenantKey").equals(tenant).toArray();
+    for (const mutation of mutations) {
+      if (mutation.id) await offlineDb.mutations.update(mutation.id, { payload: replaceReference(mutation.payload, localId, serverId) });
+    }
+
+    const client = await offlineDb.clients.get(localId);
+    if (client) {
+      await offlineDb.clients.put({ ...client, id: serverId });
+      await offlineDb.clients.delete(localId);
+    }
+    const extinguisher = await offlineDb.extinguishers.get(localId);
+    if (extinguisher) {
+      await offlineDb.extinguishers.put({ ...extinguisher, id: serverId });
+      await offlineDb.extinguishers.delete(localId);
+    }
+    const alert = await offlineDb.alerts.get(localId);
+    if (alert) {
+      await offlineDb.alerts.put({ ...alert, id: serverId });
+      await offlineDb.alerts.delete(localId);
+    }
+    const order = await offlineDb.orders.get(localId);
+    if (order) {
+      await offlineDb.orders.put({ ...order, order: { ...order.order, id: serverId } });
+      await offlineDb.orders.delete(localId);
+    }
+
+    await offlineDb.extinguishers.where("tenantKey").equals(tenant).modify((row: any) => {
+      if (row.clientId === localId) row.clientId = serverId;
+    });
+    await offlineDb.alerts.where("tenantKey").equals(tenant).modify((row: any) => {
+      if (row.clientId === localId) row.clientId = serverId;
+    });
+    await offlineDb.orders.where("tenantKey").equals(tenant).modify((row: any) => {
+      if (row.order?.clientId === localId) row.order.clientId = serverId;
+      if (row.client?.id === localId) row.client.id = serverId;
+      if (Array.isArray(row.order?.items)) {
+        row.order.items = row.order.items.map((item: any) => item.extinguisherId === localId ? { ...item, extinguisherId: serverId } : item);
+      }
+    });
+  });
+}
+
 export async function retryOfflineMutation(id: number, tenantKey: string) {
   const tenant = requireTenantKey(tenantKey);
   const mutation = await offlineDb.mutations.get(id);

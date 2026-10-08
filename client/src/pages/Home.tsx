@@ -61,7 +61,7 @@ import {
 import { ServiceOrderDocument } from "@/components/ServiceOrderDocument";
 import { toast } from "sonner";
 import { useOfflineSnapshot, useOnlineStatus } from "@/offline/hooks";
-import { offlineDb, markOfflineMutationFailed, queueOfflineMutation, saveOnlineSnapshot } from "@/offline/localDb";
+import { offlineDb, markOfflineMutationFailed, queueOfflineMutation, resolveOfflineIdReferences, saveOnlineSnapshot } from "@/offline/localDb";
 import { downloadQrCodePng, openPrintQrLabel, qrCodeImageUrl } from "@/lib/qrcodeUrl";
 import { ClientDetailCard } from "./home/ClientDetailCard";
 import { ExtinguishersPanel, type ExtinguisherListItem } from "./home/ExtinguishersPanel";
@@ -731,6 +731,25 @@ export default function Home() {
       let failed = 0;
       let lastError = "";
       const idMap = new Map<number, number>();
+      let recoveryClients: any[] | undefined;
+      const recoverClientId = async (localId: number, orderLocalId?: number) => {
+        if (localId >= 0) return undefined;
+        const localClient = await offlineDb.clients.get(localId)
+          || (orderLocalId ? (await offlineDb.orders.get(orderLocalId))?.client : undefined);
+        if (!localClient) return undefined;
+        recoveryClients ??= await utils.clients.list.fetch();
+        const normalize = (value: unknown) => String(value || "").trim().toLowerCase();
+        const match = recoveryClients.find((candidate: any) =>
+          normalize(candidate.companyName) === normalize(localClient.companyName)
+          && normalize(candidate.city) === normalize(localClient.city)
+          && (!normalize(localClient.phone) || normalize(candidate.phone) === normalize(localClient.phone))
+        );
+        if (!match?.id) return undefined;
+        const serverId = Number(match.id);
+        idMap.set(localId, serverId);
+        await resolveOfflineIdReferences(tenantKey, localId, serverId);
+        return serverId;
+      };
       const clean = (value: any): any => {
         if (value == null) return undefined;
         if (Array.isArray(value)) return value.map((item) => clean(item));
@@ -827,7 +846,10 @@ export default function Home() {
           if (payload.clientId && idMap.has(Number(payload.clientId))) payload.clientId = idMap.get(Number(payload.clientId));
           if (payload.items) payload.items = payload.items.map((item: any) => ({ ...item, extinguisherId: idMap.get(Number(item.extinguisherId)) || item.extinguisherId }));
           if (Number(payload.clientId) < 0) {
-            throw new Error("Cliente ainda não sincronizado. O cadastro do cliente será enviado primeiro.");
+            const resolvedClientId = idMap.get(Number(payload.clientId))
+              || await recoverClientId(Number(payload.clientId), Number(raw.localId));
+            if (resolvedClientId) payload.clientId = resolvedClientId;
+            else throw new Error("Cliente ainda não sincronizado. O cadastro do cliente será enviado primeiro.");
           }
           if (mutation.action !== "create" && Number(payload.id) < 0 && !idMap.has(Number(payload.id))) {
             if (mutation.id) await offlineDb.mutations.delete(mutation.id);
@@ -835,7 +857,12 @@ export default function Home() {
           }
           if (mutation.action === "create") {
             const result = mutation.entity === "client" ? await createClientMutation.mutateAsync(payload) : mutation.entity === "extinguisher" ? await createExtinguisherMutation.mutateAsync(payload) : await createOrderMutation.mutateAsync(payload);
-            if (raw.localId && result?.id) idMap.set(Number(raw.localId), result.id);
+            if (raw.localId && result?.id) {
+              const localId = Number(raw.localId);
+              const serverId = Number(result.id);
+              idMap.set(localId, serverId);
+              await resolveOfflineIdReferences(tenantKey, localId, serverId);
+            }
           } else if (mutation.action === "update") {
             const resolvedId = idMap.get(Number(payload.id)) || Number(payload.id);
             payload.id = resolvedId;
