@@ -344,8 +344,9 @@ export default function AuditPage() {
             ) : items.length === 0 ? (
               <p className="py-16 text-center text-slate-400">Nenhum registro de auditoria encontrado.</p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[800px] text-left text-sm">
+              <>
+              <div className="hidden overflow-x-auto md:block">
+                <table className="w-full text-left text-sm">
                   <thead className="border-b border-slate-700 bg-slate-950/80 text-xs uppercase tracking-wide text-slate-400">
                     <tr>
                       <th className="px-4 py-3 font-medium">Data/Hora</th>
@@ -389,12 +390,47 @@ export default function AuditPage() {
                   </tbody>
                 </table>
               </div>
+              <div className="divide-y divide-slate-800 md:hidden">
+                {items.map((row) => (
+                  <button
+                    key={row.id}
+                    type="button"
+                    className="block w-full space-y-3 p-4 text-left transition-colors hover:bg-slate-800/60"
+                    onClick={() => setSelectedId(row.id)}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="break-words font-semibold text-white">{row.entityLabel || (row.entityId != null ? `#${row.entityId}` : "Registro sem identificação")}</p>
+                        <p className="mt-1 break-words text-xs text-slate-400">{row.description}</p>
+                      </div>
+                      <Badge className="shrink-0" variant={actionVariant(row.action)}>{ACTION_LABEL[row.action] || row.action}</Badge>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 text-xs min-[420px]:grid-cols-2">
+                      <div>
+                        <p className="uppercase tracking-wide text-slate-500">Data/hora</p>
+                        <p className="break-words text-slate-300">{formatDateTime(row.createdAt)}</p>
+                      </div>
+                      <div>
+                        <p className="uppercase tracking-wide text-slate-500">Usuário</p>
+                        <p className="break-words font-medium text-slate-200">{row.userName || "—"}</p>
+                        <p className="break-all text-slate-500">{row.userEmail}</p>
+                      </div>
+                      <div>
+                        <p className="uppercase tracking-wide text-slate-500">Área do sistema</p>
+                        <p className="break-words text-slate-300">{MODULE_LABEL[row.module] || row.module}</p>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-red-300">Toque para ver os detalhes</p>
+                  </button>
+                ))}
+              </div>
+              </>
             )}
-            <div className="flex items-center justify-between border-t border-slate-800 px-4 py-3 text-sm text-slate-400">
-              <span>
+            <div className="flex flex-col gap-3 border-t border-slate-800 px-4 py-3 text-sm text-slate-400 min-[420px]:flex-row min-[420px]:items-center min-[420px]:justify-between">
+              <span className="text-center min-[420px]:text-left">
                 {fromIdx}–{toIdx} de {total.toLocaleString("pt-BR")} registros
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center justify-center gap-2">
                 <Button
                   variant="outline"
                   size="sm"
