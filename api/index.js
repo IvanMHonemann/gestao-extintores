@@ -1034,7 +1034,10 @@ async function getServiceOrders(clientId, accountId, ownerUserId) {
   if (ownerUserId != null) conditions.push(eq(serviceOrders.createdByUserId, ownerUserId));
   if (clientId) conditions.push(eq(serviceOrders.clientId, clientId));
   const query = db.select({ order: serviceOrders, client: clients }).from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id));
-  return await query.where(and(...conditions)).orderBy(desc(serviceOrders.orderDate), desc(serviceOrders.createdAt)).limit(clientId ? 200 : 500);
+  const rows = await query.where(and(...conditions)).orderBy(desc(serviceOrders.orderDate), desc(serviceOrders.createdAt)).limit(clientId ? 200 : 500);
+  const ids = rows.map(({ order }) => order.id);
+  const items = ids.length ? await db.select().from(serviceOrderItems).where(inArray(serviceOrderItems.serviceOrderId, ids)) : [];
+  return rows.map((entry) => ({ ...entry, items: items.filter((item) => item.serviceOrderId === entry.order.id) }));
 }
 async function getServiceOrderHistory(clientId, accountId) {
   const orders = await getServiceOrders(clientId, accountId);

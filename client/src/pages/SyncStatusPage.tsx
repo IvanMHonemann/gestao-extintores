@@ -9,7 +9,7 @@ import { offlineDb, discardOfflineMutation, retryOfflineMutation, markOfflineMut
 import { useOnlineStatus } from "@/offline/hooks";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const entityLabel: Record<string, string> = {
   client: "Cliente",
@@ -63,6 +63,7 @@ export default function SyncStatusPage() {
   const failed = mutations.filter((item) => item.state === "failed");
   const [sending, setSending] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0, failed: 0 });
+  const autoSyncAttemptedRef = useRef(false);
   const utils = trpc.useUtils();
   const createClient = trpc.clients.create.useMutation();
   const updateClient = trpc.clients.update.useMutation();
@@ -112,6 +113,16 @@ export default function SyncStatusPage() {
     setSending(false);
     toast.success(failedCount ? `${done} enviada(s), ${failedCount} com falha.` : `${done} operação(ões) sincronizada(s).`);
   };
+
+  useEffect(() => {
+    if (!isOnline) {
+      autoSyncAttemptedRef.current = false;
+      return;
+    }
+    if (autoSyncAttemptedRef.current || sending || (!pending.length && !failed.length)) return;
+    autoSyncAttemptedRef.current = true;
+    void sendQueue();
+  }, [isOnline, tenantKey]);
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 text-slate-900 sm:p-8">

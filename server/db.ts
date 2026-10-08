@@ -692,7 +692,10 @@ export async function getServiceOrders(clientId: number | undefined, accountId: 
   // O histórico deve seguir a data do atendimento informada na OS, não a data
   // técnica em que o registro foi criado ou posteriormente editado.
   // Limite de segurança: telas devem usar orders.page para volumes grandes.
-  return await query.where(and(...conditions)).orderBy(desc(serviceOrders.orderDate), desc(serviceOrders.createdAt)).limit(clientId ? 200 : 500);
+  const rows = await query.where(and(...conditions)).orderBy(desc(serviceOrders.orderDate), desc(serviceOrders.createdAt)).limit(clientId ? 200 : 500);
+  const ids = rows.map(({ order }) => order.id);
+  const items = ids.length ? await db.select().from(serviceOrderItems).where(inArray(serviceOrderItems.serviceOrderId, ids)) : [];
+  return rows.map((entry) => ({ ...entry, items: items.filter((item) => item.serviceOrderId === entry.order.id) }));
 }
 
 export async function getServiceOrderHistory(clientId: number, accountId: number) {
