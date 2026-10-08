@@ -525,7 +525,28 @@ export default function Home() {
       }
     },
     onError: async (err, input) => {
-      if (!syncLockRef.current && isOfflineFailure(err, offline.isOnline)) { const localId = await saveOfflineExtinguisher(input); await queueOfflineMutation({ tenantKey: tenantKey!, entity: "extinguisher", action: "create", payload: { ...input, localId } }); toast.success("Extintor salvo no dispositivo (offline)."); setIsExtinguisherModalOpen(false); return; }
+      if (!syncLockRef.current && isOfflineFailure(err, offline.isOnline)) {
+        const localId = await saveOfflineExtinguisher(input);
+        await queueOfflineMutation({ tenantKey: tenantKey!, entity: "extinguisher", action: "create", payload: { ...input, localId } });
+        toast.success("Extintor salvo no dispositivo (offline).");
+        setIsExtinguisherModalOpen(false);
+        if (returnToOrderAfterExtinguisher) {
+          setOrderForm((prev) => ({
+            ...prev,
+            clientId: prev.clientId || input.clientId,
+            items: [...prev.items.filter((item) => item.description.trim()), {
+              description: `Extintor ${input.typeModel}${input.capacity ? ` ${input.capacity}` : ""}`,
+              quantity: 1,
+              unitPrice: "45.00",
+              totalPrice: "45.00",
+              extinguisherId: localId,
+            }],
+          }));
+          setReturnToOrderAfterExtinguisher(false);
+          setIsOrderModalOpen(true);
+        }
+        return;
+      }
       toast.error(err.message);
     },
   });

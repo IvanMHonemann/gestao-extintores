@@ -1,4 +1,4 @@
-const CACHE_NAME = "extinfy-shell-v9";
+const CACHE_NAME = "extinfy-shell-v10";
 const APP_SHELL = ["/", "/manifest.json", "/icon-192.png", "/icon-512.png", "/favicon.png"];
 
 self.addEventListener("install", (event) => {

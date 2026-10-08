@@ -145,6 +145,7 @@ export const extinguishers = mysqlTable("extinguishers", {
   lastInspectionDate: date("lastInspectionDate"),
   status: mysqlEnum("status", ["ok", "warning", "expired"]).default("ok").notNull(),
   notes: text("notes"),
+  stockQuantity: int("stockQuantity").notNull().default(1),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (table) => ({
