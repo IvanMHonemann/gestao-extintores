@@ -146,6 +146,9 @@ export default function Home() {
   const [editingOrderCompanyId, setEditingOrderCompanyId] = useState<number | null>(null);
   const [returnToOrderAfterClient, setReturnToOrderAfterClient] = useState(false);
   const [returnToOrderAfterExtinguisher, setReturnToOrderAfterExtinguisher] = useState(false);
+  const preserveOrderEditingRef = useRef(false);
+  const preservedOrderEditingIdRef = useRef<number | null>(null);
+  const preservedOrderEditingCompanyIdRef = useRef<number | null>(null);
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
   const platformClientsInput = useMemo(() => selectedCompanyId ? { companyId: selectedCompanyId } : undefined, [selectedCompanyId]);
   const clientPageInput = useMemo(() => ({ page: clientPage, pageSize, city: selectedCity, search: searchQuery }), [clientPage, selectedCity, searchQuery]);
@@ -521,6 +524,11 @@ export default function Home() {
           }],
         }));
         setReturnToOrderAfterExtinguisher(false);
+        setEditingOrderId(preservedOrderEditingIdRef.current);
+        setEditingOrderCompanyId(preservedOrderEditingCompanyIdRef.current);
+        preservedOrderEditingIdRef.current = null;
+        preservedOrderEditingCompanyIdRef.current = null;
+        preserveOrderEditingRef.current = false;
         setIsOrderModalOpen(true);
       }
     },
@@ -543,6 +551,11 @@ export default function Home() {
             }],
           }));
           setReturnToOrderAfterExtinguisher(false);
+          setEditingOrderId(preservedOrderEditingIdRef.current);
+          setEditingOrderCompanyId(preservedOrderEditingCompanyIdRef.current);
+          preservedOrderEditingIdRef.current = null;
+          preservedOrderEditingCompanyIdRef.current = null;
+          preserveOrderEditingRef.current = false;
           setIsOrderModalOpen(true);
         }
         return;
@@ -1204,6 +1217,11 @@ export default function Home() {
         }],
       }));
       setReturnToOrderAfterExtinguisher(false);
+      setEditingOrderId(preservedOrderEditingIdRef.current);
+      setEditingOrderCompanyId(preservedOrderEditingCompanyIdRef.current);
+      preservedOrderEditingIdRef.current = null;
+      preservedOrderEditingCompanyIdRef.current = null;
+      preserveOrderEditingRef.current = false;
       setIsOrderModalOpen(true);
     }
     return localId;
@@ -2586,7 +2604,13 @@ export default function Home() {
       {/* ========================================================
           MODAL: CRIAR ORDEM DE SERVIÇO COMPLETA
       ======================================================== */}
-      <Dialog open={isOrderModalOpen} onOpenChange={(open) => { setIsOrderModalOpen(open); if (!open) { setEditingOrderId(null); setEditingOrderCompanyId(null); } }}>
+      <Dialog open={isOrderModalOpen} onOpenChange={(open) => {
+        setIsOrderModalOpen(open);
+        if (!open) {
+          if (preserveOrderEditingRef.current) preserveOrderEditingRef.current = false;
+          else { setEditingOrderId(null); setEditingOrderCompanyId(null); }
+        }
+      }}>
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold flex items-center gap-2">
@@ -2646,6 +2670,9 @@ export default function Home() {
                   <Button type="button" className="bg-red-600 text-white hover:bg-red-700" onClick={() => {
                     if (!orderForm.clientId) { toast.error("Selecione o cliente da OS antes de cadastrar o extintor."); return; }
                     setExtinguisherForm((prev) => ({ ...prev, clientId: orderForm.clientId, stockQuantity: 1 }));
+                    preservedOrderEditingIdRef.current = editingOrderId;
+                    preservedOrderEditingCompanyIdRef.current = editingOrderCompanyId;
+                    preserveOrderEditingRef.current = true;
                     setReturnToOrderAfterExtinguisher(true);
                     setIsOrderModalOpen(false);
                     setIsExtinguisherModalOpen(true);
