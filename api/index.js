@@ -3481,7 +3481,7 @@ var appRouter = router({
       });
       return result;
     }),
-    update: commercialProcedure.input(z2.object({ id: z2.number(), typeModel: z2.string().min(1), capacity: z2.string().optional(), serialNumber: z2.string().optional(), locationInBuilding: z2.string().optional(), expirationDate: z2.string(), lastInspectionDate: z2.string().optional(), notes: z2.string().optional() })).mutation(async ({ ctx, input }) => {
+    update: commercialProcedure.input(z2.object({ id: z2.number(), typeModel: z2.string().min(1), capacity: z2.string().optional(), serialNumber: z2.string().optional(), locationInBuilding: z2.string().optional(), expirationDate: z2.string(), lastInspectionDate: z2.string().optional(), notes: z2.string().optional(), stockQuantity: z2.number().int().min(1).optional() })).mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
       const rowsBefore = await getExtinguishers(ctx.accountId);
       const before = rowsBefore.find((e) => e.id === id) || null;
@@ -3735,7 +3735,7 @@ var appRouter = router({
         entityId: input?.entityId,
         search: input?.search
       });
-      return { csv, contentType: "text/csv; charset=utf-8", filename: `auditoria-${ctx.accountId}.csv` };
+      return { csv, contentType: "text/csv;charset=utf-8", filename: `auditoria-${ctx.accountId}.csv` };
     }),
     platformList: platformProcedure.input(z2.object({
       companyId: z2.number().int().positive().optional(),
