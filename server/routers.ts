@@ -347,8 +347,9 @@ export const appRouter = router({
       updateOrder: platformProcedure.input(z.object({ companyId: z.number().int().positive(), id: z.number().int().positive(), orderDate: z.string(), clientId: z.number(), replacedAndDelivered: z.string(), leftReserve: z.string(), reserveDetails: z.string().optional(), extinguisherExpiration: z.string().optional(), licenseExpiration: z.string().optional(), totalAmount: z.string(), paymentMethod: z.string(), installmentsCount: z.number(), installmentDates: z.string().optional(), responsibleName: z.string().optional(), responsibleCpf: z.string().optional(), responsibleBirthDate: z.string().optional(), observations: z.string().optional(), items: z.array(z.object({ description: z.string().min(1), quantity: z.number().min(1), unitPrice: z.string(), totalPrice: z.string(), extinguisherId: z.number().optional() })) })).mutation(async ({ input }) => { const { companyId, id, items, ...orderData } = input; await db.updateServiceOrder(id, { ...orderData, accountId: companyId } as any, items as any, companyId); return { success: true } as const; }),
       trash: router({
         list: platformProcedure.input(z.object({ companyId: z.number().int().positive() })).query(({ input }) => db.listTrash(input.companyId)),
-        restore: platformProcedure.input(z.object({ companyId: z.number().int().positive(), id: z.number().int().positive() })).mutation(async ({ input }) => { await db.restoreTrashItem(input.id, input.companyId); return { success: true } as const; }),
-        permanentlyDelete: platformProcedure.input(z.object({ companyId: z.number().int().positive(), id: z.number().int().positive() })).mutation(async ({ input }) => { await db.permanentlyDeleteTrashItem(input.id, input.companyId); return { success: true } as const; }),
+      restore: platformProcedure.input(z.object({ companyId: z.number().int().positive(), id: z.number().int().positive() })).mutation(async ({ input }) => { await db.restoreTrashItem(input.id, input.companyId); return { success: true } as const; }),
+      permanentlyDelete: platformProcedure.input(z.object({ companyId: z.number().int().positive(), id: z.number().int().positive() })).mutation(async ({ input }) => { await db.permanentlyDeleteTrashItem(input.id, input.companyId); return { success: true } as const; }),
+      empty: platformProcedure.input(z.object({ companyId: z.number().int().positive() })).mutation(async ({ input }) => ({ deleted: await db.emptyTrash(input.companyId) })),
       }),
     }),
   }),
@@ -619,6 +620,7 @@ export const appRouter = router({
     list: companyAdminProcedure.query(({ ctx }) => db.listTrash(ctx.accountId)),
     restore: companyAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => { await db.restoreTrashItem(input.id, ctx.accountId); return { success: true } as const; }),
     permanentlyDelete: companyAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => { await db.permanentlyDeleteTrashItem(input.id, ctx.accountId); return { success: true } as const; }),
+    empty: companyAdminProcedure.mutation(async ({ ctx }) => ({ deleted: await db.emptyTrash(ctx.accountId) })),
   }),
   /** Planos públicos (sem login) — página de preços e cadastro. */
   publicCatalog: router({

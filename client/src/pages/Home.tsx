@@ -371,6 +371,14 @@ export default function Home() {
     onError: (err) => toast.error(err.message),
   });
 
+  const emptyTrashMutation = trpc.trash.empty.useMutation({
+    onSuccess: async (result) => {
+      toast.success(`${result.deleted} item(ns) removido(s) permanentemente.`);
+      await utils.trash.list.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   const platformRestoreTrashMutation = trpc.platform.data.trash.restore.useMutation({
     onSuccess: async (_, input) => {
       toast.success("Item restaurado com sucesso!");
@@ -387,6 +395,14 @@ export default function Home() {
   const platformPermanentlyDeleteTrashMutation = trpc.platform.data.trash.permanentlyDelete.useMutation({
     onSuccess: async (_, input) => {
       toast.success("Item excluído permanentemente.");
+      await utils.platform.data.trash.list.invalidate({ companyId: input.companyId });
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const platformEmptyTrashMutation = trpc.platform.data.trash.empty.useMutation({
+    onSuccess: async (result, input) => {
+      toast.success(`${result.deleted} item(ns) removido(s) permanentemente.`);
       await utils.platform.data.trash.list.invalidate({ companyId: input.companyId });
     },
     onError: (err) => toast.error(err.message),
@@ -2228,9 +2244,26 @@ export default function Home() {
 
         {activeTab === "trash" && canAccessTrash && (
           <div className="space-y-6">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900">Lixeira de segurança</h2>
-              <p className="text-xs text-slate-500">Itens excluídos ficam armazenados por 24 horas. Restaure para devolver ao sistema ou exclua permanentemente para remover o backup.</p>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900">Lixeira de segurança</h2>
+                <p className="text-xs text-slate-500">Itens excluídos ficam armazenados por 24 horas. Restaure para devolver ao sistema ou exclua permanentemente para remover o backup.</p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 border-red-300 text-red-700 hover:bg-red-50"
+                disabled={!visibleTrash.length || emptyTrashMutation.isPending || platformEmptyTrashMutation.isPending}
+                onClick={() => {
+                  if (!visibleTrash.length) return;
+                  if (!confirm(`Esvaziar toda a lixeira (${visibleTrash.length} item(ns))? Esta ação não pode ser desfeita.`)) return;
+                  if (isPlatformAdmin && selectedCompanyId) platformEmptyTrashMutation.mutate({ companyId: selectedCompanyId });
+                  else if (!isPlatformAdmin) emptyTrashMutation.mutate();
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+                {emptyTrashMutation.isPending || platformEmptyTrashMutation.isPending ? "Esvaziando…" : "Esvaziar lixeira"}
+              </Button>
             </div>
             <div className="overflow-hidden rounded-xl border border-amber-200 bg-white shadow-sm">
               {visibleTrash.map((item: any) => {

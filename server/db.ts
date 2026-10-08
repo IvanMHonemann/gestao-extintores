@@ -837,6 +837,14 @@ export async function permanentlyDeleteTrashItem(id: number, accountId: number) 
   if (!result[0]?.affectedRows) throw new Error("Item não encontrado na lixeira ou sem permissão.");
 }
 
+export async function emptyTrash(accountId: number) {
+  const tenant = requireAccountId(accountId);
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const result = await db.delete(trashItems).where(eq(trashItems.accountId, tenant));
+  return Number(result[0]?.affectedRows || 0);
+}
+
 /* Configuração por empresa */
 export async function getSetting(key: string, accountId: number, defaultValue = "30") {
   const tenant = requireAccountId(accountId);

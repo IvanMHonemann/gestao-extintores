@@ -371,6 +371,7 @@ __export(db_exports, {
   deleteClient: () => deleteClient,
   deleteExtinguisher: () => deleteExtinguisher,
   deleteServiceOrder: () => deleteServiceOrder,
+  emptyTrash: () => emptyTrash,
   ensureExtinguisherPublicToken: () => ensureExtinguisherPublicToken,
   ensureOwnerScopeColumns: () => ensureOwnerScopeColumns,
   ensureSeedPlans: () => ensureSeedPlans,
@@ -1170,6 +1171,13 @@ async function permanentlyDeleteTrashItem(id, accountId) {
   if (!db) throw new Error("Database not connected");
   const result = await db.delete(trashItems).where(and(eq(trashItems.id, id), eq(trashItems.accountId, tenant)));
   if (!result[0]?.affectedRows) throw new Error("Item n\xE3o encontrado na lixeira ou sem permiss\xE3o.");
+}
+async function emptyTrash(accountId) {
+  const tenant = requireAccountId(accountId);
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const result = await db.delete(trashItems).where(eq(trashItems.accountId, tenant));
+  return Number(result[0]?.affectedRows || 0);
 }
 async function getSetting(key, accountId, defaultValue = "30") {
   const tenant = requireAccountId(accountId);
@@ -3267,7 +3275,8 @@ var appRouter = router({
         permanentlyDelete: platformProcedure.input(z2.object({ companyId: z2.number().int().positive(), id: z2.number().int().positive() })).mutation(async ({ input }) => {
           await permanentlyDeleteTrashItem(input.id, input.companyId);
           return { success: true };
-        })
+        }),
+        empty: platformProcedure.input(z2.object({ companyId: z2.number().int().positive() })).mutation(async ({ input }) => ({ deleted: await emptyTrash(input.companyId) }))
       })
     })
   }),
@@ -3551,7 +3560,8 @@ var appRouter = router({
     permanentlyDelete: companyAdminProcedure.input(z2.object({ id: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await permanentlyDeleteTrashItem(input.id, ctx.accountId);
       return { success: true };
-    })
+    }),
+    empty: companyAdminProcedure.mutation(async ({ ctx }) => ({ deleted: await emptyTrash(ctx.accountId) }))
   }),
   /** Planos públicos (sem login) — página de preços e cadastro. */
   publicCatalog: router({
