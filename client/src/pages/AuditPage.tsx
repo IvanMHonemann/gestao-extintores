@@ -345,7 +345,7 @@ export default function AuditPage() {
               <p className="py-16 text-center text-slate-400">Nenhum registro de auditoria encontrado.</p>
             ) : (
               <>
-              <div className="hidden overflow-x-auto md:block">
+              <div className="hidden overflow-x-auto lg:block">
                 <table className="w-full text-left text-sm">
                   <thead className="border-b border-slate-700 bg-slate-950/80 text-xs uppercase tracking-wide text-slate-400">
                     <tr>
@@ -390,7 +390,7 @@ export default function AuditPage() {
                   </tbody>
                 </table>
               </div>
-              <div className="divide-y divide-slate-800 md:hidden">
+              <div className="divide-y divide-slate-800 lg:hidden">
                 {items.map((row) => (
                   <button
                     key={row.id}
