@@ -41,6 +41,14 @@ function AdminProtected({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+/** Somente administrador da empresa (não operador/técnico). */
+function CompanyAdminProtected({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+  if (loading) return <LoadingScreen />;
+  if (!user || user.role !== "company_admin") return <RedirectHome />;
+  return <>{children}</>;
+}
+
 function RootRoute() {
   const { user, loading } = useAuth();
   if (loading) return <LoadingScreen />;
@@ -61,12 +69,12 @@ function Router() {
       <Route path="/"><RootRoute /></Route>
       <Route path="/admin/usuarios"><AdminProtected><AdminUsersPage /></AdminProtected></Route>
       <Route path="/admin/assinaturas"><AdminProtected><AdminAssinaturasPage /></AdminProtected></Route>
-      <Route path="/conta/planos"><PlansPage /></Route>
-      <Route path="/upgrade"><UpgradePlanPage /></Route>
-      <Route path="/minha-assinatura"><MySubscriptionPage /></Route>
-      <Route path="/pagamentos"><PaymentHistoryPage /></Route>
+      <Route path="/conta/planos"><CompanyAdminProtected><PlansPage /></CompanyAdminProtected></Route>
+      <Route path="/upgrade"><CompanyAdminProtected><UpgradePlanPage /></CompanyAdminProtected></Route>
+      <Route path="/minha-assinatura"><CompanyAdminProtected><MySubscriptionPage /></CompanyAdminProtected></Route>
+      <Route path="/pagamentos"><CompanyAdminProtected><PaymentHistoryPage /></CompanyAdminProtected></Route>
       <Route path="/backup"><CommercialProtected><BackupPage /></CommercialProtected></Route>
-      <Route path="/auditoria"><CommercialProtected><AuditPage /></CommercialProtected></Route>
+      <Route path="/auditoria"><CompanyAdminProtected><AuditPage /></CompanyAdminProtected></Route>
       <Route path="/sync-status"><CommercialProtected><SyncStatusPage /></CommercialProtected></Route>
       <Route path="/os/:id"><CommercialProtected><PrintOrderPage /></CommercialProtected></Route>
       <Route path="/404" component={NotFound} />

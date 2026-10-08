@@ -305,3 +305,43 @@ export async function setPlatformAdminActive(id: number, active: boolean) {
   if (!db) throw new Error("Database not connected");
   await db.update(platformAdmins).set({ active }).where(eq(platformAdmins.id, id));
 }
+
+export async function updateMemberProfile(memberAccountId: number, data: { userName: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const name = data.userName.trim();
+  if (name.length < 2) throw new Error("Nome deve ter pelo menos 2 caracteres.");
+  await db.update(memberAccounts).set({ userName: name }).where(eq(memberAccounts.id, memberAccountId));
+  return { success: true as const, userName: name };
+}
+
+export async function regenerateMemberRecoveryCode(memberAccountId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const recoveryCode = `EXT-${randomBytes(12).toString("base64url")}`;
+  await db.update(memberAccounts).set({ recoveryCodeHash: hashPassword(recoveryCode) }).where(eq(memberAccounts.id, memberAccountId));
+  return { recoveryCode };
+}
+
+export async function revokeAllMemberSessions(memberAccountId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  await db.delete(memberSessions).where(eq(memberSessions.memberAccountId, memberAccountId));
+  return { success: true as const };
+}
+
+
+export async function verifyMemberPassword(memberAccountId: number, password: string) {
+  const key = `verify:member:${memberAccountId}`;
+  if (isRateLimited(key)) return false;
+  const database = await getDb();
+  if (!database) throw new Error("Database not connected");
+  const result = await database.select().from(memberAccounts).where(eq(memberAccounts.id, memberAccountId)).limit(1);
+  const account = result[0];
+  if (!account || !verifyPassword(password, account.passwordHash)) {
+    registerFailure(key);
+    return false;
+  }
+  clearRateLimit(key);
+  return true;
+}

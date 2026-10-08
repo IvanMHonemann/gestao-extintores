@@ -54,29 +54,15 @@
     {
       "idx": 7,
       "version": "5",
-      "when": 1790649131034,
-      "tag": "0007_wet_hammerhead",
+      "when": 1791120000000,
+      "tag": "0009_audit_logs",
       "breakpoints": true
     },
     {
       "idx": 8,
       "version": "5",
-      "when": 1790650600000,
-      "tag": "0008_nullable_plan_limits",
-      "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "5",
-      "when": 1790764525310,
-      "tag": "0009_majestic_mercury",
-      "breakpoints": true
-    },
-    {
-      "idx": 10,
-      "version": "5",
-      "when": 1790824295776,
-      "tag": "0010_many_invisible_woman",
+      "when": 1791168000000,
+      "tag": "0010_extinguisher_public_token",
       "breakpoints": true
     }
   ]

@@ -58,6 +58,29 @@ function monitoredPool(pool: mysql.Pool): mysql.Pool {
   }) as mysql.Pool;
 }
 
+export async function getPool() {
+  await getDb();
+  return _pool;
+}
+
+let ownerScopeReady = false;
+/** Adiciona colunas de dono se ainda não existirem (TiDB). */
+export async function ensureOwnerScopeColumns() {
+  if (ownerScopeReady) return;
+  const pool = await getPool();
+  if (!pool) return;
+  try {
+    await pool.query("ALTER TABLE `clients` ADD COLUMN `createdByUserId` int NULL").catch(() => undefined);
+    await pool.query("ALTER TABLE `service_orders` ADD COLUMN `createdByUserId` int NULL").catch(() => undefined);
+    await pool.query("ALTER TABLE `extinguishers` ADD COLUMN `stockQuantity` int NOT NULL DEFAULT 1").catch(() => undefined);
+    await pool.query("ALTER TABLE `clients` ADD COLUMN `stockQuantity` int NOT NULL DEFAULT 1").catch(() => undefined);
+    ownerScopeReady = true;
+  } catch (err) {
+    console.warn("[db] ensureOwnerScopeColumns", err);
+    ownerScopeReady = true; // evita loop
+  }
+}
+
 export async function getDb() {
   const databaseUrl = process.env.EXTERNAL_DATABASE_URL ?? process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -232,11 +255,14 @@ export async function getPlatformOrders(companyId?: number) {
   return companyId ? await query.where(eq(serviceOrders.accountId, companyId)).orderBy(desc(serviceOrders.createdAt)) : await query.orderBy(desc(serviceOrders.createdAt));
 }
 
-export async function getClientsPage(accountId: number, options: { page?: number; pageSize?: number; city?: string; search?: string } = {}) {
-  const tenant = requireAccountId(accountId); const db = await getDb(); if (!db) return pageResult([], 0, 1, 25);
+export async function getClientsPage(accountId: number, options: { page?: number; pageSize?: number; city?: string; search?: string; ownerUserId?: number | null } = {}) {
+  const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
+  const db = await getDb(); if (!db) return pageResult([], 0, 1, 25);
   const { page, pageSize, offset } = pageArgs(options.page, options.pageSize);
   const search = options.search?.trim(); const conditions = [eq(clients.accountId, tenant)];
   if (options.city && options.city !== "TODAS") conditions.push(eq(clients.city, options.city));
+  if (options.ownerUserId != null) conditions.push(eq(clients.createdByUserId, options.ownerUserId));
   if (search) conditions.push(or(like(clients.companyName, `%${search}%`), like(clients.cnpj, `%${search}%`), like(clients.contactName, `%${search}%`))!);
   const where = and(...conditions);
   const [items, totalRows] = await Promise.all([
@@ -247,28 +273,37 @@ export async function getClientsPage(accountId: number, options: { page?: number
 }
 
 /* Clientes */
-export async function getClients(cityFilter: string | undefined, accountId: number) {
+export async function getClients(cityFilter: string | undefined, accountId: number, ownerUserId?: number | null) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) return [];
   const conditions = [eq(clients.accountId, tenant)];
   if (cityFilter && cityFilter !== "TODAS") conditions.push(eq(clients.city, cityFilter));
+  if (ownerUserId != null) conditions.push(eq(clients.createdByUserId, ownerUserId));
   return await db.select().from(clients).where(and(...conditions)).orderBy(desc(clients.createdAt)).limit(500);
 }
 
-export async function getClientById(id: number, accountId: number) {
+export async function getClientById(id: number, accountId: number, ownerUserId?: number | null) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.select().from(clients).where(and(eq(clients.id, id), eq(clients.accountId, tenant))).limit(1);
+  const conditions = [eq(clients.id, id), eq(clients.accountId, tenant)];
+  if (ownerUserId != null) conditions.push(eq(clients.createdByUserId, ownerUserId));
+  const result = await db.select().from(clients).where(and(...conditions)).limit(1);
   return result[0];
 }
 
 export async function createClient(data: InsertClient) {
   const tenant = requireAccountId(data.accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  const result = await db.insert(clients).values({ ...data, accountId: tenant });
+  const optional = ["cnpj", "address", "cep", "phone", "contactName", "cpf", "birthDate", "notes"] as const;
+  const payload: any = { ...data, accountId: tenant, stockQuantity: Number((data as any).stockQuantity) > 0 ? Number((data as any).stockQuantity) : 1 };
+  for (const key of optional) if (payload[key] === "") payload[key] = null;
+  const result = await db.insert(clients).values(payload);
   return Number(result[0].insertId);
 }
 
@@ -333,6 +368,7 @@ export async function getExtinguishersPage(accountId: number, options: { page?: 
 /* Extintores */
 export async function getExtinguishers(accountId: number) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) return [];
   return await db.select().from(extinguishers).where(eq(extinguishers.accountId, tenant)).orderBy(extinguishers.expirationDate).limit(500);
@@ -356,6 +392,7 @@ export async function getExtinguishersByClient(clientId: number, accountId: numb
 
 export async function createExtinguisher(data: InsertExtinguisher, accountId: number) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
   if (data.accountId !== tenant || !(await getClientById(data.clientId, tenant))) throw new Error("Cliente sem permissão");
@@ -509,10 +546,13 @@ export async function getExpiringExtinguishers(daysAhead: number, accountId: num
   });
 }
 
-export async function getServiceOrdersPage(accountId: number, options: { page?: number; pageSize?: number; clientId?: number; search?: string; city?: string; from?: string; to?: string } = {}) {
-  const tenant = requireAccountId(accountId); const db = await getDb(); if (!db) return pageResult([], 0, 1, 25);
+export async function getServiceOrdersPage(accountId: number, options: { page?: number; pageSize?: number; clientId?: number; search?: string; city?: string; from?: string; to?: string; ownerUserId?: number | null } = {}) {
+  const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
+  const db = await getDb(); if (!db) return pageResult([], 0, 1, 25);
   const { page, pageSize, offset } = pageArgs(options.page, options.pageSize);
   const conditions = [eq(serviceOrders.accountId, tenant), eq(clients.accountId, tenant)];
+  if (options.ownerUserId != null) conditions.push(eq(serviceOrders.createdByUserId, options.ownerUserId));
   if (options.clientId) conditions.push(eq(serviceOrders.clientId, options.clientId));
   if (options.city && options.city !== "TODAS") conditions.push(eq(clients.city, options.city));
   if (options.from) conditions.push(sql`${serviceOrders.orderDate} >= ${options.from}`);
@@ -597,8 +637,11 @@ function isDuplicateKeyError(error: unknown) {
 
 export async function createServiceOrder(order: InsertServiceOrder, items: Omit<InsertServiceOrderItem, "serviceOrderId">[], accountId: number) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
+  const pool = await getPool();
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
+  if (!pool) throw new Error("Database pool not connected");
   if (order.accountId !== tenant || !(await getClientById(order.clientId, tenant))) throw new Error("Cliente sem permissão");
   const requestedNumber = order.orderNumber && Number.isInteger(order.orderNumber) ? order.orderNumber : undefined;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -607,7 +650,16 @@ export async function createServiceOrder(order: InsertServiceOrder, items: Omit<
         const orderNumber = requestedNumber ?? await allocateOrderNumber(tx, tenant);
         const result = await tx.insert(serviceOrders).values({ ...order, accountId: tenant, orderNumber });
         const orderId = Number(result[0].insertId);
-        if (items.length) await tx.insert(serviceOrderItems).values(items.map(item => ({ ...item, serviceOrderId: orderId })));
+        if (items.length) await tx.insert(serviceOrderItems).values(items.map(item => { const { extinguisherId: _ignored, ...row } = item as any; return { ...row, serviceOrderId: orderId }; }));
+      for (const item of items as any[]) {
+        const extId = Number(item.extinguisherId);
+        const qty = Number(item.quantity) || 0;
+        if (!extId || qty < 1) continue;
+        const [rows] = await pool.query("SELECT stockQuantity FROM extinguishers WHERE id = ? AND accountId = ? LIMIT 1", [extId, tenant]) as any;
+        const current = Number(rows?.[0]?.stockQuantity ?? 1);
+        if (current < qty) throw new Error("Estoque insuficiente para o extintor selecionado.");
+        await pool.query("UPDATE extinguishers SET stockQuantity = stockQuantity - ? WHERE id = ? AND accountId = ?", [qty, extId, tenant]);
+      }
         return { id: orderId, orderNumber };
       });
     } catch (error) {
@@ -628,11 +680,13 @@ export async function getServiceOrderById(id: number, accountId: number) {
   return { ...orderResult[0].order, client: orderResult[0].client, items };
 }
 
-export async function getServiceOrders(clientId: number | undefined, accountId: number) {
+export async function getServiceOrders(clientId: number | undefined, accountId: number, ownerUserId?: number | null) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) return [];
   const conditions = [eq(serviceOrders.accountId, tenant), eq(clients.accountId, tenant)];
+  if (ownerUserId != null) conditions.push(eq(serviceOrders.createdByUserId, ownerUserId));
   if (clientId) conditions.push(eq(serviceOrders.clientId, clientId));
   const query = db.select({ order: serviceOrders, client: clients }).from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id));
   // O histórico deve seguir a data do atendimento informada na OS, não a data
@@ -990,11 +1044,12 @@ export async function updateCompanySubscription(id: number, data: Partial<{
 }>) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  await db.update(companySubscriptions).set({
+  const updateData = {
     ...data,
-    startsAt: data.startsAt ? new Date(data.startsAt) : undefined,
-    endsAt: data.endsAt === null ? null : data.endsAt ? new Date(data.endsAt) : undefined,
-  } as any).where(eq(companySubscriptions.id, id));
+    ...(data.startsAt !== undefined ? { startsAt: new Date(data.startsAt) } : {}),
+    ...(data.endsAt !== undefined ? { endsAt: data.endsAt ? new Date(data.endsAt) : null } : {}),
+  };
+  await db.update(companySubscriptions).set(updateData as any).where(eq(companySubscriptions.id, id));
   // Sincroniza empresa quando o admin altera a assinatura
   const rows = await db.select().from(companySubscriptions).where(eq(companySubscriptions.id, id)).limit(1);
   const sub = rows[0];
@@ -1212,10 +1267,12 @@ export async function applyMockCheckout(input: {
     overdue: "overdue" as const,
     canceled: "canceled" as const,
   };
+  // Usa status padrão do enum (CONFIRMED/PENDING/…) para não depender de valores MOCK_*
+  // caso a coluna no TiDB ainda não tenha sido migrada com os enums de mock.
   const payStatusMap = {
-    approved: "MOCK_APPROVED" as const,
-    pending: "MOCK_PENDING" as const,
-    overdue: "MOCK_OVERDUE" as const,
+    approved: "CONFIRMED" as const,
+    pending: "PENDING" as const,
+    overdue: "OVERDUE" as const,
     canceled: "DELETED" as const,
   };
 
@@ -1239,21 +1296,28 @@ export async function applyMockCheckout(input: {
   } as any);
   const subscriptionId = Number((subResult as any).insertId);
 
-  const [payResult] = await db.insert(payments).values({
-    companyId: input.companyId,
-    subscriptionId,
-    asaasPaymentId: `pay_mock_${Date.now()}`,
-    asaasCustomerId: `cus_mock_${input.companyId}`,
-    asaasSubscriptionId: `sub_mock_${input.companyId}`,
-    amount: plan.price,
-    netAmount: plan.price,
-    billingType: "MOCK",
-    status: payStatusMap[input.outcome],
-    dueDate: ymd,
-    paymentDate: input.outcome === "approved" ? ymd : null,
-    invoiceUrl: "https://mock.local/invoice",
-  } as any);
-  const paymentId = Number((payResult as any).insertId);
+  let paymentId = 0;
+  try {
+    const [payResult] = await db.insert(payments).values({
+      companyId: input.companyId,
+      subscriptionId: subscriptionId || null,
+      asaasPaymentId: `pay_mock_${Date.now()}`,
+      asaasCustomerId: `cus_mock_${input.companyId}`,
+      asaasSubscriptionId: `sub_mock_${input.companyId}`,
+      amount: String(plan.price ?? "0.00"),
+      netAmount: String(plan.price ?? "0.00"),
+      billingType: "UNDEFINED",
+      status: payStatusMap[input.outcome],
+      dueDate: ymd,
+      paymentDate: input.outcome === "approved" ? ymd : null,
+      invoiceUrl: "https://mock.local/invoice",
+      bankSlipUrl: null,
+    } as any);
+    paymentId = Number((payResult as any).insertId) || 0;
+  } catch (payErr) {
+    // Não bloqueia a troca de plano se o histórico de pagamento falhar (schema legado).
+    console.warn("[mockCheckout] payment insert skipped:", payErr);
+  }
 
   await db.update(companies).set({
     planId: input.planId,
@@ -1286,7 +1350,7 @@ export async function ensureSeedPlans() {
       featureExtinguishers: true,
       featureServiceOrders: true,
       featureAlerts: true,
-      featureReports: false,
+      featureReports: true,
       featureUsers: false,
       featureBackup: true,
       featureOfflinePwa: true,

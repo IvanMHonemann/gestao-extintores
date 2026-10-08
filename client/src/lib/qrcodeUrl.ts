@@ -22,7 +22,9 @@ export function openPrintQrLabel(opts: { url: string; label: string; subtitle?: 
   const img = qrCodeImageUrl(opts.url, 320);
   const w = window.open("", "_blank", "noopener,noreferrer,width=420,height=560");
   if (!w) return;
-  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Etiqueta QR — ${opts.label}</title>
+  const safeLabel = opts.label.replace(/</g, "&lt;");
+  const safeSub = opts.subtitle ? opts.subtitle.replace(/</g, "&lt;") : "";
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Etiqueta QR — ${safeLabel}</title>
 <style>
   @page { margin: 12mm; }
   body { font-family: system-ui, sans-serif; text-align: center; padding: 24px; color: #0f172a; }
@@ -32,8 +34,8 @@ export function openPrintQrLabel(opts: { url: string; label: string; subtitle?: 
   .hint { margin-top: 12px; font-size: 11px; }
 </style></head><body>
   <img src="${img}" alt="QR Code" />
-  <h1>${opts.label.replace(/</g, "&lt;")}</h1>
-  ${opts.subtitle ? `<p>${opts.subtitle.replace(/</g, "&lt;")}</p>` : ""}
+  <h1>${safeLabel}</h1>
+  ${safeSub ? `<p>${safeSub}</p>` : ""}
   <p class="hint">Escaneie para consultar este extintor</p>
   <script>window.onload=function(){setTimeout(function(){window.print()},200)}</script>
 </body></html>`);

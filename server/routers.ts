@@ -6,6 +6,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, companyAdminProcedure, commercialProcedure, companyBillingProcedure, platformProcedure, publicProcedure, router } from "./_core/trpc";
 import { checkSubscriptionAccess } from "./subscriptionAccess";
+import * as planLimits from "./planLimits";
 import * as asaas from "./asaas";
 import * as db from "./db";
 import * as memberAuth from "./memberAuth";
@@ -135,6 +136,85 @@ export const appRouter = router({
         return { success: true } as const;
       }),
 
+    updateProfile: publicProcedure
+      .use(async opts => {
+        if (!opts.ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Please login (10001)" });
+        return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
+      })
+      .input(z.object({
+        userName: z.string().min(2).optional(),
+        avatarDataUrl: z.string().max(400_000).optional().nullable(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (ctx.user.role === "platform_admin") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Perfil de plataforma não usa esta rota." });
+        }
+        const memberId = ctx.memberAccountId ?? Math.abs(ctx.user.id);
+        const companyId = ctx.accountId;
+        if (!companyId) throw new TRPCError({ code: "FORBIDDEN", message: "Empresa não identificada." });
+        let userName = ctx.user.name || "";
+        if (input.userName) {
+          const updated = await memberAuth.updateMemberProfile(memberId, { userName: input.userName });
+          userName = updated.userName;
+        }
+        if (input.avatarDataUrl !== undefined) {
+          const key = `member_avatar_${memberId}`;
+          if (!input.avatarDataUrl) {
+            await db.setSetting(key, "", companyId);
+          } else {
+            if (!input.avatarDataUrl.startsWith("data:image/")) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: "Imagem de perfil inválida." });
+            }
+            await db.setSetting(key, input.avatarDataUrl, companyId);
+          }
+        }
+        return { success: true as const, userName };
+      }),
+
+    profileExtras: publicProcedure
+      .use(async opts => {
+        if (!opts.ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Please login (10001)" });
+        return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
+      })
+      .query(async ({ ctx }) => {
+        if (ctx.user.role === "platform_admin" || !ctx.accountId) {
+          return { avatarDataUrl: null as string | null, alertDays: 30 };
+        }
+        const memberId = ctx.memberAccountId ?? Math.abs(ctx.user.id);
+        const avatar = await db.getSetting(`member_avatar_${memberId}`, ctx.accountId, "");
+        const alertDays = parseInt(await db.getSetting("alert_days_ahead", ctx.accountId, "30"), 10) || 30;
+        return { avatarDataUrl: avatar || null, alertDays };
+      }),
+
+    regenerateRecoveryCode: publicProcedure
+      .use(async opts => {
+        if (!opts.ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Please login (10001)" });
+        return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
+      })
+      .input(z.object({ currentPassword: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        if (ctx.user.role === "platform_admin") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Indisponível para admin da plataforma nesta tela." });
+        }
+        const memberId = ctx.memberAccountId ?? Math.abs(ctx.user.id);
+        const ok = await memberAuth.verifyMemberPassword(memberId, input.currentPassword);
+        if (!ok) throw new TRPCError({ code: "UNAUTHORIZED", message: "Senha atual incorreta." });
+        const result = await memberAuth.regenerateMemberRecoveryCode(memberId);
+        return { success: true as const, recoveryCode: result.recoveryCode };
+      }),
+
+    logoutAllSessions: publicProcedure
+      .use(async opts => {
+        if (!opts.ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Please login (10001)" });
+        return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
+      })
+      .mutation(async ({ ctx }) => {
+        if (ctx.user.role === "platform_admin") return { success: true as const };
+        const memberId = ctx.memberAccountId ?? Math.abs(ctx.user.id);
+        await memberAuth.revokeAllMemberSessions(memberId);
+        return { success: true as const };
+      }),
+
     logout: publicProcedure.mutation(async ({ ctx }) => {
       const cookies = parseCookie(ctx.req.headers.cookie ?? "");
       void auditFromCtx(ctx, { action: "logout", module: "auth", entityType: "session", description: `Logout: ${ctx.user?.email || "sessão"}` });
@@ -254,17 +334,17 @@ export const appRouter = router({
         if (!company || !company.active) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para cadastrar o extintor." });
         return { id: await db.createExtinguisher({ ...data, accountId: companyId, expirationDate: data.expirationDate as any, lastInspectionDate: (data.lastInspectionDate || null) as any, capacity: emptyToNull(data.capacity), serialNumber: emptyToNull(data.serialNumber), locationInBuilding: emptyToNull(data.locationInBuilding), notes: emptyToNull(data.notes) }, companyId) };
       }),
-      createOrder: platformProcedure.input(z.object({ companyId: z.number().int().positive(), orderNumber: z.number().optional(), orderDate: z.string(), clientId: z.number(), replacedAndDelivered: z.string().default("SIM"), leftReserve: z.string().default("NÃO"), reserveDetails: z.string().optional(), extinguisherExpiration: z.string().optional(), licenseExpiration: z.string().optional(), totalAmount: z.string().default("0.00"), paymentMethod: z.string().default("A VISTA"), installmentsCount: z.number().default(1), installmentDates: z.string().optional(), responsibleName: z.string().optional(), responsibleCpf: z.string().optional(), responsibleBirthDate: z.string().optional(), observations: z.string().optional(), items: z.array(z.object({ description: z.string().min(1), quantity: z.number().min(1), unitPrice: z.string(), totalPrice: z.string() })) })).mutation(async ({ input, ctx }) => {
+      createOrder: platformProcedure.input(z.object({ companyId: z.number().int().positive(), orderNumber: z.number().optional(), orderDate: z.string(), clientId: z.number(), replacedAndDelivered: z.string().default("SIM"), leftReserve: z.string().default("NÃO"), reserveDetails: z.string().optional(), extinguisherExpiration: z.string().optional(), licenseExpiration: z.string().optional(), totalAmount: z.string().default("0.00"), paymentMethod: z.string().default("A VISTA"), installmentsCount: z.number().default(1), installmentDates: z.string().optional(), responsibleName: z.string().optional(), responsibleCpf: z.string().optional(), responsibleBirthDate: z.string().optional(), observations: z.string().optional(), items: z.array(z.object({ description: z.string().min(1), quantity: z.number().min(1), unitPrice: z.string(), totalPrice: z.string(), extinguisherId: z.number().optional() })) })).mutation(async ({ input, ctx }) => {
         const { companyId, items, ...orderData } = input;
         const company = await db.getCompanyById(companyId);
         if (!company || !company.active) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para criar a ordem de serviço." });
-        return db.createServiceOrder({ ...orderData, accountId: companyId, createdByName: ctx.user.name || ctx.user.email || "Administrador geral" } as any, items as any, companyId);
+        return db.createServiceOrder({ ...orderData, accountId: companyId, createdByName: ctx.user.name || ctx.user.email || "Administrador geral", createdByUserId: null } as any, items as any, companyId);
       }),
       deleteOrder: platformProcedure.input(z.object({ companyId: z.number().int().positive(), id: z.number().int().positive() })).mutation(async ({ input }) => { await db.deleteServiceOrder(input.id, input.companyId); return { success: true } as const; }),
       deleteClient: platformProcedure.input(z.object({ companyId: z.number().int().positive(), id: z.number().int().positive() })).mutation(async ({ input }) => { await db.deleteClient(input.id, input.companyId); return { success: true } as const; }),
       deleteExtinguisher: platformProcedure.input(z.object({ companyId: z.number().int().positive(), id: z.number().int().positive() })).mutation(async ({ input }) => { await db.deleteExtinguisher(input.id, input.companyId); return { success: true } as const; }),
       updateClient: platformProcedure.input(clientInput.extend({ companyId: z.number().int().positive(), id: z.number().int().positive() })).mutation(async ({ input }) => { const { companyId, id, ...data } = input; await db.updateClient(id, { ...data, accountId: companyId, cnpj: emptyToNull(data.cnpj), address: emptyToNull(data.address), cep: emptyToNull(data.cep), phone: emptyToNull(data.phone), contactName: emptyToNull(data.contactName), cpf: emptyToNull(data.cpf), birthDate: emptyToNull(data.birthDate), notes: emptyToNull(data.notes) }, companyId); return { success: true } as const; }),
-      updateOrder: platformProcedure.input(z.object({ companyId: z.number().int().positive(), id: z.number().int().positive(), orderDate: z.string(), clientId: z.number(), replacedAndDelivered: z.string(), leftReserve: z.string(), reserveDetails: z.string().optional(), extinguisherExpiration: z.string().optional(), licenseExpiration: z.string().optional(), totalAmount: z.string(), paymentMethod: z.string(), installmentsCount: z.number(), installmentDates: z.string().optional(), responsibleName: z.string().optional(), responsibleCpf: z.string().optional(), responsibleBirthDate: z.string().optional(), observations: z.string().optional(), items: z.array(z.object({ description: z.string().min(1), quantity: z.number().min(1), unitPrice: z.string(), totalPrice: z.string() })) })).mutation(async ({ input }) => { const { companyId, id, items, ...orderData } = input; await db.updateServiceOrder(id, { ...orderData, accountId: companyId } as any, items as any, companyId); return { success: true } as const; }),
+      updateOrder: platformProcedure.input(z.object({ companyId: z.number().int().positive(), id: z.number().int().positive(), orderDate: z.string(), clientId: z.number(), replacedAndDelivered: z.string(), leftReserve: z.string(), reserveDetails: z.string().optional(), extinguisherExpiration: z.string().optional(), licenseExpiration: z.string().optional(), totalAmount: z.string(), paymentMethod: z.string(), installmentsCount: z.number(), installmentDates: z.string().optional(), responsibleName: z.string().optional(), responsibleCpf: z.string().optional(), responsibleBirthDate: z.string().optional(), observations: z.string().optional(), items: z.array(z.object({ description: z.string().min(1), quantity: z.number().min(1), unitPrice: z.string(), totalPrice: z.string(), extinguisherId: z.number().optional() })) })).mutation(async ({ input }) => { const { companyId, id, items, ...orderData } = input; await db.updateServiceOrder(id, { ...orderData, accountId: companyId } as any, items as any, companyId); return { success: true } as const; }),
       trash: router({
         list: platformProcedure.input(z.object({ companyId: z.number().int().positive() })).query(({ input }) => db.listTrash(input.companyId)),
         restore: platformProcedure.input(z.object({ companyId: z.number().int().positive(), id: z.number().int().positive() })).mutation(async ({ input }) => { await db.restoreTrashItem(input.id, input.companyId); return { success: true } as const; }),
@@ -312,6 +392,7 @@ export const appRouter = router({
     list: companyAdminProcedure.query(({ ctx }) => memberAuth.listMemberAccounts(ctx.accountId)),
     create: companyAdminProcedure.input(z.object({ userName: z.string().min(2), email: z.string().email(), password: z.string().min(8), role: companyUserRole })).mutation(async ({ ctx, input }) => {
       try {
+        await planLimits.assertUserLimit(ctx.accountId);
         const created = await memberAuth.createCompanyUser({ ...input, companyId: ctx.accountId });
         void auditFromCtx(ctx, { action: "create", module: "users", entityType: "user", entityId: created.accountId, entityLabel: input.userName, description: `Usuário criado: ${input.userName} (${input.role})`, newData: { userName: input.userName, email: input.email, role: input.role, id: created.accountId } });
         void (async () => {
@@ -357,6 +438,22 @@ export const appRouter = router({
 
   dashboard: router({ stats: commercialProcedure.query(async ({ ctx }) => db.getDashboardStats(ctx.accountId)) }),
 
+  companyProfile: router({
+    updateName: companyAdminProcedure.input(z.object({ name: z.string().min(2).max(255) })).mutation(async ({ ctx, input }) => {
+      await db.updateCompany(ctx.accountId, { name: input.name.trim() });
+      void auditFromCtx(ctx, {
+        action: "update",
+        module: "company",
+        entityType: "company",
+        entityId: ctx.accountId,
+        entityLabel: input.name.trim(),
+        description: `Nome da empresa alterado para ${input.name.trim()}`,
+        newData: { name: input.name.trim() },
+      });
+      return { success: true as const };
+    }),
+  }),
+
   settings: router({
     getAlertDays: commercialProcedure.query(async ({ ctx }) => parseInt(await db.getSetting("alert_days_ahead", ctx.accountId, "30"), 10) || 30),
     setAlertDays: companyAdminProcedure.input(z.object({ days: z.number().min(1).max(365) })).mutation(async ({ ctx, input }) => {
@@ -368,20 +465,38 @@ export const appRouter = router({
   }),
 
   clients: router({
-    list: commercialProcedure.input(z.object({ city: z.string().optional() }).optional()).query(async ({ ctx, input }) => db.getClients(input?.city, ctx.accountId)),
-    page: commercialProcedure.input(z.object({ page: z.number().int().positive().optional(), pageSize: z.number().int().positive().max(100).optional(), city: z.string().optional(), search: z.string().optional() }).optional()).query(({ ctx, input }) => db.getClientsPage(ctx.accountId, input)),
+    list: commercialProcedure.input(z.object({ city: z.string().optional() }).optional()).query(async ({ ctx, input }) => {
+      const ownerUserId = ctx.user?.role === "company_admin" ? null : (ctx.memberAccountId ?? null);
+      return db.getClients(input?.city, ctx.accountId, ownerUserId);
+    }),
+    page: commercialProcedure.input(z.object({ page: z.number().int().positive().optional(), pageSize: z.number().int().positive().max(100).optional(), city: z.string().optional(), search: z.string().optional() }).optional()).query(({ ctx, input }) => {
+      const ownerUserId = ctx.user?.role === "company_admin" ? null : (ctx.memberAccountId ?? null);
+      return db.getClientsPage(ctx.accountId, { ...(input || {}), ownerUserId });
+    }),
     cities: commercialProcedure.query(async ({ ctx }) => db.getDistinctCities(ctx.accountId)),
-    byId: commercialProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => { const client = await db.getClientById(input.id, ctx.accountId); if (!client) return { client: null, extinguishers: [], orders: [] }; return { client, extinguishers: await db.getExtinguishersByClient(input.id, ctx.accountId), orders: await db.getServiceOrders(input.id, ctx.accountId) }; }),
+    byId: commercialProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
+      const ownerUserId = ctx.user?.role === "company_admin" ? null : (ctx.memberAccountId ?? null);
+      const client = await db.getClientById(input.id, ctx.accountId, ownerUserId);
+      if (!client) return { client: null, extinguishers: [], orders: [] };
+      return {
+        client,
+        extinguishers: await db.getExtinguishersByClient(input.id, ctx.accountId),
+        orders: await db.getServiceOrders(input.id, ctx.accountId, ownerUserId),
+      };
+    }),
     create: commercialProcedure.input(clientInput).mutation(async ({ ctx, input }) => {
-      const id = await db.createClient({ ...input, accountId: ctx.accountId, cnpj: emptyToNull(input.cnpj), address: emptyToNull(input.address), cep: emptyToNull(input.cep), phone: emptyToNull(input.phone), contactName: emptyToNull(input.contactName), cpf: emptyToNull(input.cpf), birthDate: emptyToNull(input.birthDate), notes: emptyToNull(input.notes) });
+      await planLimits.assertClientLimit(ctx.accountId);
+      const id = await db.createClient({ ...input, accountId: ctx.accountId, createdByUserId: ctx.memberAccountId ?? null, cnpj: emptyToNull(input.cnpj), address: emptyToNull(input.address), cep: emptyToNull(input.cep), phone: emptyToNull(input.phone), contactName: emptyToNull(input.contactName), cpf: emptyToNull(input.cpf), birthDate: emptyToNull(input.birthDate), notes: emptyToNull(input.notes) } as any);
       void auditFromCtx(ctx, { action: "create", module: "clients", entityType: "client", entityId: id, entityLabel: input.companyName, description: `Cliente criado: ${input.companyName}`, newData: { ...input, id } });
       return { id };
     }),
     update: commercialProcedure.input(clientInput.extend({ id: z.number() })).mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
-      const before = await db.getClientById(id, ctx.accountId);
+      const ownerUserId = ctx.user?.role === "company_admin" ? null : (ctx.memberAccountId ?? null);
+      const before = await db.getClientById(id, ctx.accountId, ownerUserId);
+      if (!before) throw new TRPCError({ code: "FORBIDDEN", message: "Cliente não encontrado ou sem permissão." });
       await db.updateClient(id, { ...data, cnpj: emptyToNull(data.cnpj), address: emptyToNull(data.address), cep: emptyToNull(data.cep), phone: emptyToNull(data.phone), contactName: emptyToNull(data.contactName), cpf: emptyToNull(data.cpf), birthDate: emptyToNull(data.birthDate), notes: emptyToNull(data.notes) }, ctx.accountId);
-      const after = await db.getClientById(id, ctx.accountId);
+      const after = await db.getClientById(id, ctx.accountId, ownerUserId);
       const diff = diffAuditData(before, after);
       void auditFromCtx(ctx, { action: "update", module: "clients", entityType: "client", entityId: id, entityLabel: after?.companyName || before?.companyName || `#${id}`, description: `Cliente atualizado: ${after?.companyName || id}`, oldData: diff.oldData, newData: diff.newData });
       return { success: true } as const;
@@ -400,7 +515,8 @@ export const appRouter = router({
     listByClient: commercialProcedure.input(z.object({ clientId: z.number() })).query(async ({ ctx, input }) => db.getExtinguishersByClient(input.clientId, ctx.accountId)),
     alerts: commercialProcedure.input(z.object({ daysAhead: z.number().optional() }).optional()).query(async ({ ctx, input }) => { const days = input?.daysAhead || parseInt(await db.getSetting("alert_days_ahead", ctx.accountId, "30"), 10) || 30; return db.getExpiringExtinguishers(days, ctx.accountId); }),
     alertsPage: commercialProcedure.input(z.object({ page: z.number().int().positive().optional(), pageSize: z.number().int().positive().max(100).optional(), daysAhead: z.number().optional(), filter: z.enum(["all", "near", "expired"]).optional(), search: z.string().optional(), city: z.string().optional() }).optional()).query(async ({ ctx, input }) => { const days = input?.daysAhead || parseInt(await db.getSetting("alert_days_ahead", ctx.accountId, "30"), 10) || 30; return db.getExpiringExtinguishersPage(days, ctx.accountId, input); }),
-    create: commercialProcedure.input(z.object({ clientId: z.number(), typeModel: z.string().min(1), capacity: z.string().optional(), serialNumber: z.string().optional(), locationInBuilding: z.string().optional(), expirationDate: z.string(), lastInspectionDate: z.string().optional(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
+    create: commercialProcedure.input(z.object({ clientId: z.number(), typeModel: z.string().min(1), capacity: z.string().optional(), serialNumber: z.string().optional(), locationInBuilding: z.string().optional(), expirationDate: z.string(), lastInspectionDate: z.string().optional(), notes: z.string().optional(), stockQuantity: z.number().int().min(1).optional() })).mutation(async ({ ctx, input }) => {
+      await planLimits.assertExtinguisherLimit(ctx.accountId);
       const id = await db.createExtinguisher({ ...input, accountId: ctx.accountId, expirationDate: input.expirationDate as any, lastInspectionDate: (input.lastInspectionDate || null) as any, capacity: emptyToNull(input.capacity), serialNumber: emptyToNull(input.serialNumber), locationInBuilding: emptyToNull(input.locationInBuilding), notes: emptyToNull(input.notes) }, ctx.accountId);
       const label = input.serialNumber || input.typeModel || `#${id}`;
       let publicToken: string | null = null;
@@ -465,21 +581,26 @@ export const appRouter = router({
   }),
 
   orders: router({
-    list: commercialProcedure.input(z.object({ clientId: z.number().optional() }).optional()).query(async ({ ctx, input }) => db.getServiceOrders(input?.clientId, ctx.accountId)),
-    page: commercialProcedure.input(z.object({ page: z.number().int().positive().optional(), pageSize: z.number().int().positive().max(100).optional(), clientId: z.number().int().positive().optional(), search: z.string().optional(), city: z.string().optional(), from: z.string().optional(), to: z.string().optional() }).optional()).query(({ ctx, input }) => db.getServiceOrdersPage(ctx.accountId, input)),
+    list: commercialProcedure.input(z.object({ clientId: z.number().optional() }).optional()).query(async ({ ctx, input }) => db.getServiceOrders(input?.clientId, ctx.accountId, ctx.user?.role === "company_admin" ? null : (ctx.memberAccountId ?? null))),
+    page: commercialProcedure.input(z.object({ page: z.number().int().positive().optional(), pageSize: z.number().int().positive().max(100).optional(), clientId: z.number().int().positive().optional(), search: z.string().optional(), city: z.string().optional(), from: z.string().optional(), to: z.string().optional() }).optional()).query(({ ctx, input }) => db.getServiceOrdersPage(ctx.accountId, { ...(input || {}), ownerUserId: ctx.user?.role === "company_admin" ? null : (ctx.memberAccountId ?? null) })),
     history: commercialProcedure.input(z.object({ clientId: z.number() })).query(async ({ ctx, input }) => db.getServiceOrderHistory(input.clientId, ctx.accountId)),
     nextNumber: commercialProcedure.query(async ({ ctx }) => db.getNextOrderNumber(ctx.accountId)),
     byId: commercialProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => db.getServiceOrderById(input.id, ctx.accountId)),
-    create: commercialProcedure.input(z.object({ orderNumber: z.number().optional(), orderDate: z.string(), clientId: z.number(), replacedAndDelivered: z.string().default("SIM"), leftReserve: z.string().default("NÃO"), reserveDetails: z.string().optional(), extinguisherExpiration: z.string().optional(), licenseExpiration: z.string().optional(), totalAmount: z.string().default("0.00"), paymentMethod: z.string().default("A VISTA"), installmentsCount: z.number().default(1), installmentDates: z.string().optional(), responsibleName: z.string().optional(), responsibleCpf: z.string().optional(), responsibleBirthDate: z.string().optional(), observations: z.string().optional(), items: z.array(z.object({ description: z.string().min(1), quantity: z.number().min(1), unitPrice: z.string(), totalPrice: z.string() })) })).mutation(async ({ ctx, input }) => {
+    create: commercialProcedure.input(z.object({ orderNumber: z.number().optional(), orderDate: z.string(), clientId: z.number(), replacedAndDelivered: z.string().default("SIM"), leftReserve: z.string().default("NÃO"), reserveDetails: z.string().optional(), extinguisherExpiration: z.string().optional(), licenseExpiration: z.string().optional(), totalAmount: z.string().default("0.00"), paymentMethod: z.string().default("A VISTA"), installmentsCount: z.number().default(1), installmentDates: z.string().optional(), responsibleName: z.string().optional(), responsibleCpf: z.string().optional(), responsibleBirthDate: z.string().optional(), observations: z.string().optional(), items: z.array(z.object({ description: z.string().min(1), quantity: z.number().min(1), unitPrice: z.string(), totalPrice: z.string(), extinguisherId: z.number().optional() })) })).mutation(async ({ ctx, input }) => {
+      await planLimits.assertServiceOrderFeature(ctx.accountId);
       const { items, ...orderData } = input;
-      const created = await db.createServiceOrder({ ...orderData, accountId: ctx.accountId, createdByName: ctx.user.name || ctx.user.email || "Usuário não identificado" } as any, items as any, ctx.accountId);
+      const created = await db.createServiceOrder({ ...orderData, accountId: ctx.accountId, createdByName: ctx.user.name || ctx.user.email || "Usuário não identificado", createdByUserId: ctx.memberAccountId ?? null } as any, items as any, ctx.accountId);
       const orderId = typeof created === "object" && created !== null ? Number((created as any).id ?? created) : Number(created);
       void auditFromCtx(ctx, { action: "create", module: "orders", entityType: "order", entityId: orderId || null, entityLabel: "OS", description: "Ordem de serviço criada", newData: { ...orderData, items } });
       return created;
     }),
-    update: commercialProcedure.input(z.object({ id: z.number(), orderDate: z.string(), clientId: z.number(), replacedAndDelivered: z.string(), leftReserve: z.string(), reserveDetails: z.string().optional(), extinguisherExpiration: z.string().optional(), licenseExpiration: z.string().optional(), totalAmount: z.string(), paymentMethod: z.string(), installmentsCount: z.number(), installmentDates: z.string().optional(), responsibleName: z.string().optional(), responsibleCpf: z.string().optional(), responsibleBirthDate: z.string().optional(), observations: z.string().optional(), items: z.array(z.object({ description: z.string().min(1), quantity: z.number().min(1), unitPrice: z.string(), totalPrice: z.string() })) })).mutation(async ({ ctx, input }) => {
+    update: commercialProcedure.input(z.object({ id: z.number(), orderDate: z.string(), clientId: z.number(), replacedAndDelivered: z.string(), leftReserve: z.string(), reserveDetails: z.string().optional(), extinguisherExpiration: z.string().optional(), licenseExpiration: z.string().optional(), totalAmount: z.string(), paymentMethod: z.string(), installmentsCount: z.number(), installmentDates: z.string().optional(), responsibleName: z.string().optional(), responsibleCpf: z.string().optional(), responsibleBirthDate: z.string().optional(), observations: z.string().optional(), items: z.array(z.object({ description: z.string().min(1), quantity: z.number().min(1), unitPrice: z.string(), totalPrice: z.string(), extinguisherId: z.number().optional() })) })).mutation(async ({ ctx, input }) => {
       const { id, items, ...orderData } = input;
       const before = await db.getServiceOrderById(id, ctx.accountId);
+      if (!before) throw new TRPCError({ code: "NOT_FOUND", message: "Ordem não encontrada." });
+      if (ctx.user?.role !== "company_admin" && before.createdByUserId != null && before.createdByUserId !== ctx.memberAccountId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Você só pode editar ordens que você criou." });
+      }
       await db.updateServiceOrder(id, { ...orderData, accountId: ctx.accountId } as any, items as any, ctx.accountId);
       const after = await db.getServiceOrderById(id, ctx.accountId);
       const diff = diffAuditData(before, after);
@@ -540,7 +661,13 @@ export const appRouter = router({
       return all.filter((p: any) => p.active !== false);
     }),
     mySubscription: companyBillingProcedure.query(async ({ ctx }) => {
-      return db.resolveCompanyPlan(ctx.accountId);
+      const resolved = await db.resolveCompanyPlan(ctx.accountId);
+      const effective = await planLimits.getEffectivePlan(ctx.accountId);
+      // Garante flags/limites efetivos (inclui fallback quando não há planId)
+      const plan = resolved.plan
+        ? { ...resolved.plan, ...effective, id: effective.id ?? (resolved.plan as any).id, name: effective.name }
+        : effective;
+      return { ...resolved, plan, effective };
     }),
     payments: companyBillingProcedure.query(async ({ ctx }) => db.listPaymentsForCompany(ctx.accountId)),
     mockCheckout: companyAdminProcedure.input(z.object({
@@ -628,7 +755,7 @@ export const appRouter = router({
 
 
   audit: router({
-    list: commercialProcedure
+    list: companyAdminProcedure
       .input(z.object({
         page: z.number().int().positive().optional(),
         pageSize: z.number().int().positive().max(100).optional(),
@@ -641,13 +768,23 @@ export const appRouter = router({
         entityId: z.number().int().positive().optional(),
         search: z.string().optional(),
       }).optional())
-      .query(async ({ ctx, input }) => listAuditLogs({
-        companyId: ctx.accountId, enforceTenant: true,
-        page: input?.page, pageSize: input?.pageSize, from: input?.from, to: input?.to,
-        userId: input?.userId, module: input?.module, action: input?.action,
-        entityType: input?.entityType, entityId: input?.entityId, search: input?.search,
-      })),
-    byId: commercialProcedure
+      .query(async ({ ctx, input }) => {
+        return listAuditLogs({
+          companyId: ctx.accountId,
+          enforceTenant: true,
+          page: input?.page,
+          pageSize: input?.pageSize,
+          from: input?.from,
+          to: input?.to,
+          userId: input?.userId,
+          module: input?.module,
+          action: input?.action,
+          entityType: input?.entityType,
+          entityId: input?.entityId,
+          search: input?.search,
+        });
+      }),
+    byId: companyAdminProcedure
       .input(z.object({ id: z.number().int().positive() }))
       .query(async ({ ctx, input }) => {
         const row = await getAuditLogById(input.id, ctx.accountId);

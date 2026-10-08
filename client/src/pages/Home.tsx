@@ -1,9 +1,10 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
-import { 
+import { BrandLogo } from "@/components/BrandLogo";
+import { CreditCard,
   Building2, 
   Flame, 
   FileText, 
@@ -25,7 +26,9 @@ import {
   Settings,
   BellRing,
   Download,
+  QrCode,
   HardDrive,
+  ScrollText,
   ShieldCheck,
   ChevronRight,
   Users,
@@ -33,7 +36,10 @@ import {
   Menu,
   X,
   ArrowLeft,
-  RefreshCw
+  RefreshCw,
+  Wifi,
+  WifiOff,
+  CloudOff
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,24 +49,66 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ServiceOrderDocument } from "@/components/ServiceOrderDocument";
 import { toast } from "sonner";
 import { useOfflineSnapshot, useOnlineStatus } from "@/offline/hooks";
-import { offlineDb, markOfflineMutationFailed, queueOfflineMutation } from "@/offline/localDb";
-
-function isOfflineFailure(error: unknown, isOnline: boolean) {
-  const code = (error as any)?.data?.code;
-  return !isOnline || !code;
-}
+import { offlineDb, markOfflineMutationFailed, queueOfflineMutation, saveOnlineSnapshot } from "@/offline/localDb";
+import { downloadQrCodePng, openPrintQrLabel, qrCodeImageUrl } from "@/lib/qrcodeUrl";
+import { ClientDetailCard } from "./home/ClientDetailCard";
+import { ExtinguishersPanel, type ExtinguisherListItem } from "./home/ExtinguishersPanel";
+import type { HomeTab } from "./home/types";
+import { isOfflineFailure } from "./home/utils";
 
 export default function Home() {
   const { user, logout } = useAuth();
   const [, navigate] = useLocation();
   const isPlatformAdmin = user?.role === "platform_admin";
-  const tenantKey = user ? (isPlatformAdmin ? `platform:${user.id}` : user.id < 0 ? String(Math.abs(user.id)) : null) : null;
+  // Escopo offline: empresa (companyId). Fallback para id do membro (legado).
+  const tenantKey = user
+    ? (isPlatformAdmin
+        ? `platform:${user.id}`
+        : (user as any).companyId
+          ? String((user as any).companyId)
+          : user.id < 0
+            ? String(Math.abs(user.id))
+            : String(user.id))
+    : null;
   const isCompanyAdmin = user?.role === "company_admin";
-  const canManageUsers = isCompanyAdmin || isPlatformAdmin;
-  const [activeTab, setActiveTab] = useState<"dashboard" | "clients" | "extinguishers" | "orders" | "alerts" | "trash">("dashboard");
+  const mySubQuery = trpc.billing.mySubscription.useQuery(undefined, {
+    enabled: Boolean(user && user.role !== "platform_admin"),
+  });
+  const profileExtrasQuery = trpc.auth.profileExtras.useQuery(undefined, {
+    enabled: Boolean(user && user.role !== "platform_admin"),
+  });
+  const headerAvatarUrl = profileExtrasQuery.data?.avatarDataUrl || null;
+  const headerInitials = (user?.name || user?.email || "U").trim().slice(0, 2).toUpperCase();
+  const currentPlanLabel = mySubQuery.data?.plan?.name
+    ? `Plano atual: ${mySubQuery.data.plan.name}`
+    : mySubQuery.isLoading
+      ? "Carregando plano…"
+      : "Sem plano definido";
+  const planFeatures = (mySubQuery.data?.plan || mySubQuery.data?.effective || {}) as Record<string, unknown>;
+  const hasFeature = (key: string, defaultValue = true) => {
+    if (isPlatformAdmin) return true;
+    if (mySubQuery.isLoading) return true; // evita esconder menu durante carga
+    const v = planFeatures[key];
+    if (v === undefined || v === null) return defaultValue;
+    return Boolean(v);
+  };
+  const canManageUsers = (isCompanyAdmin || isPlatformAdmin) && hasFeature("featureUsers", false);
+  const canUseBackup = hasFeature("featureBackup", true);
+  const canUseAudit = hasFeature("featureReports", false);
+  const canUseOffline = hasFeature("featureOfflinePwa", true);
+  const [activeTab, setActiveTab] = useState<HomeTab>("dashboard");
   const [selectedCity, setSelectedCity] = useState<string>("TODAS");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [fromDate, setFromDate] = useState<string>("");
@@ -75,11 +123,18 @@ export default function Home() {
   
   // Visualização e Impressão de OS
   const [viewingOrderId, setViewingOrderId] = useState<number | null>(null);
+  const suppressOrderPreviewRef = useRef(false);
   const [platformOrderPreview, setPlatformOrderPreview] = useState<any>(null);
 
   // Modais de Criação
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
   const [isExtinguisherModalOpen, setIsExtinguisherModalOpen] = useState(false);
+  const [isSyncingOffline, setIsSyncingOffline] = useState(false);
+  const [syncProgress, setSyncProgress] = useState({ done: 0, total: 0, failed: 0, pending: 0 });
+  const [lastSyncResult, setLastSyncResult] = useState<{ ok: number; failed: number } | null>(null);
+  const [syncNonce, setSyncNonce] = useState(0);
+  const [editingExtinguisherId, setEditingExtinguisherId] = useState<number | null>(null);
+  const [qrExtFromList, setQrExtFromList] = useState<ExtinguisherListItem | null>(null);
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isTrashModalOpen, setIsTrashModalOpen] = useState(false);
@@ -88,6 +143,7 @@ export default function Home() {
   const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
   const [editingOrderCompanyId, setEditingOrderCompanyId] = useState<number | null>(null);
   const [returnToOrderAfterClient, setReturnToOrderAfterClient] = useState(false);
+  const [returnToOrderAfterExtinguisher, setReturnToOrderAfterExtinguisher] = useState(false);
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
   const platformClientsInput = useMemo(() => selectedCompanyId ? { companyId: selectedCompanyId } : undefined, [selectedCompanyId]);
   const clientPageInput = useMemo(() => ({ page: clientPage, pageSize, city: selectedCity, search: searchQuery }), [clientPage, selectedCity, searchQuery]);
@@ -103,15 +159,20 @@ export default function Home() {
   const [selectedClientIdForExtinguisher, setSelectedClientIdForExtinguisher] = useState<number | null>(null);
 
   // Queries
-  const statsQuery = trpc.dashboard.stats.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
-  const citiesQuery = trpc.clients.cities.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
-  const clientsQuery = trpc.clients.list.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
-  const clientsPageQuery = trpc.clients.page.useQuery(clientPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
-  const allExtinguishersQuery = trpc.extinguishers.list.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
-  const alertsQuery = trpc.extinguishers.alerts.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
-  const ordersQuery = trpc.orders.list.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
-  const ordersPageQuery = trpc.orders.page.useQuery(orderPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
-  const alertsPageQuery = trpc.extinguishers.alertsPage.useQuery(alertPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
+  const statsQuery = trpc.dashboard.stats.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin), staleTime: 60_000 });
+  const citiesQuery = trpc.clients.cities.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin), staleTime: 120_000 });
+  // Lista completa de clientes só quando o select de OS/extintor precisa.
+  // O restante da UI online usa paginação; offline usa snapshot.
+  const clientsQuery = trpc.clients.list.useQuery(undefined, {
+    enabled: Boolean(tenantKey && !isPlatformAdmin && (isExtinguisherModalOpen || isOrderModalOpen)),
+    staleTime: 60_000,
+  });
+  const clientsPageQuery = trpc.clients.page.useQuery(clientPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin), staleTime: 30_000 });
+  const allExtinguishersQuery = trpc.extinguishers.list.useQuery(undefined, { enabled: false });
+  const alertsQuery = trpc.extinguishers.alerts.useQuery(undefined, { enabled: false });
+  const ordersQuery = trpc.orders.list.useQuery(undefined, { enabled: false });
+  const ordersPageQuery = trpc.orders.page.useQuery(orderPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin), staleTime: 30_000 });
+  const alertsPageQuery = trpc.extinguishers.alertsPage.useQuery(alertPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin), staleTime: 30_000 });
   const offlineSnapshotQuery = trpc.offline.snapshot.useQuery({ page: 1, pageSize: 50 }, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const alertDaysQuery = trpc.settings.getAlertDays.useQuery(undefined, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
   const companiesQuery = trpc.platform.companies.list.useQuery(undefined, { enabled: isPlatformAdmin });
@@ -124,9 +185,13 @@ export default function Home() {
   const platformTrashQuery = trpc.platform.data.trash.list.useQuery(platformTrashInput, { enabled: Boolean(isPlatformAdmin && selectedCompanyId) });
   const visibleTrash = isPlatformAdmin ? (platformTrashQuery.data || []) : (trashQuery.data || []);
   const remoteExtinguishers = useMemo(() => allExtinguishersQuery.data || [], [allExtinguishersQuery.data]);
+  const listQrInfoQuery = trpc.extinguishers.qrInfo.useQuery(
+    { id: qrExtFromList?.id || 0 },
+    { enabled: Boolean(qrExtFromList?.id && !isPlatformAdmin) },
+  );
   const orderDetailsQuery = trpc.orders.byId.useQuery(
     { id: viewingOrderId! },
-    { enabled: Boolean(tenantKey && viewingOrderId) }
+    { enabled: Boolean(tenantKey && viewingOrderId && viewingOrderId > 0 && (typeof navigator === "undefined" || navigator.onLine)) }
   );
 
   const offline = useOfflineSnapshot({
@@ -137,11 +202,93 @@ export default function Home() {
     alerts: (isPlatformAdmin ? undefined : offlineSnapshotQuery.data?.alerts) as any,
     alertDays: alertDaysQuery.data,
   });
-  const allClients = useMemo(() => isPlatformAdmin ? (platformClientsQuery.data || offline.clients || []) : (offline.isOnline ? (clientsQuery.data || []) : (offline.clients || [])), [isPlatformAdmin, platformClientsQuery.data, clientsQuery.data, offline.isOnline, offline.clients]);
+  useEffect(() => {
+    if (!tenantKey || !offline.isOnline || isPlatformAdmin) return;
+    if (!Array.isArray(clientsQuery.data) || clientsQuery.isFetching) return;
+    if (!Array.isArray(ordersQuery.data) || ordersQuery.isFetching) return;
+    if (!Array.isArray(allExtinguishersQuery.data) || allExtinguishersQuery.isFetching) return;
+    void saveOnlineSnapshot({
+      tenantKey,
+      clients: clientsQuery.data as any,
+      extinguishers: allExtinguishersQuery.data as any,
+      orders: ordersQuery.data as any,
+      preserveExisting: false,
+    });
+  }, [tenantKey, offline.isOnline, isPlatformAdmin, clientsQuery.data, clientsQuery.isFetching, ordersQuery.data, ordersQuery.isFetching, allExtinguishersQuery.data, allExtinguishersQuery.isFetching]);
+
+  const offlineMutations = useLiveQuery(
+    () => (tenantKey ? offlineDb.mutations.where("tenantKey").equals(tenantKey).toArray() : Promise.resolve([] as any[])),
+    [tenantKey],
+  );
+  const mutationsReady = offlineMutations !== undefined && Array.isArray(offlineMutations);
+  const pendingOfflineCount = (offlineMutations || []).filter((m: any) => (m.state || "pending") === "pending").length;
+  const failedOfflineCount = (offlineMutations || []).filter((m: any) => m.state === "failed").length;
+  const stableClientsRef = useRef<any[]>([]);
+  const stableOrdersRef = useRef<any[]>([]);
+  const stableExtRef = useRef<any[]>([]);
+  const allClients = useMemo(() => {
+    if (isPlatformAdmin) {
+      return (platformClientsQuery.data || platformClientsPageQuery.data?.items || offline.clients || []) as any[];
+    }
+    const remoteList = clientsQuery.data;
+    if (!offline.isOnline) {
+      const local = (offline.clients && offline.clients.length ? offline.clients : stableClientsRef.current) as any[];
+      if (local.length) stableClientsRef.current = local;
+      return local;
+    }
+    // Online: só o servidor. Enquanto carrega, mantém o último valor do servidor — nunca o cache local.
+    if (Array.isArray(remoteList)) {
+      stableClientsRef.current = remoteList as any[];
+      return remoteList as any[];
+    }
+    return stableClientsRef.current;
+  }, [
+    isPlatformAdmin,
+    platformClientsQuery.data,
+    platformClientsPageQuery.data?.items,
+    clientsQuery.data,
+    clientsQuery.isFetching,
+    offline.isOnline,
+    offline.clients,
+    pendingOfflineCount,
+    isSyncingOffline,
+  ]);
+  // Select de cadastro (extintor/OS): sempre todos os clientes disponíveis, sem filtro de cidade
+  const selectClients = useMemo(() => allClients, [allClients]);
   const effectiveClients = useMemo(() => allClients.filter((client: any) => selectedCity === "TODAS" || client.city === selectedCity), [allClients, selectedCity]);
-  const effectiveCities = useMemo(() => Array.from(new Set(allClients.map((client: any) => client.city).filter(Boolean))).sort(), [allClients]);
-  const effectiveExtinguishers = useMemo(() => isPlatformAdmin ? (offline.extinguishers || []) : (offline.isOnline ? (remoteExtinguishers || []) : (offline.extinguishers || [])), [isPlatformAdmin, remoteExtinguishers, offline.isOnline, offline.extinguishers]);
-  const effectiveOrders = useMemo(() => isPlatformAdmin ? (offline.orders || []) : (offline.isOnline ? (ordersQuery.data || []) : (offline.orders || [])), [isPlatformAdmin, ordersQuery.data, offline.isOnline, offline.orders]);
+  const effectiveCities = useMemo(() => {
+    if (!isPlatformAdmin && offline.isOnline && Array.isArray(citiesQuery.data) && citiesQuery.data.length) {
+      return [...citiesQuery.data].filter(Boolean).sort();
+    }
+    return Array.from(new Set(allClients.map((client: any) => client.city).filter(Boolean))).sort();
+  }, [isPlatformAdmin, offline.isOnline, citiesQuery.data, allClients]);
+  const effectiveExtinguishers = useMemo(() => {
+    if (isPlatformAdmin) return offline.extinguishers || [];
+    if (!offline.isOnline) {
+      const local = (offline.extinguishers && offline.extinguishers.length ? offline.extinguishers : stableExtRef.current) as any[];
+      if (local.length) stableExtRef.current = local;
+      return local;
+    }
+    if (Array.isArray(allExtinguishersQuery.data)) {
+      stableExtRef.current = remoteExtinguishers;
+      return remoteExtinguishers;
+    }
+    return stableExtRef.current;
+  }, [isPlatformAdmin, remoteExtinguishers, allExtinguishersQuery.data, allExtinguishersQuery.isFetching, offline.isOnline, offline.extinguishers, pendingOfflineCount, isSyncingOffline]);
+  const effectiveOrders = useMemo(() => {
+    if (isPlatformAdmin) return offline.orders || [];
+    const remote = ordersQuery.data;
+    if (!offline.isOnline) {
+      const local = (offline.orders && offline.orders.length ? offline.orders : stableOrdersRef.current) as any[];
+      if (local.length) stableOrdersRef.current = local;
+      return local;
+    }
+    if (Array.isArray(remote)) {
+      stableOrdersRef.current = remote as any[];
+      return remote as any[];
+    }
+    return stableOrdersRef.current;
+  }, [isPlatformAdmin, ordersQuery.data, ordersQuery.isFetching, offline.isOnline, offline.orders, pendingOfflineCount, isSyncingOffline]);
   const effectiveAlerts = useMemo(() => {
     if (!isPlatformAdmin) return offline.isOnline ? (alertsPageQuery.data?.items || alertsQuery.data || []) : (offline.alerts || []);
     const clientsById = new Map((platformClientsQuery.data || []).map((client: any) => [client.id, client]));
@@ -165,14 +312,23 @@ export default function Home() {
       };
     });
   }, [isPlatformAdmin, offline.alerts, offline.isOnline, alertsPageQuery.data, alertsQuery.data, platformClientsQuery.data, effectiveExtinguishers, alertDaysQuery.data, platformAlertsPageQuery.data]);
-  const effectiveStats = useMemo(() => offline.isOnline && (isPlatformAdmin ? platformStatsQuery.data : statsQuery.data) ? (isPlatformAdmin ? platformStatsQuery.data : statsQuery.data) : {
-    totalClients: effectiveClients.length,
-    totalCities: effectiveCities.length,
-    totalExtinguishers: effectiveExtinguishers.length,
-    nearExpirationCount: effectiveAlerts.filter((item: any) => item.alertStatus === "warning" || item.alertStatus === "urgent").length,
-    expiredCount: effectiveAlerts.filter((item: any) => item.alertStatus === "expired").length,
-    totalOrders: effectiveOrders.length,
-    alertDaysConfig: offline.alertDays || 30,
+  const stableStatsRef = useRef<any>(null);
+  const effectiveStats = useMemo(() => {
+    const serverStats = isPlatformAdmin ? platformStatsQuery.data : statsQuery.data;
+    if (offline.isOnline && serverStats) {
+      stableStatsRef.current = serverStats;
+      return serverStats;
+    }
+    if (offline.isOnline && stableStatsRef.current) return stableStatsRef.current;
+    return {
+      totalClients: effectiveClients.length,
+      totalCities: effectiveCities.length,
+      totalExtinguishers: effectiveExtinguishers.length,
+      nearExpirationCount: effectiveAlerts.filter((item: any) => item.alertStatus === "warning" || item.alertStatus === "urgent").length,
+      expiredCount: effectiveAlerts.filter((item: any) => item.alertStatus === "expired").length,
+      totalOrders: effectiveOrders.length,
+      alertDaysConfig: offline.alertDays || 30,
+    };
   }, [offline.isOnline, offline.alertDays, statsQuery.data, platformStatsQuery.data, isPlatformAdmin, effectiveClients.length, effectiveCities.length, effectiveExtinguishers.length, effectiveAlerts, effectiveOrders.length]);
   const offlineOrderDetails = useMemo(() => {
     const row = (offline.orders || []).find((item: any) => item.order?.id === viewingOrderId);
@@ -181,6 +337,7 @@ export default function Home() {
 
   // Mutations
   const utils = trpc.useUtils();
+
 
   const restoreTrashMutation = trpc.trash.restore.useMutation({
     onSuccess: async () => {
@@ -260,7 +417,16 @@ export default function Home() {
       }
     },
     onError: async (err, input) => {
-      if (isOfflineFailure(err, offline.isOnline)) { const localId = await saveOfflineClient(input); await queueOfflineMutation({ tenantKey: tenantKey!, entity: "client", action: "create", payload: { ...input, localId } }); toast.success("Cliente salvo no dispositivo (offline)."); setIsClientModalOpen(false); return; }
+      if (isOfflineFailure(err, offline.isOnline)) {
+        const already = await offlineDb.mutations.where("tenantKey").equals(tenantKey || "").filter((m) => m.entity === "client" && m.action === "create" && m.payload?.companyName === input.companyName).count();
+        if (!already) {
+          const localId = await saveOfflineClient(input);
+          await queueOfflineMutation({ tenantKey: tenantKey!, entity: "client", action: "create", payload: { ...input, localId } });
+        }
+        toast.success("Cliente salvo no dispositivo (offline). Será sincronizado ao reconectar.");
+        setIsClientModalOpen(false);
+        return;
+      }
       toast.error(err.message);
     },
   });
@@ -291,12 +457,11 @@ export default function Home() {
     },
     onError: async (err, input) => {
       if (isOfflineFailure(err, offline.isOnline) && tenantKey) {
-        const current = await offlineDb.clients.get(input.id);
-        if (current) await offlineDb.clients.put({ ...current, ...input, tenantKey, updatedAt: new Date().toISOString() });
-        await queueOfflineMutation({ tenantKey, entity: "client", action: "update", payload: input });
-        toast.success("Alteração salva no dispositivo (offline).");
-        setEditingClientId(null);
-        setIsClientModalOpen(false);
+        try {
+          await updateClientOfflineAndQueue(input);
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : "Falha ao salvar offline.");
+        }
         return;
       }
       toast.error(err.message);
@@ -327,12 +492,30 @@ export default function Home() {
   });
 
   const createExtinguisherMutation = trpc.extinguishers.create.useMutation({
-    onSuccess: () => {
+    onSuccess: (result, input) => {
       toast.success("Extintor registrado com sucesso!");
       setIsExtinguisherModalOpen(false);
+      setEditingExtinguisherId(null);
       utils.extinguishers.invalidate();
       utils.clients.invalidate();
       utils.dashboard.stats.invalidate();
+      if (returnToOrderAfterExtinguisher && result?.id) {
+        const qty = Number((input as any).stockQuantity) || 1;
+        setOrderForm((prev) => ({
+          ...prev,
+          clientId: prev.clientId || input.clientId,
+          items: [...prev.items.filter((item) => item.description.trim()), {
+            description: `Extintor ${input.typeModel}${input.capacity ? ` ${input.capacity}` : ""}`,
+            quantity: 1,
+            unitPrice: "45.00",
+            totalPrice: "45.00",
+            extinguisherId: result.id,
+            stockQuantity: qty,
+          }],
+        }));
+        setReturnToOrderAfterExtinguisher(false);
+        setIsOrderModalOpen(true);
+      }
     },
     onError: async (err, input) => {
       if (isOfflineFailure(err, offline.isOnline)) { const localId = await saveOfflineExtinguisher(input); await queueOfflineMutation({ tenantKey: tenantKey!, entity: "extinguisher", action: "create", payload: { ...input, localId } }); toast.success("Extintor salvo no dispositivo (offline)."); setIsExtinguisherModalOpen(false); return; }
@@ -364,6 +547,8 @@ export default function Home() {
   const updateExtinguisherMutation = trpc.extinguishers.update.useMutation({
     onSuccess: async () => {
       toast.success("Extintor atualizado!");
+      setIsExtinguisherModalOpen(false);
+      setEditingExtinguisherId(null);
       await Promise.all([utils.extinguishers.invalidate(), utils.clients.invalidate(), utils.dashboard.stats.invalidate()]);
     },
     onError: async (err, input) => {
@@ -384,7 +569,7 @@ export default function Home() {
       setIsOrderModalOpen(false);
       utils.orders.invalidate();
       utils.dashboard.stats.invalidate();
-      if (res?.id) {
+      if (res?.id && !suppressOrderPreviewRef.current) {
         setPlatformOrderPreview(null);
         setViewingOrderId(res.id);
       }
@@ -428,12 +613,11 @@ export default function Home() {
     },
     onError: async (err, input) => {
       if (isOfflineFailure(err, offline.isOnline) && tenantKey) {
-        const current = await offlineDb.orders.get(input.id);
-        if (current) await offlineDb.orders.put({ ...current, tenantKey, order: { ...current.order, ...input, tenantKey, updatedAt: new Date().toISOString() } });
-        await queueOfflineMutation({ tenantKey, entity: "order", action: "update", payload: input });
-        toast.success("Alteração salva no dispositivo (offline).");
-        setEditingOrderId(null);
-        setIsOrderModalOpen(false);
+        try {
+          await updateOrderOfflineAndQueue(input);
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : "Falha ao salvar OS offline.");
+        }
         return;
       }
       toast.error(err.message);
@@ -447,7 +631,7 @@ export default function Home() {
       utils.dashboard.stats.invalidate();
     },
     onError: async (err, input) => {
-      if (isOfflineFailure(err, offline.isOnline)) { if (!tenantKey) return; const orders = (await offlineDb.orders.where("tenantKey").equals(tenantKey).filter((row) => row.order?.id === input.id).toArray()).map((row) => row.order.id); await offlineDb.orders.bulkDelete(orders); await queueOfflineMutation({ tenantKey, entity: "order", action: "delete", payload: input }); toast.success("Ordem removida do dispositivo."); return; }
+      if (isOfflineFailure(err, offline.isOnline)) { if (!tenantKey) return; const orders = (await offlineDb.orders.where("tenantKey").equals(tenantKey).filter((row) => row.order?.id === input.id).toArray()).map((row) => row.order.id); await offlineDb.orders.bulkDelete(orders); await queueOfflineMutation({ tenantKey, entity: "order", action: "delete", payload: input }); toast.success("OS excluída no dispositivo (offline). Será sincronizada ao reconectar."); return; }
       toast.error(err.message);
     },
   });
@@ -488,25 +672,161 @@ export default function Home() {
     onError: (err) => toast.error(err.message),
   });
 
+  const syncLockRef = useRef(false);
+  useEffect(() => {
+    if (!offline.isOnline || !tenantKey || isPlatformAdmin) return;
+    if (pendingOfflineCount + failedOfflineCount === 0) return;
+    const kick = window.setTimeout(() => setSyncNonce((n) => n + 1), 400);
+    const timer = window.setInterval(() => setSyncNonce((n) => n + 1), 5000);
+    return () => {
+      window.clearTimeout(kick);
+      window.clearInterval(timer);
+    };
+  }, [offline.isOnline, tenantKey, isPlatformAdmin, pendingOfflineCount, failedOfflineCount]);
+
   useEffect(() => {
     if (!offline.isOnline) return;
     let cancelled = false;
     void (async () => {
-      if (!tenantKey) return;
-      const queued = (await offlineDb.mutations.where("tenantKey").equals(tenantKey).sortBy("createdAt")).filter((mutation) => (mutation.state || "pending") === "pending");
+      if (!tenantKey || syncLockRef.current) return;
+      syncLockRef.current = true;
+      const rank = (mutation: any) => {
+        const actionRank = mutation.action === "create" ? 0 : mutation.action === "update" ? 1 : 2;
+        const entityRank = mutation.entity === "client" ? 0 : mutation.entity === "extinguisher" ? 1 : 2;
+        return actionRank * 10 + entityRank;
+      };
+      const queued = (await offlineDb.mutations.where("tenantKey").equals(tenantKey).sortBy("createdAt")).filter((mutation) => (mutation.state || "pending") === "pending" || mutation.state === "failed").sort((a, b) => rank(a) - rank(b));
+      const seen = new Set<string>();
+      const duplicates: number[] = [];
+      const unique = [];
+      for (const mutation of queued) {
+        if (mutation.entity === "client" && mutation.action === "create") {
+          const key = `${String(mutation.payload?.companyName || "").trim().toLowerCase()}|${String(mutation.payload?.city || "").trim().toLowerCase()}|${String(mutation.payload?.phone || "").trim()}`;
+          if (seen.has(key)) {
+            if (mutation.id) duplicates.push(mutation.id);
+            continue;
+          }
+          seen.add(key);
+        }
+        unique.push(mutation);
+      }
+      if (duplicates.length) await offlineDb.mutations.bulkDelete(duplicates);
+      queued.splice(0, queued.length, ...unique);
+      if (!queued.length) {
+        setIsSyncingOffline(false);
+        return;
+      }
+      setIsSyncingOffline(true);
+      suppressOrderPreviewRef.current = true;
+      setSyncProgress({ done: 0, total: queued.length, failed: 0, pending: queued.length });
+      let ok = 0;
+      let failed = 0;
+      let lastError = "";
       const idMap = new Map<number, number>();
+      const clean = (value: any): any => {
+        if (value == null) return undefined;
+        if (Array.isArray(value)) return value.map((item) => clean(item));
+        if (typeof value === "object") {
+          const out: any = {};
+          for (const [key, item] of Object.entries(value)) {
+            if (["localId", "tenantKey", "createdAt", "updatedAt", "accountId", "password", "passwordHash"].includes(key)) continue;
+            const next = clean(item);
+            if (next !== undefined) out[key] = next;
+          }
+          return out;
+        }
+        return value;
+      };
       for (const mutation of queued) {
         if (cancelled) return;
         try {
           const raw = mutation.payload || {};
-          const payload = { ...raw };
+          const payload = clean(raw) || {};
           delete payload.localId;
           delete payload.tenantKey;
-          if (payload.clientId && idMap.has(payload.clientId)) payload.clientId = idMap.get(payload.clientId);
-          if (payload.items) payload.items = payload.items.map((item: any) => ({ ...item, extinguisherId: idMap.get(item.extinguisherId) || item.extinguisherId }));
+          delete payload.createdAt;
+          delete payload.updatedAt;
+          delete payload.accountId;
+          delete payload.companyId;
+          if (mutation.action === "create") delete payload.id;
+          const asDate = (value: any) => {
+            if (value == null || value === "") return undefined;
+            const text = String(value);
+            return text.length >= 10 ? text.slice(0, 10) : text;
+          };
+          if (mutation.entity === "client") {
+            const picked: any = {
+              companyName: String(payload.companyName || "").trim(),
+              city: String(payload.city || "").trim(),
+              cnpj: payload.cnpj || undefined,
+              address: payload.address || undefined,
+              cep: payload.cep || undefined,
+              phone: payload.phone || undefined,
+              contactName: payload.contactName || undefined,
+              cpf: payload.cpf || undefined,
+              birthDate: asDate(payload.birthDate),
+              notes: payload.notes || undefined,
+            };
+            if (mutation.action !== "create") picked.id = Number(payload.id);
+            Object.keys(payload).forEach((key) => delete payload[key]);
+            Object.assign(payload, picked);
+          }
+          if (mutation.entity === "extinguisher" && mutation.action === "create") {
+            const picked: any = {
+              clientId: Number(payload.clientId),
+              typeModel: String(payload.typeModel || "PQS"),
+              capacity: payload.capacity || undefined,
+              serialNumber: payload.serialNumber || undefined,
+              locationInBuilding: payload.locationInBuilding || undefined,
+              expirationDate: asDate(payload.expirationDate) || new Date().toISOString().slice(0, 10),
+              lastInspectionDate: asDate(payload.lastInspectionDate),
+              notes: payload.notes || undefined,
+            };
+            Object.keys(payload).forEach((key) => delete payload[key]);
+            Object.assign(payload, picked);
+          }
+          if (mutation.entity === "order" && mutation.action === "create") {
+            const items = Array.isArray(payload.items) ? payload.items.map((item: any) => ({
+              description: String(item.description || "Serviço"),
+              quantity: Number(item.quantity) || 1,
+              unitPrice: String(item.unitPrice ?? "0.00"),
+              totalPrice: String(item.totalPrice ?? "0.00"),
+              extinguisherId: Number(item.extinguisherId) || undefined,
+            })) : [];
+            const picked: any = {
+              orderDate: asDate(payload.orderDate) || new Date().toISOString().slice(0, 10),
+              clientId: Number(payload.clientId),
+              replacedAndDelivered: payload.replacedAndDelivered || "SIM",
+              leftReserve: payload.leftReserve || "NÃO",
+              reserveDetails: payload.reserveDetails || undefined,
+              extinguisherExpiration: asDate(payload.extinguisherExpiration),
+              licenseExpiration: asDate(payload.licenseExpiration),
+              totalAmount: String(payload.totalAmount ?? "0.00"),
+              paymentMethod: payload.paymentMethod || "A VISTA",
+              installmentsCount: Number(payload.installmentsCount) || 1,
+              installmentDates: payload.installmentDates || undefined,
+              responsibleName: payload.responsibleName || undefined,
+              responsibleCpf: payload.responsibleCpf || undefined,
+              responsibleBirthDate: asDate(payload.responsibleBirthDate),
+              observations: payload.observations || undefined,
+              items,
+            };
+            Object.keys(payload).forEach((key) => delete payload[key]);
+            Object.assign(payload, picked);
+          }
+
+          if (payload.clientId && idMap.has(Number(payload.clientId))) payload.clientId = idMap.get(Number(payload.clientId));
+          if (payload.items) payload.items = payload.items.map((item: any) => ({ ...item, extinguisherId: idMap.get(Number(item.extinguisherId)) || item.extinguisherId }));
+          if (Number(payload.clientId) < 0) {
+            throw new Error("Cliente ainda não sincronizado. O cadastro do cliente será enviado primeiro.");
+          }
+          if (mutation.action !== "create" && Number(payload.id) < 0 && !idMap.has(Number(payload.id))) {
+            if (mutation.id) await offlineDb.mutations.delete(mutation.id);
+            continue;
+          }
           if (mutation.action === "create") {
             const result = mutation.entity === "client" ? await createClientMutation.mutateAsync(payload) : mutation.entity === "extinguisher" ? await createExtinguisherMutation.mutateAsync(payload) : await createOrderMutation.mutateAsync(payload);
-            if (raw.localId && result?.id) idMap.set(raw.localId, result.id);
+            if (raw.localId && result?.id) idMap.set(Number(raw.localId), result.id);
           } else if (mutation.action === "update") {
             const resolvedId = idMap.get(Number(payload.id)) || Number(payload.id);
             payload.id = resolvedId;
@@ -522,19 +842,35 @@ export default function Home() {
             }
           }
           if (mutation.id) await offlineDb.mutations.delete(mutation.id);
+          ok += 1;
+          if (!cancelled) setSyncProgress({ done: ok, total: queued.length, failed, pending: Math.max(queued.length - ok - failed, 0) });
+          if (!cancelled && ok % 1 === 0) void utils.dashboard.stats.invalidate();
         } catch (error) {
-          if (mutation.id) await markOfflineMutationFailed(mutation.id, tenantKey, error instanceof Error ? error.message : "Falha desconhecida");
-          toast.error("Não foi possível sincronizar os dados locais. Tentaremos novamente.");
-          return;
+          failed += 1;
+          lastError = error instanceof Error ? error.message : "Falha desconhecida";
+          if (mutation.id) await markOfflineMutationFailed(mutation.id, tenantKey, lastError);
+          if (!cancelled) setSyncProgress({ done: ok, total: queued.length, failed, pending: Math.max(queued.length - ok - failed, 0) });
+          // Continua as demais — um erro não pode travar a fila inteira
         }
       }
-      if (!cancelled && queued.length) {
-        await Promise.all([utils.clients.invalidate(), utils.extinguishers.invalidate(), utils.orders.invalidate(), utils.dashboard.stats.invalidate()]);
-        toast.success("Dados offline sincronizados com sucesso.");
+      if (!cancelled) {
+        setLastSyncResult({ ok, failed });
+        setSyncProgress({ done: ok, total: queued.length, failed, pending: Math.max(queued.length - ok - failed, 0) });
+        setIsSyncingOffline(false);
+        suppressOrderPreviewRef.current = false;
+        setViewingOrderId((current) => (current != null && current < 0 ? null : current));
+        setPlatformOrderPreview((current: any) => (current?.id < 0 ? null : current));
+        if (ok) {
+          await Promise.all([utils.clients.invalidate(), utils.extinguishers.invalidate(), utils.orders.invalidate(), utils.dashboard.stats.invalidate()]);
+          toast.success(`${ok} operação(ões) offline sincronizada(s).`);
+        }
+        if (failed) toast.error(lastError ? `Falha ao sincronizar: ${lastError}` : `${failed} operação(ões) não sincronizaram.`);
       }
-    })();
+    })().finally(() => {
+      syncLockRef.current = false;
+    });
     return () => { cancelled = true; };
-  }, [offline.isOnline, tenantKey]);
+  }, [offline.isOnline, tenantKey, syncNonce]);
 
   const setAlertDaysMutation = trpc.settings.setAlertDays.useMutation({
     onSuccess: () => {
@@ -565,10 +901,11 @@ export default function Home() {
     typeModel: "PQS ABC 4kg",
     capacity: "4kg",
     serialNumber: "",
-    locationInBuilding: "Recepção",
+    locationInBuilding: "Estoque",
     expirationDate: new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toISOString().split("T")[0],
     lastInspectionDate: new Date().toISOString().split("T")[0],
     notes: "",
+    stockQuantity: 1,
   });
 
   const [orderForm, setOrderForm] = useState({
@@ -587,7 +924,7 @@ export default function Home() {
     responsibleBirthDate: "",
     observations: "",
     items: [
-      { description: "Recarga de Extintor PQS 4kg ABC", quantity: 1, unitPrice: "45.00", totalPrice: "45.00" },
+      { description: "", quantity: 1, unitPrice: "45.00", totalPrice: "45.00", extinguisherId: 0 },
     ],
   });
 
@@ -610,7 +947,7 @@ export default function Home() {
       ...orderForm,
       items: [
         ...orderForm.items,
-        { description: "Recarga de Extintor", quantity: 1, unitPrice: "0.00", totalPrice: "0.00" },
+        { description: "", quantity: 1, unitPrice: "45.00", totalPrice: "45.00", extinguisherId: 0 },
       ],
     });
   };
@@ -674,9 +1011,17 @@ export default function Home() {
 
   const saveClientOfflineAndQueue = async (input: typeof clientForm) => {
     if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
+    const name = input.companyName.trim().toLowerCase();
+    const city = input.city.trim().toLowerCase();
+    const already = await offlineDb.mutations.where("tenantKey").equals(tenantKey).filter((m) => m.entity === "client" && m.action === "create" && String(m.payload?.companyName || "").trim().toLowerCase() === name && String(m.payload?.city || "").trim().toLowerCase() === city).count();
+    if (already) {
+      toast.success("Este cliente já está salvo no aparelho. Não criei outro.");
+      setIsClientModalOpen(false);
+      return;
+    }
     const localId = await saveOfflineClient(input);
     await queueOfflineMutation({ tenantKey, entity: "client", action: "create", payload: { ...input, localId } });
-    toast.success("Cliente salvo no dispositivo (offline).");
+    toast.success(`Cliente ${input.companyName} salvo no aparelho.`);
     setIsClientModalOpen(false);
     if (returnToOrderAfterClient) {
       setOrderForm(prev => ({ ...prev, clientId: localId, responsibleName: input.contactName, responsibleCpf: input.cpf, responsibleBirthDate: input.birthDate }));
@@ -693,9 +1038,75 @@ export default function Home() {
     const localClient = client ? { ...client, tenantKey } : { id: input.clientId, tenantKey, companyName: "Cliente offline", city: "Não informado" };
     await offlineDb.orders.put({ tenantKey, order: { ...order, tenantKey }, client: localClient });
     await queueOfflineMutation({ tenantKey, entity: "order", action: "create", payload: { ...input, localId: id } });
-    toast.success("Ordem salva no dispositivo (offline).");
+    toast.success("Ordem salva no dispositivo (offline). Será sincronizada ao reconectar.");
     setIsOrderModalOpen(false);
+    setPlatformOrderPreview({ ...order, client: localClient, items: order.items || [] });
     setViewingOrderId(id);
+  };
+
+  const updateClientOfflineAndQueue = async (input: any) => {
+    if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
+    const current = await offlineDb.clients.get(input.id);
+    const base = current || allClients.find((c: any) => c.id === input.id) || { id: input.id, companyName: input.companyName, city: input.city };
+    await offlineDb.clients.put({ ...base, ...input, tenantKey, updatedAt: new Date().toISOString() });
+    await queueOfflineMutation({ tenantKey, entity: "client", action: "update", payload: input });
+    toast.success("Alteração do cliente salva no dispositivo (offline).");
+    setEditingClientId(null);
+    setIsClientModalOpen(false);
+  };
+
+  const deleteClientOfflineAndQueue = async (id: number) => {
+    if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
+    const clientRows = (await offlineDb.clients.where("tenantKey").equals(tenantKey).filter((row) => row.id === id).toArray()).map((row) => row.id);
+    if (clientRows.length) await offlineDb.clients.bulkDelete(clientRows);
+    else {
+      // remove from local table if only present in cache-shaped store
+      try { await offlineDb.clients.delete(id); } catch { /* ignore */ }
+    }
+    const ext = await offlineDb.extinguishers.where("tenantKey").equals(tenantKey).filter((row) => row.clientId === id).toArray();
+    if (ext.length) await offlineDb.extinguishers.bulkDelete(ext.map((item) => item.id));
+    const orders = await offlineDb.orders.where("tenantKey").equals(tenantKey).filter((item) => item.order?.clientId === id).toArray();
+    if (orders.length) await offlineDb.orders.bulkDelete(orders.map((item) => item.order.id));
+    await queueOfflineMutation({ tenantKey, entity: "client", action: "delete", payload: { id } });
+    toast.success("Cliente excluído no dispositivo (offline). Será sincronizado ao reconectar.");
+  };
+
+  const updateOrderOfflineAndQueue = async (input: any) => {
+    if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
+    const existing = (await offlineDb.orders.where("tenantKey").equals(tenantKey).filter((row) => row.order?.id === input.id).toArray())[0];
+    const client = allClients.find((item: any) => item.id === input.clientId) || existing?.client || { id: input.clientId, tenantKey, companyName: "Cliente", city: "—" };
+    const order = {
+      ...(existing?.order || {}),
+      ...input,
+      id: input.id,
+      items: input.items,
+      updatedAt: new Date().toISOString(),
+      tenantKey,
+    };
+    await offlineDb.orders.put({ tenantKey, order, client: { ...client, tenantKey } });
+    await queueOfflineMutation({ tenantKey, entity: "order", action: "update", payload: input });
+    toast.success("Alteração da OS salva no dispositivo (offline).");
+    setIsOrderModalOpen(false);
+    setEditingOrderId(null);
+    setViewingOrderId(input.id);
+  };
+
+  const deleteOrderOfflineAndQueue = async (id: number) => {
+    if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
+    const orders = (await offlineDb.orders.where("tenantKey").equals(tenantKey).filter((row) => row.order?.id === id).toArray()).map((row) => row.order.id);
+    if (orders.length) await offlineDb.orders.bulkDelete(orders);
+    await queueOfflineMutation({ tenantKey, entity: "order", action: "delete", payload: { id } });
+    toast.success("OS excluída no dispositivo (offline). Será sincronizada ao reconectar.");
+  };
+
+  const saveExtinguisherOfflineAndQueue = async (input: Partial<typeof extinguisherForm> & { clientId: number; typeModel: string; expirationDate: string }) => {
+    if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
+    const localId = await saveOfflineExtinguisher(input);
+    await queueOfflineMutation({ tenantKey, entity: "extinguisher", action: "create", payload: { ...input, localId } });
+    toast.success("Extintor salvo no dispositivo (offline). Será sincronizado ao reconectar.");
+    setIsExtinguisherModalOpen(false);
+    setEditingExtinguisherId(null);
+    return localId;
   };
 
   // Online: listas usam paginação e filtros no banco. Offline: preserva o snapshot local completo.
@@ -783,7 +1194,11 @@ export default function Home() {
     if (isPlatformAdmin) {
       platformDeleteOrderMutation.mutate({ companyId: order.accountId, id: order.id });
     } else {
-      deleteOrderMutation.mutate({ id: order.id });
+      if (!offline.isOnline || !navigator.onLine) {
+        void deleteOrderOfflineAndQueue(order.id).catch((error) => toast.error(error instanceof Error ? error.message : "Não foi possível excluir offline."));
+      } else {
+        deleteOrderMutation.mutate({ id: order.id });
+      }
     }
   };
 
@@ -792,14 +1207,19 @@ export default function Home() {
     if (isPlatformAdmin) {
       platformDeleteClientMutation.mutate({ companyId: client.accountId, id: client.id });
     } else {
-      deleteClientMutation.mutate({ id: client.id });
+      if (!offline.isOnline || !navigator.onLine) {
+        void deleteClientOfflineAndQueue(client.id).catch((error) => toast.error(error instanceof Error ? error.message : "Não foi possível excluir offline."));
+      } else {
+        deleteClientMutation.mutate({ id: client.id });
+      }
     }
   };
 
-  const navigateToSection = (section: "dashboard" | "clients" | "orders" | "alerts" | "trash") => {
+  const navigateToSection = (section: HomeTab) => {
     if (section === "clients") setExtinguisherFilter("all");
     if (section === "alerts") setAlertFilter("all");
     setActiveTab(section);
+    setIsSidebarOpen(false);
     setIsSidebarOpen(false);
   };
 
@@ -810,31 +1230,63 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:h-16 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2 sm:gap-3 justify-between sm:justify-end">
             <Button variant="default" size="sm" className="h-10 gap-1.5 border border-red-400 bg-red-600 px-3 text-white shadow-lg shadow-red-950/40 hover:bg-red-700 lg:hidden" onClick={() => setIsSidebarOpen(true)} aria-label="Abrir menu lateral"><Menu className="h-5 w-5" /><span className="text-xs font-black uppercase tracking-wide">Menu</span></Button>
-            <div className="w-10 h-10 bg-red-600 rounded-lg flex items-center justify-center shadow-inner">
-              <Flame className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <div className="text-lg font-black tracking-tight leading-none text-white">
-                CONTROLE DE EXTINTORES
-              </div>
-              <div className="text-[11px] font-semibold text-red-400 tracking-wider uppercase">
-                Sistema de Gestão & Ordens de Serviço
-              </div>
-            </div>
+            <BrandLogo variant="dark" height={56} className="max-w-[260px]" />
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3 justify-between sm:justify-end">
-            {canManageUsers && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5 border-slate-700 text-slate-200 hover:bg-slate-800"
-                onClick={() => navigate("/admin/usuarios")}
-              >
-                <Users className="h-4 w-4" />
-                <span className="hidden sm:inline">Usuários</span>
+            {!isPlatformAdmin && user ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-red-500/80 bg-slate-800 text-white ring-offset-slate-900 transition hover:border-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                    title="Minha conta"
+                    aria-label="Minha conta"
+                  >
+                    {headerAvatarUrl ? (
+                      <img src={headerAvatarUrl} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="text-xs font-bold text-white">{headerInitials}</span>
+                    )}
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56 border-slate-700 bg-slate-900 text-slate-100">
+                  <DropdownMenuLabel className="font-normal">
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-sm font-semibold text-white">{user.name || "Usuário"}</span>
+                      <span className="text-xs text-slate-400">{user.email}</span>
+                      <span className="text-[11px] text-slate-500">{currentPlanLabel}</span>
+                    </div>
+                  </DropdownMenuLabel>
+                  {isCompanyAdmin && (
+                    <>
+                      <DropdownMenuSeparator className="bg-slate-700" />
+                      <DropdownMenuItem className="cursor-pointer focus:bg-slate-800 focus:text-white" onClick={() => navigate("/minha-assinatura")}>
+                        <Building2 className="mr-2 h-4 w-4" /> Minha conta e empresa
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className="cursor-pointer focus:bg-slate-800 focus:text-white" onClick={() => navigate("/admin/usuarios")}>
+                        <Users className="mr-2 h-4 w-4" /> Usuários da empresa
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className="cursor-pointer focus:bg-slate-800 focus:text-white" onClick={() => navigate("/upgrade")}>
+                        <CreditCard className="mr-2 h-4 w-4" /> Upgrade de plano
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className="cursor-pointer focus:bg-slate-800 focus:text-white" onClick={() => navigate("/pagamentos")}>
+                        <CreditCard className="mr-2 h-4 w-4" /> Pagamentos
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                  <DropdownMenuSeparator className="bg-slate-700" />
+                  <DropdownMenuItem className="cursor-pointer text-red-400 focus:bg-slate-800 focus:text-red-300" onClick={() => logout()}>
+                    <LogOut className="mr-2 h-4 w-4" /> Sair
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <Button variant="ghost" size="sm" className="px-2 text-slate-300 hover:bg-slate-800 hover:text-white" title="Sair" onClick={() => logout()}>
+                <LogOut className="h-4 w-4" />
               </Button>
             )}
+
             {/* Botão Configurar Dias de Alerta — somente administrador da empresa */}
             {isCompanyAdmin && (
               <Button
@@ -868,9 +1320,6 @@ export default function Home() {
               <span className="hidden sm:inline">Nova Ordem de Serviço</span>
               <span className="sm:hidden">Nova OS</span>
             </Button>
-            <Button variant="ghost" size="sm" className="px-2 text-slate-300 hover:bg-slate-800 hover:text-white" title="Sair" onClick={() => logout()}>
-              <LogOut className="h-4 w-4" />
-            </Button>
           </div>
         </div>
       </header>
@@ -878,13 +1327,14 @@ export default function Home() {
       {isSidebarOpen && <div className="fixed inset-0 z-40 bg-slate-950/50 lg:hidden" onClick={() => setIsSidebarOpen(false)} />}
       <aside className={`desktop-sidebar fixed inset-y-0 left-0 z-50 flex w-72 flex-col bg-slate-950 text-white shadow-2xl lg:top-16 ${isSidebarOpen ? "is-open" : ""}`}>
         <div className="flex items-center justify-between border-b border-slate-800 px-5 py-5">
-          <div><p className="text-xs font-bold uppercase tracking-[0.18em] text-red-400">Menu principal</p><p className="mt-1 text-sm text-slate-300">Gestão de Extintores</p></div>
+          <div className="min-w-0 flex-1"><p className="text-xs font-bold uppercase tracking-[0.18em] text-red-400">Menu principal</p><div className="mt-2 max-w-[260px]"><BrandLogo variant="dark" height={52} /></div></div>
           <Button variant="ghost" size="sm" className="text-slate-300 hover:bg-slate-800 hover:text-white lg:hidden" onClick={() => setIsSidebarOpen(false)} aria-label="Fechar menu"><X className="h-5 w-5" /></Button>
         </div>
         <div className="flex-1 space-y-1 overflow-y-auto p-4">
           <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Navegação</p>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "dashboard" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("dashboard")}><Building2 className="h-4 w-4" /> Visão Geral</Button>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "clients" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("clients")}><MapPin className="h-4 w-4" /> Clientes por Cidade</Button>
+          <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "extinguishers" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("extinguishers")}><Flame className="h-4 w-4" /> Extintores</Button>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "alerts" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("alerts")}><BellRing className="h-4 w-4 text-amber-400" /> Alertas de Vencimento {(effectiveStats?.nearExpirationCount || 0) + (effectiveStats?.expiredCount || 0) > 0 && <span className="ml-auto rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold">{(effectiveStats?.nearExpirationCount || 0) + (effectiveStats?.expiredCount || 0)}</span>}</Button>
           <Button variant="ghost" className={`w-full justify-start gap-3 ${activeTab === "orders" ? "bg-red-600 text-white hover:bg-red-700" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`} onClick={() => navigateToSection("orders")}><FileText className="h-4 w-4" /> Ordens de Serviço</Button>
           {isPlatformAdmin && <div className="mb-2 rounded-lg border border-slate-700 bg-slate-900 p-2"><label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-400">Empresa da lixeira</label><Select value={selectedCompanyId ? String(selectedCompanyId) : ""} onValueChange={(value) => setSelectedCompanyId(Number(value))}><SelectTrigger className="h-8 w-full border-slate-700 bg-slate-950 text-xs text-slate-200"><SelectValue placeholder="Selecione a empresa" /></SelectTrigger><SelectContent>{(companiesQuery.data || []).filter((company) => company.active).map((company) => <SelectItem key={company.id} value={String(company.id)}>{company.name}</SelectItem>)}</SelectContent></Select></div>}
@@ -894,10 +1344,26 @@ export default function Home() {
           <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setIsClientModalOpen(true); setIsSidebarOpen(false); }}><Plus className="h-4 w-4" /> Cadastrar Cliente</Button>
           <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setReturnToOrderAfterClient(false); setIsOrderModalOpen(true); setIsSidebarOpen(false); }}><FileText className="h-4 w-4" /> Nova Ordem de Serviço</Button>
           {canManageUsers && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/admin/usuarios"); setIsSidebarOpen(false); }}><Users className="h-4 w-4" /> Usuários</Button>}
-          {isPlatformAdmin && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/admin/assinaturas"); setIsSidebarOpen(false); }}><DollarSign className="h-4 w-4" /> Assinaturas</Button>}
+          {isPlatformAdmin && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/admin/assinaturas"); setIsSidebarOpen(false); }}><CreditCard className="h-4 w-4" /> Assinaturas</Button>}
+          {isCompanyAdmin && (
+            <Button
+              variant="ghost"
+              className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white"
+              onClick={() => { navigate("/upgrade"); setIsSidebarOpen(false); }}
+            >
+              <CreditCard className="h-4 w-4 shrink-0" />
+              <span className="flex min-w-0 flex-col items-start text-left">
+                <span>Upgrade de plano</span>
+                <span className="truncate text-[11px] font-normal text-slate-400">
+                  {currentPlanLabel}
+                </span>
+              </span>
+            </Button>
+          )}
           {isCompanyAdmin && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setConfigDays(offline.alertDays || 30); setIsSettingsModalOpen(true); setIsSidebarOpen(false); }}><Settings className="h-4 w-4" /> Antecedência: {offline.alertDays || 30} dias</Button>}
-          <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/backup"); setIsSidebarOpen(false); }}><HardDrive className="h-4 w-4" /> Backup e Restauração</Button>
-          {!isPlatformAdmin && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/sync-status"); setIsSidebarOpen(false); }}><RefreshCw className="h-4 w-4" /> Status da sincronização</Button>}
+          {canUseBackup && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/backup"); setIsSidebarOpen(false); }}><HardDrive className="h-4 w-4" /> Backup e Restauração</Button>}
+          {isCompanyAdmin && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/auditoria"); setIsSidebarOpen(false); }}><ScrollText className="h-4 w-4" /> Auditoria</Button>}
+          {!isPlatformAdmin && canUseOffline && <Button variant="ghost" className="w-full justify-start gap-3 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { navigate("/sync-status"); setIsSidebarOpen(false); }}><RefreshCw className="h-4 w-4" /> Status da sincronização</Button>}
         </div>
         <div className="border-t border-slate-800 p-4">
           <div className="mb-3 rounded-lg bg-slate-900 px-3 py-2 text-xs text-slate-400">Cidade selecionada: <strong className="text-slate-200">{selectedCity === "TODAS" ? "Todas" : selectedCity}</strong></div>
@@ -912,7 +1378,7 @@ export default function Home() {
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-2.5 sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-2">
             {activeTab !== "dashboard" && <Button variant="ghost" size="sm" className="h-8 shrink-0 gap-1 px-2 text-slate-600" onClick={() => setActiveTab("dashboard")}><ArrowLeft className="h-4 w-4" /> <span className="hidden sm:inline">Voltar</span></Button>}
-            <p className="truncate text-xs font-semibold text-slate-500">{activeTab === "dashboard" ? "Visão Geral" : activeTab === "clients" ? "Clientes por Cidade" : activeTab === "alerts" ? "Alertas de Vencimento" : activeTab === "trash" ? "Lixeira — retenção de 24 horas" : "Ordens de Serviço"}</p>
+            <p className="truncate text-xs font-semibold text-slate-500">{activeTab === "dashboard" ? "Visão Geral" : activeTab === "clients" ? "Clientes por Cidade" : activeTab === "extinguishers" ? "Extintores" : activeTab === "alerts" ? "Alertas de Vencimento" : activeTab === "trash" ? "Lixeira — retenção de 24 horas" : "Ordens de Serviço"}</p>
           </div>
           <span className="text-xs text-slate-400">Use o menu lateral para acessar todas as funções</span>
         </div>
@@ -975,9 +1441,9 @@ export default function Home() {
                   <div className="min-w-0">
                     <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px] font-bold uppercase tracking-[0.18em] text-red-300">
                       <span className="rounded-full bg-white/10 px-2.5 py-1">Painel operacional</span>
-                      <span className="flex items-center gap-1.5 rounded-full bg-emerald-400/10 px-2.5 py-1 text-emerald-300"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Sistema online</span>
+                      <span className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 ${offline.isOnline ? "bg-emerald-400/10 text-emerald-300" : "bg-amber-400/15 text-amber-200"}`}><span className={`h-1.5 w-1.5 rounded-full ${offline.isOnline ? "bg-emerald-400" : "bg-amber-300"}`} /> {offline.isOnline ? "Sistema online" : "Sistema offline"}</span>
                     </div>
-                    <h1 className="text-2xl font-black tracking-tight sm:text-3xl">Gestão de Extintores</h1>
+                    <h1 className="leading-none max-w-[280px]"><BrandLogo variant="dark" height={52} /></h1>
                     <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-300">Acompanhe clientes, validade dos equipamentos e ordens de serviço em um só lugar.</p>
                   </div>
                   <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
@@ -1020,6 +1486,77 @@ export default function Home() {
                   >
                     Ver Lista Completa
                     <ChevronRight className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* STATUS DE SINCRONIZAÇÃO OFFLINE */}
+            {!isPlatformAdmin && (
+              <div className={`rounded-xl border p-4 shadow-sm ${
+                !offline.isOnline
+                  ? "border-amber-300 bg-gradient-to-r from-amber-50 to-orange-50"
+                  : pendingOfflineCount || failedOfflineCount || isSyncingOffline
+                    ? "border-sky-300 bg-gradient-to-r from-sky-50 to-blue-50"
+                    : "border-emerald-200 bg-gradient-to-r from-emerald-50 to-teal-50"
+              }`}>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div className={`rounded-lg p-2 shrink-0 ${
+                      !offline.isOnline ? "bg-amber-500 text-white" : isSyncingOffline ? "bg-sky-600 text-white" : failedOfflineCount ? "bg-red-600 text-white" : pendingOfflineCount ? "bg-sky-600 text-white" : "bg-emerald-600 text-white"
+                    }`}>
+                      {!offline.isOnline ? <WifiOff className="h-5 w-5" /> : isSyncingOffline ? <RefreshCw className="h-5 w-5 animate-spin" /> : pendingOfflineCount || failedOfflineCount ? <CloudOff className="h-5 w-5" /> : <Wifi className="h-5 w-5" />}
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="text-sm font-bold text-slate-900">
+                        {!offline.isOnline
+                          ? "Modo offline — dados salvos neste dispositivo"
+                          : isSyncingOffline
+                            ? `Sincronizando ${syncProgress.done} de ${Math.max(syncProgress.total, 1)}…`
+                            : failedOfflineCount
+                              ? `${failedOfflineCount} operação(ões) com falha na sincronização`
+                              : pendingOfflineCount
+                                ? `${pendingOfflineCount} operação(ões) aguardando envio`
+                                : "Tudo sincronizado com o servidor"}
+                      </h3>
+                      <p className="mt-0.5 text-xs text-slate-600">
+                        {isSyncingOffline ? (
+                          <>
+                            Concluídas: <strong>{syncProgress.done}</strong> de <strong>{Math.max(syncProgress.total, 1)}</strong>
+                            {" · "}
+                            Faltam: <strong>{syncProgress.pending}</strong>
+                            {" · "}
+                            Falhas: <strong>{syncProgress.failed}</strong>
+                            {lastSyncResult?.failed ? ` · ${lastSyncResult.failed} não enviada(s)` : ""}
+                          </>
+                        ) : !mutationsReady ? (
+                          <>Carregando fila de sincronização…</>
+                        ) : (
+                          <>
+                            Pendentes: <strong>{pendingOfflineCount}</strong>
+                            {" · "}
+                            Falhas: <strong>{failedOfflineCount}</strong>
+                            {lastSyncResult ? ` · Última: ${lastSyncResult.ok} concluída(s)` + (lastSyncResult.failed ? `, ${lastSyncResult.failed} falha(s)` : "") : ""}
+                            {failedOfflineCount ? ` · Motivo: ${(offlineMutations || []).find((m: any) => m.state === "failed")?.lastError || "erro ao enviar"}` : ""}
+                          </>
+                        )}
+                        {!offline.isOnline ? " · Extintores e OS continuam sendo salvos localmente." : ""}
+                      </p>
+                    </div>
+                  </div>
+                  {isSyncingOffline && syncProgress.total > 0 && (
+                    <div className="h-2 overflow-hidden rounded-full bg-slate-200">
+                      <div className="h-full bg-sky-600 transition-all duration-300" style={{ width: `${Math.round(((syncProgress.done + syncProgress.failed) / syncProgress.total) * 100)}%` }} />
+                    </div>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full sm:w-auto shrink-0 gap-1.5 font-semibold"
+                    onClick={() => navigate("/sync-status")}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    Ver sincronização
                   </Button>
                 </div>
               </div>
@@ -1191,6 +1728,7 @@ export default function Home() {
                   client={client}
                   extinguisherFilter={extinguisherFilter}
                   onAddExtinguisher={() => {
+                    setEditingExtinguisherId(null);
                     setSelectedClientIdForExtinguisher(client.id);
                     setExtinguisherForm(prev => ({ ...prev, clientId: client.id }));
                     setIsExtinguisherModalOpen(true);
@@ -1220,6 +1758,54 @@ export default function Home() {
               ))}
             </div>
           </div>
+        )}
+
+        {/* ========================================================
+            ABA: EXTINTORES (lista completa)
+        ======================================================== */}
+        {activeTab === "extinguishers" && (
+          <ExtinguishersPanel
+            onCreate={() => {
+              setEditingExtinguisherId(null);
+              setExtinguisherForm({
+                clientId: 0,
+                typeModel: "PQS ABC 4kg",
+                capacity: "4kg",
+                serialNumber: "",
+                locationInBuilding: "Recepção",
+                expirationDate: new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toISOString().split("T")[0],
+                lastInspectionDate: new Date().toISOString().split("T")[0],
+                notes: "",
+                stockQuantity: 1,
+              });
+              setIsExtinguisherModalOpen(true);
+            }}
+            onEdit={(ext) => {
+              setEditingExtinguisherId(ext.id);
+              setExtinguisherForm({
+                clientId: ext.clientId,
+                typeModel: ext.typeModel || "PQS ABC 4kg",
+                capacity: ext.capacity || "",
+                serialNumber: ext.serialNumber || "",
+                locationInBuilding: ext.locationInBuilding || "",
+                expirationDate: ext.expirationDate
+                  ? new Date(ext.expirationDate as any).toISOString().split("T")[0]
+                  : new Date().toISOString().split("T")[0],
+                lastInspectionDate: ext.lastInspectionDate
+                  ? new Date(ext.lastInspectionDate as any).toISOString().split("T")[0]
+                  : "",
+                notes: ext.notes || "",
+                stockQuantity: (ext as any).stockQuantity ?? 1,
+              });
+              setIsExtinguisherModalOpen(true);
+            }}
+            onDelete={(ext) => {
+              const label = ext.serialNumber || ext.typeModel || `#${ext.id}`;
+              if (!window.confirm(`Remover o extintor ${label}? Ele irá para a lixeira (24h).`)) return;
+              deleteExtinguisherMutation.mutate({ id: ext.id });
+            }}
+            onOpenQr={(ext) => setQrExtFromList(ext)}
+          />
         )}
 
         {/* ========================================================
@@ -1339,6 +1925,7 @@ export default function Home() {
                                   quantity: 1,
                                   unitPrice: "45.00",
                                   totalPrice: "45.00",
+                                  extinguisherId: item.extinguisher.id,
                                 },
                               ],
                             }));
@@ -1690,6 +2277,8 @@ export default function Home() {
                   if (isPlatformAdmin) {
                     if (!editingClientCompanyId) { toast.error("Selecione a empresa do cliente."); return; }
                     platformUpdateClientMutation.mutate({ ...clientForm, id: editingClientId, companyId: editingClientCompanyId });
+                  } else if (!offline.isOnline || !navigator.onLine) {
+                    void updateClientOfflineAndQueue({ ...clientForm, id: editingClientId }).catch((error) => toast.error(error instanceof Error ? error.message : "Não foi possível salvar offline."));
                   } else {
                     updateClientMutation.mutate({ ...clientForm, id: editingClientId });
                   }
@@ -1703,6 +2292,7 @@ export default function Home() {
                   if (!offline.isOnline || !navigator.onLine) {
                     void saveClientOfflineAndQueue(clientForm).catch((error) => toast.error(error instanceof Error ? error.message : "Não foi possível salvar o cliente offline."));
                   } else {
+                    toast.message("Salvando cliente…");
                     createClientMutation.mutate(clientForm);
                   }
                 }
@@ -1717,10 +2307,10 @@ export default function Home() {
       {/* ========================================================
           MODAL: ADICIONAR EXTINTOR AO CLIENTE
       ======================================================== */}
-      <Dialog open={isExtinguisherModalOpen} onOpenChange={setIsExtinguisherModalOpen}>
+      <Dialog open={isExtinguisherModalOpen} onOpenChange={(open) => { setIsExtinguisherModalOpen(open); if (!open) setEditingExtinguisherId(null); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-lg font-bold">Cadastrar Extintor</DialogTitle>
+            <DialogTitle className="text-lg font-bold">{editingExtinguisherId ? "Editar Extintor" : "Cadastrar Extintor"}</DialogTitle>
           </DialogHeader>
 
           <div className="space-y-3 py-2 text-xs">
@@ -1731,16 +2321,24 @@ export default function Home() {
                 onValueChange={(val) => setExtinguisherForm({ ...extinguisherForm, clientId: Number(val) })}
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Selecione um cliente" />
+                  <SelectValue placeholder={clientsQuery.isLoading ? "Carregando clientes…" : "Selecione um cliente"} />
                 </SelectTrigger>
                 <SelectContent>
-                  {(effectiveClients || []).map((c) => (
+                  {(selectClients || []).map((c: any) => (
                     <SelectItem key={c.id} value={String(c.id)}>
                       {c.companyName} ({c.city})
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {clientsQuery.isLoading && (
+                <p className="mt-1 text-[11px] text-slate-500">Carregando clientes…</p>
+              )}
+              {!clientsQuery.isLoading && (!selectClients || selectClients.length === 0) && (
+                <p className="mt-1 text-[11px] text-amber-700">
+                  Nenhum cliente encontrado. Cadastre um cliente antes de vincular o extintor.
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-2">
@@ -1812,6 +2410,10 @@ export default function Home() {
                 onChange={(e) => setExtinguisherForm({ ...extinguisherForm, serialNumber: e.target.value })}
               />
             </div>
+            <div>
+              <label className="font-bold block mb-1">Quantidade em estoque *</label>
+              <Input type="number" min="1" value={extinguisherForm.stockQuantity || 1} onChange={(e) => setExtinguisherForm({ ...extinguisherForm, stockQuantity: Math.max(1, Number(e.target.value) || 1) })} />
+            </div>
           </div>
 
           <DialogFooter>
@@ -1829,18 +2431,49 @@ export default function Home() {
                   toast.error("Informe a data de vencimento!");
                   return;
                 }
+                if (editingExtinguisherId) {
+                  const payload = {
+                    id: editingExtinguisherId,
+                    typeModel: extinguisherForm.typeModel,
+                    capacity: extinguisherForm.capacity,
+                    serialNumber: extinguisherForm.serialNumber,
+                    locationInBuilding: extinguisherForm.locationInBuilding,
+                    expirationDate: extinguisherForm.expirationDate,
+                    lastInspectionDate: extinguisherForm.lastInspectionDate || undefined,
+                    notes: extinguisherForm.notes || undefined,
+                  };
+                  if (!offline.isOnline || !navigator.onLine) {
+                    void (async () => {
+                      if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
+                      const current = await offlineDb.extinguishers.get(payload.id);
+                      if (current) await offlineDb.extinguishers.put({ ...current, ...payload, tenantKey, updatedAt: new Date().toISOString() });
+                      else await offlineDb.extinguishers.put({ ...payload, tenantKey, clientId: extinguisherForm.clientId, updatedAt: new Date().toISOString() });
+                      await queueOfflineMutation({ tenantKey, entity: "extinguisher", action: "update", payload });
+                      toast.success("Alteração salva no dispositivo (offline).");
+                      setIsExtinguisherModalOpen(false);
+                      setEditingExtinguisherId(null);
+                    })().catch((error) => toast.error(error instanceof Error ? error.message : "Falha ao salvar offline."));
+                  } else {
+                    updateExtinguisherMutation.mutate(payload);
+                  }
+                  return;
+                }
                 if (isPlatformAdmin) {
                   if (!selectedCompanyId) {
                     toast.error("Selecione a empresa responsável pelo extintor.");
                     return;
                   }
                   platformCreateExtinguisherMutation.mutate({ ...extinguisherForm, companyId: selectedCompanyId });
+                } else if (!offline.isOnline || !navigator.onLine) {
+                  void saveExtinguisherOfflineAndQueue(extinguisherForm).catch((error) =>
+                    toast.error(error instanceof Error ? error.message : "Não foi possível salvar o extintor offline."),
+                  );
                 } else {
                   createExtinguisherMutation.mutate(extinguisherForm);
                 }
               }}
             >
-              Salvar Extintor
+              {editingExtinguisherId ? "Salvar alterações" : "Salvar Extintor"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1867,7 +2500,7 @@ export default function Home() {
                   value={orderForm.clientId ? String(orderForm.clientId) : ""}
                   onValueChange={(val) => {
                     const cId = Number(val);
-                    const selected = (effectiveClients || []).find(c => c.id === cId);
+                    const selected = (selectClients || []).find((c: any) => c.id === cId);
                     setOrderForm({
                       ...orderForm,
                       clientId: cId,
@@ -1877,10 +2510,10 @@ export default function Home() {
                     });
                   }}
                 >
-                  <SelectTrigger className="w-full"><SelectValue placeholder="Selecione um cliente já cadastrado" /></SelectTrigger>
-                  <SelectContent>{(effectiveClients || []).map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.companyName} ({c.city})</SelectItem>)}</SelectContent>
+                  <SelectTrigger className="w-full"><SelectValue placeholder={clientsQuery.isLoading ? "Carregando clientes…" : "Selecione um cliente já cadastrado"} /></SelectTrigger>
+                  <SelectContent>{(selectClients || []).map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.companyName} ({c.city})</SelectItem>)}</SelectContent>
                 </Select></div>
-                {(!effectiveClients || effectiveClients.length === 0) && <p className="mt-1 text-[11px] text-amber-700">Nenhum cliente cadastrado. Clique em “Cadastrar cliente” para continuar.</p>}
+                {!clientsQuery.isLoading && (!selectClients || selectClients.length === 0) && <p className="mt-1 text-[11px] text-amber-700">Nenhum cliente cadastrado. Clique em “Cadastrar cliente” para continuar.</p>}
               </div>
 
               <div>
@@ -1903,21 +2536,52 @@ export default function Home() {
               </div>
 
               <div className="border-b border-slate-200 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-500">
-                Preencha uma linha para cada serviço ou grupo de extintores. <strong>Quantidade</strong> é o número de unidades, <strong>valor unitário</strong> é o preço de cada unidade e o <strong>total</strong> é calculado automaticamente.
+                Escolha um extintor do estoque. A quantidade da OS baixa o estoque ao salvar. Se não houver estoque, cadastre um extintor e ele entra nesta OS.
               </div>
+              {effectiveExtinguishers.filter((ext: any) => Number(ext.stockQuantity ?? 1) > 0).length === 0 && (
+                <div className="px-3 py-3">
+                  <Button type="button" className="bg-red-600 text-white hover:bg-red-700" onClick={() => {
+                    if (!orderForm.clientId) { toast.error("Selecione o cliente da OS antes de cadastrar o extintor."); return; }
+                    setExtinguisherForm((prev) => ({ ...prev, clientId: orderForm.clientId, stockQuantity: 1 }));
+                    setReturnToOrderAfterExtinguisher(true);
+                    setIsOrderModalOpen(false);
+                    setIsExtinguisherModalOpen(true);
+                  }}>Cadastrar extintor e adicionar na OS</Button>
+                </div>
+              )}
               <div className="hidden grid-cols-[minmax(0,1fr)_70px_110px_110px_32px] gap-2 bg-slate-50 px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:grid">
                 <span>Descrição do serviço / modelo</span><span className="text-center">Qtd.</span><span className="text-right">Valor unitário</span><span className="text-right">Total calculado</span><span />
               </div>
               <div className="space-y-3 p-3">
                 {orderForm.items.map((item, idx) => (
                   <div key={idx} className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 sm:grid-cols-[minmax(0,1fr)_70px_110px_110px_32px] sm:items-center sm:border-0 sm:bg-transparent sm:p-0">
-                    <label className="text-[10px] font-bold uppercase text-slate-500 sm:hidden">Descrição do serviço ou modelo do extintor</label>
-                    <Input
-                      placeholder="Ex.: Recarga de Extintor PQS ABC 4kg"
-                      value={item.description}
-                      onChange={(e) => handleItemChange(idx, "description", e.target.value)}
-                      className="text-xs"
-                    />
+                    <label className="text-[10px] font-bold uppercase text-slate-500 sm:hidden">Extintor do estoque</label>
+                    <select
+                      className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-xs"
+                      value={String((item as any).extinguisherId || "")}
+                      onChange={(e) => {
+                        const id = Number(e.target.value);
+                        const ext = effectiveExtinguishers.find((row: any) => row.id === id);
+                        const updated = [...orderForm.items];
+                        const quantity = Number(updated[idx].quantity) || 1;
+                        const unit = Number(updated[idx].unitPrice) || 0;
+                        updated[idx] = {
+                          ...updated[idx],
+                          extinguisherId: id,
+                          description: ext ? `Extintor ${ext.typeModel}${ext.capacity ? ` ${ext.capacity}` : ""}${ext.serialNumber ? ` · ${ext.serialNumber}` : ""}` : "",
+                          quantity,
+                          totalPrice: (quantity * unit).toFixed(2),
+                        };
+                        setOrderForm({ ...orderForm, items: updated });
+                      }}
+                    >
+                      <option value="">Selecione do estoque</option>
+                      {effectiveExtinguishers.filter((ext: any) => Number(ext.stockQuantity ?? 1) > 0).map((ext: any) => (
+                        <option key={ext.id} value={ext.id}>
+                          {ext.typeModel}{ext.capacity ? ` ${ext.capacity}` : ""} · estoque {ext.stockQuantity ?? 1}{ext.serialNumber ? ` · ${ext.serialNumber}` : ""}
+                        </option>
+                      ))}
+                    </select>
                     <label className="text-[10px] font-bold uppercase text-slate-500 sm:hidden">Quantidade de unidades</label>
                     <Input
                       type="number"
@@ -2121,6 +2785,8 @@ export default function Home() {
                   if (isPlatformAdmin) {
                     if (!editingOrderCompanyId) { toast.error("Não foi possível identificar a empresa da OS."); return; }
                     platformUpdateOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder, id: editingOrderId, companyId: editingOrderCompanyId });
+                  } else if (!offline.isOnline || !navigator.onLine) {
+                    void updateOrderOfflineAndQueue({ ...orderForm, totalAmount: calculatedTotalOrder, id: editingOrderId }).catch((error) => toast.error(error instanceof Error ? error.message : "Não foi possível salvar a OS offline."));
                   } else {
                     updateOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder, id: editingOrderId });
                   }
@@ -2133,9 +2799,18 @@ export default function Home() {
                   platformCreateOrderMutation.mutate({ ...orderForm, totalAmount: calculatedTotalOrder, companyId: orderCompanyId });
                 } else {
                   const payload = { ...orderForm, totalAmount: calculatedTotalOrder };
+                  if (!payload.clientId) {
+                    toast.error("Selecione o cliente da OS.");
+                    return;
+                  }
+                  if (payload.items.some((item: any) => !item.extinguisherId)) {
+                    toast.error("Selecione o extintor do estoque em cada linha da OS.");
+                    return;
+                  }
                   if (!offline.isOnline || !navigator.onLine) {
                     void saveOrderOfflineAndQueue(payload).catch((error) => toast.error(error instanceof Error ? error.message : "Não foi possível salvar a ordem offline."));
                   } else {
+                    toast.message("Salvando OS…");
                     createOrderMutation.mutate(payload);
                   }
                 }
@@ -2195,6 +2870,74 @@ export default function Home() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+            <Dialog open={qrExtFromList != null} onOpenChange={(open) => !open && setQrExtFromList(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>QR Code operacional</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-slate-500">
+            Este QR é da <strong>sua gestão</strong>: ao escanear, mostra cliente, local, validade e inspeção.
+            Não substitui o selo Inmetro do equipamento.
+          </p>
+          {listQrInfoQuery.isLoading ? (
+            <p className="py-8 text-center text-sm text-slate-500">Gerando QR Code…</p>
+          ) : listQrInfoQuery.data?.url ? (
+            <div className="flex flex-col items-center gap-3 py-2">
+              <img
+                src={qrCodeImageUrl(listQrInfoQuery.data.url, 280)}
+                alt="QR Code operacional"
+                className="h-56 w-56 rounded-lg border border-slate-200 bg-white p-2"
+              />
+              <p className="font-mono text-sm font-bold text-slate-900">
+                {qrExtFromList?.serialNumber || qrExtFromList?.typeModel || `#${qrExtFromList?.id}`}
+              </p>
+              <p className="break-all text-center text-[10px] text-slate-400">{listQrInfoQuery.data.url}</p>
+              <div className="flex w-full flex-wrap gap-2 pt-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="flex-1 gap-1 text-xs"
+                  onClick={async () => {
+                    try {
+                      await downloadQrCodePng(
+                        listQrInfoQuery.data!.url,
+                        `qr-${qrExtFromList?.serialNumber || qrExtFromList?.id}`,
+                      );
+                      toast.success("QR Code baixado");
+                    } catch {
+                      toast.error("Falha ao baixar QR Code");
+                    }
+                  }}
+                >
+                  <Download className="h-3.5 w-3.5" /> Baixar
+                </Button>
+                <Button
+                  size="sm"
+                  className="flex-1 gap-1 bg-red-600 text-xs hover:bg-red-700"
+                  onClick={() =>
+                    openPrintQrLabel({
+                      url: listQrInfoQuery.data!.url,
+                      label: qrExtFromList?.serialNumber || qrExtFromList?.typeModel || `EXT #${qrExtFromList?.id}`,
+                      subtitle: "Ficha operacional da empresa",
+                    })
+                  }
+                >
+                  <QrCode className="h-3.5 w-3.5" /> Imprimir
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <p className="py-6 text-center text-sm text-red-600">Não foi possível gerar o QR Code.</p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setQrExtFromList(null)}>
+              Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       </div>
     </div>
   );
@@ -2203,220 +2946,3 @@ export default function Home() {
 /* ========================================================
    COMPONENTE DO CLIENTE COM LISTAGEM DOS EXTINTORES
 ======================================================== */
-function ClientDetailCard({
-  client,
-  extinguisherFilter = "all",
-  onAddExtinguisher,
-  onCreateOrder,
-  onEdit,
-  onEditOrder,
-  onViewOrder,
-  onDelete,
-}: {
-  client: any;
-  extinguisherFilter?: "all" | "active";
-  onAddExtinguisher: () => void;
-  onCreateOrder: () => void;
-  onEdit: () => void;
-  onEditOrder: (id: number) => void;
-  onViewOrder: (id: number) => void;
-  onDelete: () => void;
-}) {
-  const { user } = useAuth();
-  const tenantKey = user && user.id < 0 ? String(Math.abs(user.id)) : null;
-  const isPlatformAdmin = user?.role === "platform_admin";
-  const extinguishersQuery = trpc.extinguishers.listByClient.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey) });
-  const extinguishersPageQuery = trpc.extinguishers.page.useQuery({ clientId: client.id, page: 1, pageSize: 25, filter: extinguisherFilter }, { enabled: Boolean(tenantKey && !isPlatformAdmin) });
-  const ordersQuery = trpc.orders.list.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey) });
-  const platformExtinguishersPageQuery = trpc.platform.data.extinguishersPage.useQuery({ companyId: client.accountId || 0, clientId: client.id, page: 1, pageSize: 25, filter: extinguisherFilter }, { enabled: Boolean(isPlatformAdmin && client.accountId) });
-  const platformOrdersPageQuery = trpc.platform.data.ordersPage.useQuery({ companyId: client.accountId || 0, clientId: client.id, page: 1, pageSize: 25 }, { enabled: Boolean(isPlatformAdmin && client.accountId) });
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const historyQuery = trpc.orders.history.useQuery({ clientId: client.id }, { enabled: Boolean(tenantKey && historyOpen) });
-  const platformHistoryQuery = trpc.platform.data.history.useQuery({ companyId: client.accountId, clientId: client.id }, { enabled: Boolean(isPlatformAdmin && historyOpen && client.accountId) });
-  const visibleHistory = isPlatformAdmin ? (platformHistoryQuery.data || []) : (historyQuery.data || []);
-  const isOnline = useOnlineStatus();
-  const localExtinguishers = useLiveQuery(() => tenantKey ? offlineDb.extinguishers.where("tenantKey").equals(tenantKey).filter((row) => row.clientId === client.id).toArray() : Promise.resolve([] as any[]), [tenantKey, client.id], [] as any[]);
-  const extinguisherRows = isPlatformAdmin
-    ? (platformExtinguishersPageQuery.data?.items || [])
-    : isOnline && extinguishersPageQuery.data ? extinguishersPageQuery.data.items.map((row: any) => row.extinguisher) : localExtinguishers;
-  const clientOrders = isPlatformAdmin
-    ? (platformOrdersPageQuery.data?.items || [])
-    : (ordersQuery.data || []);
-  const visibleExtinguishers = (extinguisherRows || []).filter((ext) => {
-    if (extinguisherFilter === "all") return true;
-    const expiration = new Date(ext.expirationDate);
-    expiration.setHours(0, 0, 0, 0);
-    return expiration >= new Date(new Date().setHours(0, 0, 0, 0));
-  });
-
-  return (
-    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-100 pb-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <h3 className="text-lg font-black text-slate-900">
-              {client.companyName}
-            </h3>
-            <Badge variant="outline" className="bg-red-50 text-red-800 border-red-200 font-bold text-[10px] gap-1">
-              <MapPin className="w-3 h-3 text-red-600" />
-              {client.city}
-            </Badge>
-          </div>
-          <div className="text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1 mt-1">
-            <span><strong>CNPJ:</strong> {client.cnpj || "—"}</span>
-            <span><strong>Endereço:</strong> {client.address || "—"}</span>
-            <span><strong>Fone:</strong> {client.phone || "—"}</span>
-            <span><strong>Responsável:</strong> {client.contactName || "—"}</span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            className="text-xs h-8 gap-1"
-            onClick={onAddExtinguisher}
-          >
-            <Flame className="w-3.5 h-3.5 text-red-600" />
-            + Extintor
-          </Button>
-
-          <Button
-            size="sm"
-            className="bg-red-600 hover:bg-red-700 text-white font-semibold text-xs h-8 gap-1"
-            onClick={onCreateOrder}
-          >
-            <FileText className="w-3.5 h-3.5" />
-            Gerar OS
-          </Button>
-
-          <Button size="sm" variant="outline" className="text-xs h-8 gap-1" onClick={onEdit}><Edit className="w-3.5 h-3.5 text-blue-600" /> Editar</Button>
-
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-8 w-8 p-0 text-slate-400 hover:text-red-600"
-            onClick={onDelete}
-          >
-            <Trash2 className="w-4 h-4" />
-          </Button>
-        </div>
-      </div>
-
-      <div className="rounded-lg border border-blue-100 bg-blue-50/50 p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-wider text-blue-900">Histórico de atendimento</p>
-            <p className="mt-0.5 text-xs text-blue-800">{clientOrders.length} ordem(ns) registrada(s) para este cliente.</p>
-          </div>
-          <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={() => setHistoryOpen(true)}><History className="h-3.5 w-3.5" /> Ver histórico completo</Button>
-        </div>
-      </div>
-
-      {/* EXTINTORES INSTALADOS */}
-      <div>
-        <div className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center justify-between">
-          <span>Extintores no Estabelecimento ({visibleExtinguishers.length})</span>
-        </div>
-
-        {visibleExtinguishers.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-            {visibleExtinguishers.map((ext) => {
-              const expDate = new Date(ext.expirationDate);
-              const today = new Date();
-              today.setHours(0, 0, 0, 0);
-              const isExpired = expDate < today;
-              const daysLeft = Math.ceil((expDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-              const isWarning = daysLeft >= 0 && daysLeft <= 30;
-
-              return (
-                <div
-                  key={ext.id}
-                  className={`p-2.5 rounded-lg border text-xs flex justify-between items-start ${
-                    isExpired
-                      ? "bg-red-50 border-red-200"
-                      : isWarning
-                      ? "bg-amber-50 border-amber-200"
-                      : "bg-slate-50 border-slate-200"
-                  }`}
-                >
-                  <div>
-                    <div className="font-bold text-slate-900">
-                      {ext.typeModel} ({ext.capacity || "N/I"})
-                    </div>
-                    <div className="text-slate-600 text-[11px] mt-0.5">
-                      📍 {ext.locationInBuilding || "Local não especificado"}
-                    </div>
-                    {ext.serialNumber && (
-                      <div className="text-[10px] text-slate-500 font-mono">
-                        Selo: {ext.serialNumber}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="text-right">
-                    <div
-                      className={`font-black text-[11px] ${
-                        isExpired
-                          ? "text-red-700"
-                          : isWarning
-                          ? "text-amber-800"
-                          : "text-slate-700"
-                      }`}
-                    >
-                      {isExpired ? "VENCIDO" : isWarning ? `Vence em ${daysLeft}d` : "Válido"}
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      {expDate.toLocaleDateString("pt-BR")}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="p-4 bg-slate-50 rounded-lg text-center text-xs text-slate-400">
-            {extinguisherFilter === "active" ? "Nenhum extintor ativo encontrado para este cliente." : 'Nenhum extintor cadastrado para este cliente ainda. Clique em "+ Extintor" para adicionar.'}
-          </div>
-        )}
-      </div>
-
-      <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Histórico de atendimento — {client.companyName}</DialogTitle></DialogHeader>
-          <div className="space-y-3 py-2">
-            {visibleHistory.map(({ order, client: orderClient, items }: any) => (
-              <div key={order.id} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-                <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 pb-3">
-                  <div><p className="font-mono text-sm font-bold text-slate-900">OS #{String(order.orderNumber).padStart(5, "0")}</p><p className="mt-1 text-xs text-slate-600"><strong>Data do atendimento:</strong> {new Date(order.orderDate).toLocaleDateString("pt-BR")}</p><p className="text-xs text-slate-500">Cliente: {orderClient?.companyName || client.companyName}</p></div>
-                  <div className="text-right"><p className="text-[10px] font-bold uppercase text-slate-400">Valor total</p><span className="font-mono text-sm font-bold text-slate-900">R$ {Number(order.totalAmount || 0).toFixed(2)}</span></div>
-                </div>
-                <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
-                  <p><strong>Troca/entrega:</strong> {order.replacedAndDelivered || "—"}</p>
-                  <p><strong>Deixou reserva:</strong> {order.leftReserve || "—"}</p>
-                  <p><strong>Detalhes da reserva:</strong> {order.reserveDetails || "—"}</p>
-                  <p><strong>Vencimento do extintor:</strong> {order.extinguisherExpiration || "—"}</p>
-                  <p><strong>Vencimento do alvará:</strong> {order.licenseExpiration || "—"}</p>
-                  <p><strong>Pagamento:</strong> {order.paymentMethod || "—"}{order.installmentsCount && order.installmentsCount > 1 ? ` · ${order.installmentsCount} parcelas` : ""}</p>
-                  {order.installmentDates && <p><strong>Datas das parcelas:</strong> {order.installmentDates}</p>}
-                  <p><strong>Responsável:</strong> {order.responsibleName || "—"}</p>
-                  <p><strong>CPF:</strong> {order.responsibleCpf || "—"}</p>
-                  <p><strong>Data de nascimento:</strong> {order.responsibleBirthDate || "—"}</p>
-                </div>
-                <div className="mt-3 rounded-md border border-slate-100 bg-slate-50 p-3">
-                  <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">Serviços e produtos realizados neste atendimento</p>
-                  {items?.length > 0 ? <div className="space-y-1.5">{items.map((item: any) => <div key={item.id} className="grid grid-cols-[1fr_auto_auto_auto] gap-2 text-xs"><span className="min-w-0 break-words font-medium">{item.description}</span><span>{item.quantity}×</span><span>R$ {Number(item.unitPrice || 0).toFixed(2)}</span><strong>R$ {Number(item.totalPrice || 0).toFixed(2)}</strong></div>)}</div> : <p className="text-xs text-slate-500">Nenhum item detalhado registrado nesta OS.</p>}
-                </div>
-                <div className="mt-3 rounded-md border border-amber-100 bg-amber-50/50 p-3 text-xs"><strong>Observações do atendimento:</strong><p className="mt-1 whitespace-pre-wrap break-words">{order.observations || "Nenhuma observação registrada."}</p></div>
-                <p className="mt-3 text-xs text-slate-500"><strong>Criada por:</strong> {order.createdByName || "Usuário não registrado (OS antiga)"}</p>
-                <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={() => onViewOrder(order.id)}><Eye className="h-3.5 w-3.5" /> Ver / imprimir OS</Button><Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={() => { setHistoryOpen(false); onEditOrder(order.id); }}><Edit className="h-3.5 w-3.5 text-blue-600" /> Editar OS</Button></div>
-              </div>
-            ))}
-            {visibleHistory.length === 0 && !historyQuery.isLoading && !platformHistoryQuery.isLoading && <div className="rounded-lg bg-slate-50 p-6 text-center text-sm text-slate-500">Nenhum atendimento registrado para este cliente.</div>}
-          </div>
-          <DialogFooter><Button variant="outline" onClick={() => setHistoryOpen(false)}>Fechar</Button></DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}

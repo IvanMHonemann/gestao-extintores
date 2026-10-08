@@ -108,6 +108,8 @@ export type InsertPlatformSession = typeof platformSessions.$inferInsert;
 export const clients = mysqlTable("clients", {
   id: int("id").autoincrement().primaryKey(),
   accountId: int("accountId").notNull().references(() => companies.id, { onDelete: "restrict" }),
+  /** Membro que cadastrou (operadores só veem os próprios). */
+  createdByUserId: int("createdByUserId"),
   companyName: varchar("companyName", { length: 255 }).notNull(),
   cnpj: varchar("cnpj", { length: 30 }),
   address: text("address"),
@@ -118,6 +120,7 @@ export const clients = mysqlTable("clients", {
   cpf: varchar("cpf", { length: 30 }),
   birthDate: varchar("birthDate", { length: 20 }),
   notes: text("notes"),
+  stockQuantity: int("stockQuantity").notNull().default(1),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (table) => ({
@@ -160,6 +163,7 @@ export const serviceOrders = mysqlTable("service_orders", {
   orderNumber: int("orderNumber").notNull(),
   orderDate: date("orderDate").notNull(),
   createdByName: varchar("createdByName", { length: 255 }),
+  createdByUserId: int("createdByUserId"),
   clientId: int("clientId").notNull().references(() => clients.id, { onDelete: "restrict" }),
   replacedAndDelivered: varchar("replacedAndDelivered", { length: 10 }).default("SIM"),
   leftReserve: varchar("leftReserve", { length: 10 }).default("NÃO"),

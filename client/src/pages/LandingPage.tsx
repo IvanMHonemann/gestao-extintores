@@ -9,7 +9,7 @@ export default function LandingPage() {
   useEffect(() => {
     const qs = typeof window !== "undefined" ? window.location.search : "";
     const extra = qs && qs !== "?" ? "&" + qs.slice(1) : "";
-    const target = `/landing-site.html?v=cta-gold-direct-20261006${extra}`;
+    const target = `/landing-site.html?v=landing-auditoria-20261007${extra}`;
     window.location.replace(target);
   }, []);
 

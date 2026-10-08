@@ -111,6 +111,8 @@ var init_schema = __esm({
     clients = mysqlTable("clients", {
       id: int("id").autoincrement().primaryKey(),
       accountId: int("accountId").notNull().references(() => companies.id, { onDelete: "restrict" }),
+      /** Membro que cadastrou (operadores só veem os próprios). */
+      createdByUserId: int("createdByUserId"),
       companyName: varchar("companyName", { length: 255 }).notNull(),
       cnpj: varchar("cnpj", { length: 30 }),
       address: text("address"),
@@ -121,6 +123,7 @@ var init_schema = __esm({
       cpf: varchar("cpf", { length: 30 }),
       birthDate: varchar("birthDate", { length: 20 }),
       notes: text("notes"),
+      stockQuantity: int("stockQuantity").notNull().default(1),
       createdAt: timestamp("createdAt").defaultNow().notNull(),
       updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull()
     }, (table) => ({
@@ -155,6 +158,7 @@ var init_schema = __esm({
       orderNumber: int("orderNumber").notNull(),
       orderDate: date("orderDate").notNull(),
       createdByName: varchar("createdByName", { length: 255 }),
+      createdByUserId: int("createdByUserId"),
       clientId: int("clientId").notNull().references(() => clients.id, { onDelete: "restrict" }),
       replacedAndDelivered: varchar("replacedAndDelivered", { length: 10 }).default("SIM"),
       leftReserve: varchar("leftReserve", { length: 10 }).default("N\xC3O"),
@@ -367,6 +371,7 @@ __export(db_exports, {
   deleteExtinguisher: () => deleteExtinguisher,
   deleteServiceOrder: () => deleteServiceOrder,
   ensureExtinguisherPublicToken: () => ensureExtinguisherPublicToken,
+  ensureOwnerScopeColumns: () => ensureOwnerScopeColumns,
   ensureSeedPlans: () => ensureSeedPlans,
   findPaymentEventByEventId: () => findPaymentEventByEventId,
   generateExtinguisherPublicToken: () => generateExtinguisherPublicToken,
@@ -390,6 +395,7 @@ __export(db_exports, {
   getPlatformDashboardStats: () => getPlatformDashboardStats,
   getPlatformExtinguishers: () => getPlatformExtinguishers,
   getPlatformOrders: () => getPlatformOrders,
+  getPool: () => getPool,
   getPublicExtinguisherByToken: () => getPublicExtinguisherByToken,
   getServiceOrderById: () => getServiceOrderById,
   getServiceOrderHistory: () => getServiceOrderHistory,
@@ -448,6 +454,25 @@ function monitoredPool(pool) {
       };
     }
   });
+}
+async function getPool() {
+  await getDb();
+  return _pool;
+}
+async function ensureOwnerScopeColumns() {
+  if (ownerScopeReady) return;
+  const pool = await getPool();
+  if (!pool) return;
+  try {
+    await pool.query("ALTER TABLE `clients` ADD COLUMN `createdByUserId` int NULL").catch(() => void 0);
+    await pool.query("ALTER TABLE `service_orders` ADD COLUMN `createdByUserId` int NULL").catch(() => void 0);
+    await pool.query("ALTER TABLE `extinguishers` ADD COLUMN `stockQuantity` int NOT NULL DEFAULT 1").catch(() => void 0);
+    await pool.query("ALTER TABLE `clients` ADD COLUMN `stockQuantity` int NOT NULL DEFAULT 1").catch(() => void 0);
+    ownerScopeReady = true;
+  } catch (err) {
+    console.warn("[db] ensureOwnerScopeColumns", err);
+    ownerScopeReady = true;
+  }
 }
 async function getDb() {
   const databaseUrl = process.env.EXTERNAL_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -607,40 +632,51 @@ async function getPlatformOrders(companyId) {
 }
 async function getClientsPage(accountId, options = {}) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) return pageResult([], 0, 1, 25);
   const { page, pageSize, offset } = pageArgs(options.page, options.pageSize);
   const search = options.search?.trim();
-  const conditions2 = [eq(clients.accountId, tenant)];
-  if (options.city && options.city !== "TODAS") conditions2.push(eq(clients.city, options.city));
-  if (search) conditions2.push(or(like(clients.companyName, `%${search}%`), like(clients.cnpj, `%${search}%`), like(clients.contactName, `%${search}%`)));
-  const where = and(...conditions2);
+  const conditions = [eq(clients.accountId, tenant)];
+  if (options.city && options.city !== "TODAS") conditions.push(eq(clients.city, options.city));
+  if (options.ownerUserId != null) conditions.push(eq(clients.createdByUserId, options.ownerUserId));
+  if (search) conditions.push(or(like(clients.companyName, `%${search}%`), like(clients.cnpj, `%${search}%`), like(clients.contactName, `%${search}%`)));
+  const where = and(...conditions);
   const [items, totalRows] = await Promise.all([
     db.select().from(clients).where(where).orderBy(desc(clients.createdAt), desc(clients.id)).limit(pageSize).offset(offset),
     db.select({ total: sql`count(*)` }).from(clients).where(where)
   ]);
   return pageResult(items, Number(totalRows[0]?.total || 0), page, pageSize);
 }
-async function getClients(cityFilter, accountId) {
+async function getClients(cityFilter, accountId, ownerUserId) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) return [];
-  const conditions2 = [eq(clients.accountId, tenant)];
-  if (cityFilter && cityFilter !== "TODAS") conditions2.push(eq(clients.city, cityFilter));
-  return await db.select().from(clients).where(and(...conditions2)).orderBy(desc(clients.createdAt)).limit(500);
+  const conditions = [eq(clients.accountId, tenant)];
+  if (cityFilter && cityFilter !== "TODAS") conditions.push(eq(clients.city, cityFilter));
+  if (ownerUserId != null) conditions.push(eq(clients.createdByUserId, ownerUserId));
+  return await db.select().from(clients).where(and(...conditions)).orderBy(desc(clients.createdAt)).limit(500);
 }
-async function getClientById(id, accountId) {
+async function getClientById(id, accountId, ownerUserId) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) return void 0;
-  const result = await db.select().from(clients).where(and(eq(clients.id, id), eq(clients.accountId, tenant))).limit(1);
+  const conditions = [eq(clients.id, id), eq(clients.accountId, tenant)];
+  if (ownerUserId != null) conditions.push(eq(clients.createdByUserId, ownerUserId));
+  const result = await db.select().from(clients).where(and(...conditions)).limit(1);
   return result[0];
 }
 async function createClient(data) {
   const tenant = requireAccountId(data.accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  const result = await db.insert(clients).values({ ...data, accountId: tenant });
+  const optional = ["cnpj", "address", "cep", "phone", "contactName", "cpf", "birthDate", "notes"];
+  const payload = { ...data, accountId: tenant, stockQuantity: Number(data.stockQuantity) > 0 ? Number(data.stockQuantity) : 1 };
+  for (const key of optional) if (payload[key] === "") payload[key] = null;
+  const result = await db.insert(clients).values(payload);
   return Number(result[0].insertId);
 }
 async function updateClient(id, data, accountId) {
@@ -686,14 +722,14 @@ async function getExtinguishersPage(accountId, options = {}) {
   const db = await getDb();
   if (!db) return pageResult([], 0, 1, 25);
   const { page, pageSize, offset } = pageArgs(options.page, options.pageSize);
-  const conditions2 = [eq(extinguishers.accountId, tenant)];
+  const conditions = [eq(extinguishers.accountId, tenant)];
   const search = options.search?.trim();
-  if (options.clientId) conditions2.push(eq(extinguishers.clientId, options.clientId));
-  if (search) conditions2.push(or(like(extinguishers.typeModel, `%${search}%`), like(extinguishers.serialNumber, `%${search}%`), like(extinguishers.locationInBuilding, `%${search}%`)));
-  if (options.filter === "active") conditions2.push(sql`${extinguishers.expirationDate} >= CURRENT_DATE()`);
-  if (options.filter === "expired") conditions2.push(sql`${extinguishers.expirationDate} < CURRENT_DATE()`);
-  if (options.filter === "near") conditions2.push(sql`${extinguishers.expirationDate} >= CURRENT_DATE() AND ${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL 30 DAY)`);
-  const where = and(...conditions2);
+  if (options.clientId) conditions.push(eq(extinguishers.clientId, options.clientId));
+  if (search) conditions.push(or(like(extinguishers.typeModel, `%${search}%`), like(extinguishers.serialNumber, `%${search}%`), like(extinguishers.locationInBuilding, `%${search}%`)));
+  if (options.filter === "active") conditions.push(sql`${extinguishers.expirationDate} >= CURRENT_DATE()`);
+  if (options.filter === "expired") conditions.push(sql`${extinguishers.expirationDate} < CURRENT_DATE()`);
+  if (options.filter === "near") conditions.push(sql`${extinguishers.expirationDate} >= CURRENT_DATE() AND ${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL 30 DAY)`);
+  const where = and(...conditions);
   const [items, totalRows] = await Promise.all([
     db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).innerJoin(clients, eq(extinguishers.clientId, clients.id)).where(and(where, eq(clients.accountId, tenant))).orderBy(extinguishers.expirationDate, desc(extinguishers.id)).limit(pageSize).offset(offset),
     db.select({ total: sql`count(*)` }).from(extinguishers).where(where)
@@ -702,6 +738,7 @@ async function getExtinguishersPage(accountId, options = {}) {
 }
 async function getExtinguishers(accountId) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) return [];
   return await db.select().from(extinguishers).where(eq(extinguishers.accountId, tenant)).orderBy(extinguishers.expirationDate).limit(500);
@@ -722,6 +759,7 @@ async function getExtinguishersByClient(clientId, accountId) {
 }
 async function createExtinguisher(data, accountId) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
   if (data.accountId !== tenant || !await getClientById(data.clientId, tenant)) throw new Error("Cliente sem permiss\xE3o");
@@ -849,17 +887,19 @@ async function getExpiringExtinguishers(daysAhead, accountId) {
 }
 async function getServiceOrdersPage(accountId, options = {}) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) return pageResult([], 0, 1, 25);
   const { page, pageSize, offset } = pageArgs(options.page, options.pageSize);
-  const conditions2 = [eq(serviceOrders.accountId, tenant), eq(clients.accountId, tenant)];
-  if (options.clientId) conditions2.push(eq(serviceOrders.clientId, options.clientId));
-  if (options.city && options.city !== "TODAS") conditions2.push(eq(clients.city, options.city));
-  if (options.from) conditions2.push(sql`${serviceOrders.orderDate} >= ${options.from}`);
-  if (options.to) conditions2.push(sql`${serviceOrders.orderDate} <= ${options.to}`);
+  const conditions = [eq(serviceOrders.accountId, tenant), eq(clients.accountId, tenant)];
+  if (options.ownerUserId != null) conditions.push(eq(serviceOrders.createdByUserId, options.ownerUserId));
+  if (options.clientId) conditions.push(eq(serviceOrders.clientId, options.clientId));
+  if (options.city && options.city !== "TODAS") conditions.push(eq(clients.city, options.city));
+  if (options.from) conditions.push(sql`${serviceOrders.orderDate} >= ${options.from}`);
+  if (options.to) conditions.push(sql`${serviceOrders.orderDate} <= ${options.to}`);
   const search = options.search?.trim();
-  if (search) conditions2.push(or(like(clients.companyName, `%${search}%`), like(clients.city, `%${search}%`), like(sql`CAST(${serviceOrders.orderNumber} AS CHAR)`, `%${search}%`)));
-  const where = and(...conditions2);
+  if (search) conditions.push(or(like(clients.companyName, `%${search}%`), like(clients.city, `%${search}%`), like(sql`CAST(${serviceOrders.orderNumber} AS CHAR)`, `%${search}%`)));
+  const where = and(...conditions);
   const query = db.select({ order: serviceOrders, client: clients }).from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id));
   const [items, totalRows] = await Promise.all([
     query.where(where).orderBy(desc(serviceOrders.orderDate), desc(serviceOrders.createdAt), desc(serviceOrders.id)).limit(pageSize).offset(offset),
@@ -893,14 +933,14 @@ async function getExpiringExtinguishersPage(daysAhead, accountId, options = {}) 
   const db = await getDb();
   if (!db) return pageResult([], 0, 1, 25);
   const { page, pageSize, offset } = pageArgs(options.page, options.pageSize);
-  const conditions2 = [eq(extinguishers.accountId, tenant), eq(clients.accountId, tenant)];
-  if (options.city && options.city !== "TODAS") conditions2.push(eq(clients.city, options.city));
-  if (options.filter === "expired") conditions2.push(sql`${extinguishers.expirationDate} < CURRENT_DATE()`);
-  if (options.filter === "near") conditions2.push(sql`${extinguishers.expirationDate} >= CURRENT_DATE() AND ${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL ${daysAhead} DAY)`);
-  if (options.filter === "all") conditions2.push(sql`${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL ${daysAhead} DAY)`);
+  const conditions = [eq(extinguishers.accountId, tenant), eq(clients.accountId, tenant)];
+  if (options.city && options.city !== "TODAS") conditions.push(eq(clients.city, options.city));
+  if (options.filter === "expired") conditions.push(sql`${extinguishers.expirationDate} < CURRENT_DATE()`);
+  if (options.filter === "near") conditions.push(sql`${extinguishers.expirationDate} >= CURRENT_DATE() AND ${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL ${daysAhead} DAY)`);
+  if (options.filter === "all") conditions.push(sql`${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL ${daysAhead} DAY)`);
   const search = options.search?.trim();
-  if (search) conditions2.push(or(like(clients.companyName, `%${search}%`), like(clients.city, `%${search}%`), like(extinguishers.serialNumber, `%${search}%`)));
-  const where = and(...conditions2);
+  if (search) conditions.push(or(like(clients.companyName, `%${search}%`), like(clients.city, `%${search}%`), like(extinguishers.serialNumber, `%${search}%`)));
+  const where = and(...conditions);
   const query = db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).innerJoin(clients, and(eq(extinguishers.clientId, clients.id), eq(extinguishers.accountId, clients.accountId)));
   const [rows, totalRows] = await Promise.all([query.where(where).orderBy(extinguishers.expirationDate, desc(extinguishers.id)).limit(pageSize).offset(offset), db.select({ total: sql`count(*)` }).from(extinguishers).innerJoin(clients, eq(extinguishers.clientId, clients.id)).where(where)]);
   const today = /* @__PURE__ */ new Date();
@@ -941,8 +981,11 @@ function isDuplicateKeyError(error) {
 }
 async function createServiceOrder(order, items, accountId) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
+  const pool = await getPool();
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
+  if (!pool) throw new Error("Database pool not connected");
   if (order.accountId !== tenant || !await getClientById(order.clientId, tenant)) throw new Error("Cliente sem permiss\xE3o");
   const requestedNumber = order.orderNumber && Number.isInteger(order.orderNumber) ? order.orderNumber : void 0;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -951,7 +994,19 @@ async function createServiceOrder(order, items, accountId) {
         const orderNumber = requestedNumber ?? await allocateOrderNumber(tx, tenant);
         const result = await tx.insert(serviceOrders).values({ ...order, accountId: tenant, orderNumber });
         const orderId = Number(result[0].insertId);
-        if (items.length) await tx.insert(serviceOrderItems).values(items.map((item) => ({ ...item, serviceOrderId: orderId })));
+        if (items.length) await tx.insert(serviceOrderItems).values(items.map((item) => {
+          const { extinguisherId: _ignored, ...row2 } = item;
+          return { ...row2, serviceOrderId: orderId };
+        }));
+        for (const item of items) {
+          const extId = Number(item.extinguisherId);
+          const qty = Number(item.quantity) || 0;
+          if (!extId || qty < 1) continue;
+          const [rows] = await pool.query("SELECT stockQuantity FROM extinguishers WHERE id = ? AND accountId = ? LIMIT 1", [extId, tenant]);
+          const current = Number(rows?.[0]?.stockQuantity ?? 1);
+          if (current < qty) throw new Error("Estoque insuficiente para o extintor selecionado.");
+          await pool.query("UPDATE extinguishers SET stockQuantity = stockQuantity - ? WHERE id = ? AND accountId = ?", [qty, extId, tenant]);
+        }
         return { id: orderId, orderNumber };
       });
     } catch (error) {
@@ -970,14 +1025,16 @@ async function getServiceOrderById(id, accountId) {
   const items = await db.select().from(serviceOrderItems).where(eq(serviceOrderItems.serviceOrderId, id));
   return { ...orderResult[0].order, client: orderResult[0].client, items };
 }
-async function getServiceOrders(clientId, accountId) {
+async function getServiceOrders(clientId, accountId, ownerUserId) {
   const tenant = requireAccountId(accountId);
+  await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) return [];
-  const conditions2 = [eq(serviceOrders.accountId, tenant), eq(clients.accountId, tenant)];
-  if (clientId) conditions2.push(eq(serviceOrders.clientId, clientId));
+  const conditions = [eq(serviceOrders.accountId, tenant), eq(clients.accountId, tenant)];
+  if (ownerUserId != null) conditions.push(eq(serviceOrders.createdByUserId, ownerUserId));
+  if (clientId) conditions.push(eq(serviceOrders.clientId, clientId));
   const query = db.select({ order: serviceOrders, client: clients }).from(serviceOrders).innerJoin(clients, eq(serviceOrders.clientId, clients.id));
-  return await query.where(and(...conditions2)).orderBy(desc(serviceOrders.orderDate), desc(serviceOrders.createdAt)).limit(clientId ? 200 : 500);
+  return await query.where(and(...conditions)).orderBy(desc(serviceOrders.orderDate), desc(serviceOrders.createdAt)).limit(clientId ? 200 : 500);
 }
 async function getServiceOrderHistory(clientId, accountId) {
   const orders = await getServiceOrders(clientId, accountId);
@@ -1252,11 +1309,12 @@ async function createCompanySubscription(data) {
 async function updateCompanySubscription(id, data) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  await db.update(companySubscriptions).set({
+  const updateData = {
     ...data,
-    startsAt: data.startsAt ? new Date(data.startsAt) : void 0,
-    endsAt: data.endsAt === null ? null : data.endsAt ? new Date(data.endsAt) : void 0
-  }).where(eq(companySubscriptions.id, id));
+    ...data.startsAt !== void 0 ? { startsAt: new Date(data.startsAt) } : {},
+    ...data.endsAt !== void 0 ? { endsAt: data.endsAt ? new Date(data.endsAt) : null } : {}
+  };
+  await db.update(companySubscriptions).set(updateData).where(eq(companySubscriptions.id, id));
   const rows = await db.select().from(companySubscriptions).where(eq(companySubscriptions.id, id)).limit(1);
   const sub = rows[0];
   if (sub) {
@@ -1403,9 +1461,9 @@ async function applyMockCheckout(input) {
     canceled: "canceled"
   };
   const payStatusMap = {
-    approved: "MOCK_APPROVED",
-    pending: "MOCK_PENDING",
-    overdue: "MOCK_OVERDUE",
+    approved: "CONFIRMED",
+    pending: "PENDING",
+    overdue: "OVERDUE",
     canceled: "DELETED"
   };
   const subStatus = statusMap[input.outcome];
@@ -1427,21 +1485,27 @@ async function applyMockCheckout(input) {
     notes: `Mock checkout: ${input.outcome}`
   });
   const subscriptionId = Number(subResult.insertId);
-  const [payResult] = await db.insert(payments).values({
-    companyId: input.companyId,
-    subscriptionId,
-    asaasPaymentId: `pay_mock_${Date.now()}`,
-    asaasCustomerId: `cus_mock_${input.companyId}`,
-    asaasSubscriptionId: `sub_mock_${input.companyId}`,
-    amount: plan.price,
-    netAmount: plan.price,
-    billingType: "MOCK",
-    status: payStatusMap[input.outcome],
-    dueDate: ymd,
-    paymentDate: input.outcome === "approved" ? ymd : null,
-    invoiceUrl: "https://mock.local/invoice"
-  });
-  const paymentId = Number(payResult.insertId);
+  let paymentId = 0;
+  try {
+    const [payResult] = await db.insert(payments).values({
+      companyId: input.companyId,
+      subscriptionId: subscriptionId || null,
+      asaasPaymentId: `pay_mock_${Date.now()}`,
+      asaasCustomerId: `cus_mock_${input.companyId}`,
+      asaasSubscriptionId: `sub_mock_${input.companyId}`,
+      amount: String(plan.price ?? "0.00"),
+      netAmount: String(plan.price ?? "0.00"),
+      billingType: "UNDEFINED",
+      status: payStatusMap[input.outcome],
+      dueDate: ymd,
+      paymentDate: input.outcome === "approved" ? ymd : null,
+      invoiceUrl: "https://mock.local/invoice",
+      bankSlipUrl: null
+    });
+    paymentId = Number(payResult.insertId) || 0;
+  } catch (payErr) {
+    console.warn("[mockCheckout] payment insert skipped:", payErr);
+  }
   await db.update(companies).set({
     planId: input.planId,
     subscriptionStatus: subStatus,
@@ -1470,7 +1534,7 @@ async function ensureSeedPlans() {
       featureExtinguishers: true,
       featureServiceOrders: true,
       featureAlerts: true,
-      featureReports: false,
+      featureReports: true,
       featureUsers: false,
       featureBackup: true,
       featureOfflinePwa: true,
@@ -1555,7 +1619,7 @@ async function ensureSeedPlans() {
     }
   }
 }
-var _db, _dbUrl, _pool;
+var _db, _dbUrl, _pool, ownerScopeReady;
 var init_db = __esm({
   "server/db.ts"() {
     "use strict";
@@ -1564,6 +1628,7 @@ var init_db = __esm({
     _db = null;
     _dbUrl = null;
     _pool = null;
+    ownerScopeReady = false;
   }
 });
 
@@ -1943,7 +2008,7 @@ var NOT_ADMIN_ERR_MSG = "You do not have required permission (10002)";
 // server/routers.ts
 import { z as z2 } from "zod";
 import { parse as parseCookie } from "cookie";
-import { TRPCError as TRPCError3 } from "@trpc/server";
+import { TRPCError as TRPCError4 } from "@trpc/server";
 
 // server/_core/cookies.ts
 function isSecureRequest(req) {
@@ -2111,7 +2176,10 @@ var systemRouter = router({
 
 // server/routers.ts
 init_subscriptionAccess();
+
+// server/planLimits.ts
 init_db();
+import { TRPCError as TRPCError3 } from "@trpc/server";
 
 // server/memberAuth.ts
 init_schema();
@@ -2358,86 +2426,504 @@ async function updateCompanyUser(accountId, companyId, data) {
 async function setMemberActive(id, active, companyId) {
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  const conditions2 = companyId === void 0 ? eq2(memberAccounts.id, id) : and2(eq2(memberAccounts.id, id), eq2(memberAccounts.companyId, companyId));
-  const account = await db.select({ role: memberAccounts.role }).from(memberAccounts).where(conditions2).limit(1);
+  const conditions = companyId === void 0 ? eq2(memberAccounts.id, id) : and2(eq2(memberAccounts.id, id), eq2(memberAccounts.companyId, companyId));
+  const account = await db.select({ role: memberAccounts.role }).from(memberAccounts).where(conditions).limit(1);
   if (account[0]?.role === "company_admin" && !active) {
     const adminCount = await db.select({ id: memberAccounts.id }).from(memberAccounts).where(and2(eq2(memberAccounts.companyId, companyId ?? 0), eq2(memberAccounts.role, "company_admin"), eq2(memberAccounts.active, true))).limit(2);
     if (adminCount.length <= 1) throw new Error("A empresa precisa manter pelo menos um administrador ativo.");
   }
-  await db.update(memberAccounts).set({ active }).where(conditions2);
+  await db.update(memberAccounts).set({ active }).where(conditions);
   if (!active) await db.delete(memberSessions).where(eq2(memberSessions.memberAccountId, id));
+}
+async function updateMemberProfile(memberAccountId, data) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const name = data.userName.trim();
+  if (name.length < 2) throw new Error("Nome deve ter pelo menos 2 caracteres.");
+  await db.update(memberAccounts).set({ userName: name }).where(eq2(memberAccounts.id, memberAccountId));
+  return { success: true, userName: name };
+}
+async function regenerateMemberRecoveryCode(memberAccountId) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  const recoveryCode = `EXT-${randomBytes(12).toString("base64url")}`;
+  await db.update(memberAccounts).set({ recoveryCodeHash: hashPassword(recoveryCode) }).where(eq2(memberAccounts.id, memberAccountId));
+  return { recoveryCode };
+}
+async function revokeAllMemberSessions(memberAccountId) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not connected");
+  await db.delete(memberSessions).where(eq2(memberSessions.memberAccountId, memberAccountId));
+  return { success: true };
+}
+async function verifyMemberPassword(memberAccountId, password) {
+  const key = `verify:member:${memberAccountId}`;
+  if (isRateLimited(key)) return false;
+  const database = await getDb();
+  if (!database) throw new Error("Database not connected");
+  const result = await database.select().from(memberAccounts).where(eq2(memberAccounts.id, memberAccountId)).limit(1);
+  const account = result[0];
+  if (!account || !verifyPassword(password, account.passwordHash)) {
+    registerFailure(key);
+    return false;
+  }
+  clearRateLimit(key);
+  return true;
+}
+
+// server/planLimits.ts
+init_schema();
+import { sql as sql2, eq as eq3 } from "drizzle-orm";
+async function getEffectivePlan(companyId) {
+  const resolved = await resolveCompanyPlan(companyId);
+  const plan = resolved.plan;
+  if (!plan) {
+    return {
+      id: null,
+      name: "Sem plano",
+      maxUsers: 1,
+      maxClients: 1e3,
+      maxExtinguishers: 3e3,
+      featureDashboard: true,
+      featureClients: true,
+      featureExtinguishers: true,
+      featureServiceOrders: true,
+      featureAlerts: true,
+      featureReports: false,
+      featureUsers: false,
+      featureBackup: true,
+      featureOfflinePwa: true
+    };
+  }
+  return {
+    id: Number(plan.id) || null,
+    name: String(plan.name || "Plano"),
+    maxUsers: plan.maxUsers == null ? null : Number(plan.maxUsers),
+    maxClients: plan.maxClients == null ? null : Number(plan.maxClients),
+    maxExtinguishers: plan.maxExtinguishers == null ? null : Number(plan.maxExtinguishers),
+    featureDashboard: Boolean(plan.featureDashboard),
+    featureClients: Boolean(plan.featureClients),
+    featureExtinguishers: Boolean(plan.featureExtinguishers),
+    featureServiceOrders: Boolean(plan.featureServiceOrders),
+    featureAlerts: Boolean(plan.featureAlerts),
+    featureReports: Boolean(plan.featureReports),
+    featureUsers: Boolean(plan.featureUsers),
+    featureBackup: Boolean(plan.featureBackup),
+    featureOfflinePwa: Boolean(plan.featureOfflinePwa)
+  };
+}
+async function requirePlanFeature(companyId, feature, label) {
+  const plan = await getEffectivePlan(companyId);
+  if (!plan[feature]) {
+    throw new TRPCError3({
+      code: "FORBIDDEN",
+      message: label || `Seu plano (${plan.name}) n\xE3o inclui este recurso. Fa\xE7a upgrade ou fale com o suporte.`,
+      cause: { code: "PLAN_FEATURE_BLOCKED", feature, planId: plan.id, planName: plan.name }
+    });
+  }
+  return plan;
+}
+async function countClients(companyId) {
+  const database = await getDb();
+  if (!database) return 0;
+  const rows = await database.select({ total: sql2`count(*)` }).from(clients).where(eq3(clients.accountId, companyId));
+  return Number(rows[0]?.total || 0);
+}
+async function countExtinguishers(companyId) {
+  const database = await getDb();
+  if (!database) return 0;
+  const rows = await database.select({ total: sql2`count(*)` }).from(extinguishers).where(eq3(extinguishers.accountId, companyId));
+  return Number(rows[0]?.total || 0);
+}
+async function countUsers(companyId) {
+  const list = await listMemberAccounts(companyId);
+  return Array.isArray(list) ? list.length : 0;
+}
+async function assertClientLimit(companyId) {
+  const plan = await requirePlanFeature(companyId, "featureClients", "Cadastro de clientes n\xE3o est\xE1 dispon\xEDvel no seu plano.");
+  if (plan.maxClients == null) return plan;
+  const current = await countClients(companyId);
+  if (current >= plan.maxClients) {
+    throw new TRPCError3({
+      code: "FORBIDDEN",
+      message: `Limite de clientes do plano ${plan.name} atingido (${plan.maxClients}). Fa\xE7a upgrade para continuar.`,
+      cause: { code: "PLAN_LIMIT", resource: "clients", limit: plan.maxClients, current }
+    });
+  }
+  return plan;
+}
+async function assertExtinguisherLimit(companyId) {
+  const plan = await requirePlanFeature(
+    companyId,
+    "featureExtinguishers",
+    "Cadastro de extintores n\xE3o est\xE1 dispon\xEDvel no seu plano."
+  );
+  if (plan.maxExtinguishers == null) return plan;
+  const current = await countExtinguishers(companyId);
+  if (current >= plan.maxExtinguishers) {
+    throw new TRPCError3({
+      code: "FORBIDDEN",
+      message: `Limite de extintores do plano ${plan.name} atingido (${plan.maxExtinguishers}). Fa\xE7a upgrade para continuar.`,
+      cause: { code: "PLAN_LIMIT", resource: "extinguishers", limit: plan.maxExtinguishers, current }
+    });
+  }
+  return plan;
+}
+async function assertUserLimit(companyId) {
+  const plan = await requirePlanFeature(
+    companyId,
+    "featureUsers",
+    "Gest\xE3o de usu\xE1rios da equipe n\xE3o est\xE1 dispon\xEDvel no seu plano. Fa\xE7a upgrade para o Profissional ou Empresarial."
+  );
+  if (plan.maxUsers == null) return plan;
+  const current = await countUsers(companyId);
+  if (current >= plan.maxUsers) {
+    throw new TRPCError3({
+      code: "FORBIDDEN",
+      message: `Limite de usu\xE1rios do plano ${plan.name} atingido (${plan.maxUsers}). Fa\xE7a upgrade para adicionar mais usu\xE1rios.`,
+      cause: { code: "PLAN_LIMIT", resource: "users", limit: plan.maxUsers, current }
+    });
+  }
+  return plan;
+}
+async function assertServiceOrderFeature(companyId) {
+  return requirePlanFeature(
+    companyId,
+    "featureServiceOrders",
+    "Ordens de servi\xE7o n\xE3o est\xE3o dispon\xEDveis no seu plano."
+  );
 }
 
 // server/routers.ts
+init_db();
 init_email();
 
 // server/audit.ts
-init_schema();
 init_db();
-import { and as and3, desc as desc2, eq as eq3, gte, lte as lte2, like as like2, or as or2, sql as sql2 } from "drizzle-orm";
-function safeJson(value) {
-  return value == null ? null : JSON.stringify(value);
-}
-function pageArgs2(page = 1, pageSize = 25) {
-  const size = Math.min(100, Math.max(1, Math.trunc(pageSize)));
-  const current = Math.max(1, Math.trunc(page));
-  return { page: current, pageSize: size, offset: (current - 1) * size };
-}
-function conditions(filters) {
-  const c = [];
-  if (filters.enforceTenant && filters.companyId) c.push(eq3(auditLogs.companyId, filters.companyId));
-  else if (filters.companyId) c.push(eq3(auditLogs.companyId, filters.companyId));
-  if (filters.from) c.push(gte(auditLogs.createdAt, new Date(filters.from)));
-  if (filters.to) c.push(lte2(auditLogs.createdAt, new Date(filters.to)));
-  if (filters.userId) c.push(eq3(auditLogs.userId, filters.userId));
-  if (filters.module) c.push(eq3(auditLogs.module, filters.module));
-  if (filters.action) c.push(eq3(auditLogs.action, filters.action));
-  if (filters.entityType) c.push(eq3(auditLogs.entityType, filters.entityType));
-  if (filters.entityId) c.push(eq3(auditLogs.entityId, filters.entityId));
-  if (filters.search) {
-    const q = `%${filters.search}%`;
-    c.push(or2(like2(auditLogs.description, q), like2(auditLogs.entityLabel, q), like2(auditLogs.userName, q)));
+var auditTableReady = false;
+async function ensureAuditLogsTable() {
+  if (auditTableReady) return;
+  const pool = await getPool();
+  if (!pool) return;
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS \`audit_logs\` (
+      \`id\` int AUTO_INCREMENT NOT NULL,
+      \`companyId\` int NULL,
+      \`userId\` int NULL,
+      \`userName\` varchar(255) NULL,
+      \`userEmail\` varchar(320) NULL,
+      \`action\` varchar(64) NOT NULL,
+      \`module\` varchar(64) NOT NULL,
+      \`entityType\` varchar(64) NOT NULL,
+      \`entityId\` int NULL,
+      \`entityLabel\` varchar(255) NULL,
+      \`description\` text NOT NULL,
+      \`oldData\` text NULL,
+      \`newData\` text NULL,
+      \`ipAddress\` varchar(64) NULL,
+      \`userAgent\` varchar(512) NULL,
+      \`createdAt\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (\`id\`),
+      KEY \`audit_logs_company_idx\` (\`companyId\`),
+      KEY \`audit_logs_company_created_idx\` (\`companyId\`, \`createdAt\`),
+      KEY \`audit_logs_user_idx\` (\`userId\`),
+      KEY \`audit_logs_entity_idx\` (\`entityType\`, \`entityId\`),
+      KEY \`audit_logs_action_idx\` (\`action\`),
+      KEY \`audit_logs_module_idx\` (\`module\`),
+      KEY \`audit_logs_created_idx\` (\`createdAt\`)
+    )`);
+    auditTableReady = true;
+  } catch (err) {
+    console.warn("[audit] ensure table failed", err);
   }
-  return c.length ? and3(...c) : void 0;
 }
-async function auditFromCtx(ctx, data) {
-  const db = await getDb();
-  if (!db) return;
-  await db.insert(auditLogs).values({ companyId: data.companyId ?? ctx.accountId ?? null, userId: ctx.memberAccountId ?? ctx.platformAdminId ?? null, userName: ctx.user?.name ?? null, userEmail: ctx.user?.email ?? null, action: data.action, module: data.module, entityType: data.entityType, entityId: data.entityId ?? null, entityLabel: data.entityLabel ?? null, description: data.description, oldData: safeJson(data.oldData), newData: safeJson(data.newData), ipAddress: String(ctx.req.headers["x-forwarded-for"] ?? ctx.req.socket.remoteAddress ?? "").slice(0, 64), userAgent: String(ctx.req.headers["user-agent"] ?? "").slice(0, 512) });
+function toMysqlDateTime(value, endOfDay = false) {
+  const raw = String(value).trim();
+  const d = raw.length <= 10 ? /* @__PURE__ */ new Date(`${raw}T${endOfDay ? "23:59:59" : "00:00:00"}`) : new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw.slice(0, 19).replace("T", " ");
+  const pad = (n) => String(n).padStart(2, "0");
+  if (raw.length <= 10) {
+    return `${raw} ${endOfDay ? "23:59:59" : "00:00:00"}`;
+  }
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+var SENSITIVE_KEY_RE = /password|passwd|pwd|token|secret|cookie|authorization|recovery|hash|credit.?card|card.?number|cvv|cvc|ssn|api.?key/i;
+function sanitizeAuditData(value) {
+  if (value == null) return value;
+  if (Array.isArray(value)) return value.map(sanitizeAuditData);
+  if (typeof value !== "object") return value;
+  if (value instanceof Date) return value.toISOString();
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (SENSITIVE_KEY_RE.test(k)) continue;
+    out[k] = sanitizeAuditData(v);
+  }
+  return out;
 }
 function diffAuditData(before, after) {
-  const oldData = {};
-  const newData = {};
-  const keys = Array.from(/* @__PURE__ */ new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})]));
-  for (const key of keys) if (JSON.stringify(before?.[key]) !== JSON.stringify(after?.[key])) {
-    oldData[key] = before?.[key] ?? null;
-    newData[key] = after?.[key] ?? null;
-  }
-  return { oldData, newData };
+  const a = sanitizeAuditData(before);
+  const b = sanitizeAuditData(after);
+  if (!a && !b) return { oldData: null, newData: null };
+  if (!a) return { oldData: null, newData: b || null };
+  if (!b) return { oldData: a || null, newData: null };
+  const oldPart = {};
+  const newPart = {};
+  const keys = /* @__PURE__ */ new Set([...Object.keys(a), ...Object.keys(b)]);
+  keys.forEach((key) => {
+    const av = a[key];
+    const bv = b[key];
+    const as = av === void 0 ? null : typeof av === "object" ? JSON.stringify(av) : String(av ?? "");
+    const bs = bv === void 0 ? null : typeof bv === "object" ? JSON.stringify(bv) : String(bv ?? "");
+    if (as !== bs) {
+      if (av !== void 0) oldPart[key] = av;
+      if (bv !== void 0) newPart[key] = bv;
+    }
+  });
+  return {
+    oldData: Object.keys(oldPart).length ? oldPart : null,
+    newData: Object.keys(newPart).length ? newPart : null
+  };
 }
-async function listAuditLogs(filters) {
-  const db = await getDb();
-  if (!db) return { items: [], total: 0, page: 1, pageSize: 25, totalPages: 1 };
-  const { page, pageSize, offset } = pageArgs2(filters.page ?? 1, filters.pageSize ?? 25);
-  const where = conditions(filters);
-  const [items, count] = await Promise.all([db.select().from(auditLogs).where(where).orderBy(desc2(auditLogs.createdAt), desc2(auditLogs.id)).limit(pageSize).offset(offset), db.select({ total: sql2`count(*)` }).from(auditLogs).where(where)]);
-  const total = Number(count[0]?.total ?? 0);
-  return { items, total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
+function requestMeta(ctx) {
+  const req = ctx.req;
+  const xf = req.headers?.["x-forwarded-for"];
+  const forwarded = Array.isArray(xf) ? xf[0] : xf;
+  const ip = typeof forwarded === "string" && forwarded.split(",")[0]?.trim() || (typeof req.headers?.["x-real-ip"] === "string" ? req.headers["x-real-ip"] : null) || req.ip || req.socket?.remoteAddress || null;
+  const uaRaw = req.headers?.["user-agent"];
+  const userAgent = (Array.isArray(uaRaw) ? uaRaw[0] : uaRaw) || null;
+  return {
+    ipAddress: ip ? String(ip).slice(0, 64) : null,
+    userAgent: userAgent ? String(userAgent).slice(0, 512) : null
+  };
+}
+function actorFromCtx(ctx) {
+  const companyId = ctx.accountId && Number.isInteger(ctx.accountId) && ctx.accountId > 0 ? ctx.accountId : null;
+  const userId = ctx.memberAccountId ?? (ctx.platformAdminId != null ? ctx.platformAdminId : null) ?? (ctx.user?.id != null ? Math.abs(ctx.user.id) : null);
+  return {
+    companyId,
+    userId: userId != null ? Number(userId) : null,
+    userName: ctx.user?.name || null,
+    userEmail: ctx.user?.email || null
+  };
+}
+function serializeJson(value) {
+  if (value == null) return null;
+  try {
+    return JSON.stringify(sanitizeAuditData(value));
+  } catch {
+    return null;
+  }
+}
+async function writeAuditLog(input) {
+  try {
+    await ensureAuditLogsTable();
+    const pool = await getPool();
+    if (!pool) return null;
+    const [result] = await pool.query(
+      `INSERT INTO \`audit_logs\` (
+        \`companyId\`, \`userId\`, \`userName\`, \`userEmail\`, \`action\`, \`module\`,
+        \`entityType\`, \`entityId\`, \`entityLabel\`, \`description\`, \`oldData\`, \`newData\`,
+        \`ipAddress\`, \`userAgent\`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.companyId ?? null,
+        input.userId ?? null,
+        input.userName ? String(input.userName).slice(0, 255) : null,
+        input.userEmail ? String(input.userEmail).slice(0, 320) : null,
+        String(input.action).slice(0, 64),
+        String(input.module).slice(0, 64),
+        String(input.entityType).slice(0, 64),
+        input.entityId ?? null,
+        input.entityLabel ? String(input.entityLabel).slice(0, 255) : null,
+        String(input.description).slice(0, 4e3),
+        serializeJson(input.oldData),
+        serializeJson(input.newData),
+        input.ipAddress ? String(input.ipAddress).slice(0, 64) : null,
+        input.userAgent ? String(input.userAgent).slice(0, 512) : null
+      ]
+    );
+    return Number(result?.insertId || 0) || null;
+  } catch (err) {
+    console.warn("[audit] failed to write log", err);
+    return null;
+  }
+}
+async function auditFromCtx(ctx, partial) {
+  const actor = actorFromCtx(ctx);
+  const meta = requestMeta(ctx);
+  return writeAuditLog({
+    ...partial,
+    companyId: partial.companyId !== void 0 ? partial.companyId : actor.companyId,
+    userId: actor.userId,
+    userName: actor.userName,
+    userEmail: actor.userEmail,
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent
+  });
+}
+async function listAuditLogs(filters = {}) {
+  const page = Math.max(1, filters.page || 1);
+  const pageSize = Math.min(100, Math.max(1, filters.pageSize || 50));
+  const offset = (page - 1) * pageSize;
+  await ensureAuditLogsTable();
+  const pool = await getPool();
+  if (!pool) return { items: [], total: 0, page, pageSize };
+  const where = [];
+  const params = [];
+  if (filters.companyId != null) {
+    where.push("`companyId` = ?");
+    params.push(Number(filters.companyId));
+  }
+  if (filters.userId != null) {
+    where.push("`userId` = ?");
+    params.push(Number(filters.userId));
+  }
+  if (filters.module) {
+    where.push("`module` = ?");
+    params.push(String(filters.module));
+  }
+  if (filters.action) {
+    where.push("`action` = ?");
+    params.push(String(filters.action));
+  }
+  if (filters.entityType) {
+    where.push("`entityType` = ?");
+    params.push(String(filters.entityType));
+  }
+  if (filters.entityId != null) {
+    where.push("`entityId` = ?");
+    params.push(Number(filters.entityId));
+  }
+  if (filters.from) {
+    const fromStr = toMysqlDateTime(String(filters.from), false);
+    where.push("`createdAt` >= ?");
+    params.push(fromStr);
+  }
+  if (filters.to) {
+    const toStr = toMysqlDateTime(String(filters.to), true);
+    where.push("`createdAt` <= ?");
+    params.push(toStr);
+  }
+  if (filters.search && filters.search.trim()) {
+    const q = `%${filters.search.trim().slice(0, 100)}%`;
+    where.push("(`userName` LIKE ? OR `userEmail` LIKE ? OR `description` LIKE ? OR `entityLabel` LIKE ?)");
+    params.push(q, q, q, q);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  try {
+    const [countRows] = await pool.query(
+      `SELECT COUNT(*) AS value FROM \`audit_logs\` ${whereSql}`,
+      params
+    );
+    const total = Number(countRows[0]?.value || 0);
+    const [rows] = await pool.query(
+      `SELECT * FROM \`audit_logs\` ${whereSql} ORDER BY \`createdAt\` DESC, \`id\` DESC LIMIT ? OFFSET ?`,
+      [...params, pageSize, offset]
+    );
+    return {
+      items: rows || [],
+      total,
+      page,
+      pageSize
+    };
+  } catch (err) {
+    console.warn("[audit] list failed", err);
+    auditTableReady = false;
+    await ensureAuditLogsTable();
+    try {
+      const [countRows] = await pool.query(
+        `SELECT COUNT(*) AS value FROM \`audit_logs\` ${whereSql}`,
+        params
+      );
+      const total = Number(countRows[0]?.value || 0);
+      const [rows] = await pool.query(
+        `SELECT * FROM \`audit_logs\` ${whereSql} ORDER BY \`createdAt\` DESC, \`id\` DESC LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset]
+      );
+      return { items: rows || [], total, page, pageSize };
+    } catch (err2) {
+      console.warn("[audit] list failed permanently", err2);
+      return { items: [], total: 0, page, pageSize };
+    }
+  }
 }
 async function getAuditLogById(id, companyId) {
-  const db = await getDb();
-  if (!db) return null;
-  const where = companyId ? and3(eq3(auditLogs.id, id), eq3(auditLogs.companyId, companyId)) : eq3(auditLogs.id, id);
-  const rows = await db.select().from(auditLogs).where(where).limit(1);
-  return rows[0] ?? null;
+  await ensureAuditLogsTable();
+  const pool = await getPool();
+  if (!pool) return null;
+  try {
+    if (companyId != null) {
+      const [rows2] = await pool.query(
+        "SELECT * FROM `audit_logs` WHERE `id` = ? AND `companyId` = ? LIMIT 1",
+        [id, companyId]
+      );
+      return rows2[0] || null;
+    }
+    const [rows] = await pool.query(
+      "SELECT * FROM `audit_logs` WHERE `id` = ? LIMIT 1",
+      [id]
+    );
+    return rows[0] || null;
+  } catch (err) {
+    console.warn("[audit] getById failed", err);
+    return null;
+  }
 }
-async function listEntityAuditHistory(filters) {
-  return listAuditLogs({ ...filters, enforceTenant: true });
+async function listEntityAuditHistory(params) {
+  return listAuditLogs({
+    companyId: params.companyId,
+    enforceTenant: true,
+    entityType: params.entityType,
+    entityId: params.entityId,
+    page: params.page || 1,
+    pageSize: params.pageSize || 50
+  });
 }
 async function exportAuditLogsCsv(filters) {
-  const rows = (await listAuditLogs({ ...filters, page: 1, pageSize: 100 })).items;
-  const esc = (v) => `"${String(v ?? "").replaceAll('"', '""')}"`;
-  return ["id;data;a\xE7\xE3o;m\xF3dulo;entidade;descri\xE7\xE3o;usu\xE1rio", ...rows.map((r) => [r.id, r.createdAt.toISOString(), r.action, r.module, r.entityType, r.description, r.userEmail].map(esc).join(";"))].join("\n");
+  const result = await listAuditLogs({ ...filters, page: 1, pageSize: 5e3 });
+  const header = [
+    "id",
+    "createdAt",
+    "companyId",
+    "userName",
+    "userEmail",
+    "action",
+    "module",
+    "entityType",
+    "entityId",
+    "entityLabel",
+    "description",
+    "oldData",
+    "newData",
+    "ipAddress"
+  ];
+  const escape = (v) => {
+    const s = v == null ? "" : String(v);
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const lines = [header.join(",")];
+  for (const row2 of result.items) {
+    lines.push(
+      [
+        row2.id,
+        row2.createdAt instanceof Date ? row2.createdAt.toISOString() : row2.createdAt,
+        row2.companyId,
+        row2.userName,
+        row2.userEmail,
+        row2.action,
+        row2.module,
+        row2.entityType,
+        row2.entityId,
+        row2.entityLabel,
+        row2.description,
+        row2.oldData,
+        row2.newData,
+        row2.ipAddress
+      ].map(escape).join(",")
+    );
+  }
+  return lines.join("\n");
 }
 
 // server/routers.ts
@@ -2512,7 +2998,7 @@ var appRouter = router({
         return { success: true, ...created };
       } catch (error) {
         if (error?.code === "ER_DUP_ENTRY") {
-          throw new TRPCError3({ code: "CONFLICT", message: "Este e-mail j\xE1 est\xE1 cadastrado." });
+          throw new TRPCError4({ code: "CONFLICT", message: "Este e-mail j\xE1 est\xE1 cadastrado." });
         }
         throw error;
       }
@@ -2521,7 +3007,7 @@ var appRouter = router({
       const principal = await authenticateMember(input.email, input.password);
       if (!principal) {
         void auditFromCtx(ctx, { action: "login_failed", module: "auth", entityType: "session", description: `Tentativa de login falhou para ${input.email}`, newData: { email: input.email } });
-        throw new TRPCError3({ code: "UNAUTHORIZED", message: "E-mail ou senha inv\xE1lidos." });
+        throw new TRPCError4({ code: "UNAUTHORIZED", message: "E-mail ou senha inv\xE1lidos." });
       }
       const session = await createSession(principal);
       ctx.res.cookie(MEMBER_COOKIE_NAME, session.rawToken, { ...getSessionCookieOptions(ctx.req, true), maxAge: 30 * 24 * 60 * 60 * 1e3 });
@@ -2537,15 +3023,80 @@ var appRouter = router({
     }),
     recoverPassword: publicProcedure.input(z2.object({ email: z2.string().email(), recoveryCode: z2.string().min(1), newPassword: z2.string().min(8, "A nova senha deve ter pelo menos 8 caracteres") })).mutation(async ({ input }) => {
       const recovered = await recoverPassword(input.email, input.recoveryCode, input.newPassword);
-      if (!recovered) throw new TRPCError3({ code: "UNAUTHORIZED", message: "E-mail ou c\xF3digo de recupera\xE7\xE3o inv\xE1lido." });
+      if (!recovered) throw new TRPCError4({ code: "UNAUTHORIZED", message: "E-mail ou c\xF3digo de recupera\xE7\xE3o inv\xE1lido." });
       return { success: true, recoveryCode: recovered.recoveryCode };
     }),
     changePassword: publicProcedure.use(async (opts) => {
-      if (!opts.ctx.user) throw new TRPCError3({ code: "UNAUTHORIZED", message: "Please login (10001)" });
+      if (!opts.ctx.user) throw new TRPCError4({ code: "UNAUTHORIZED", message: "Please login (10001)" });
       return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
     }).input(z2.object({ currentPassword: z2.string().min(1), newPassword: z2.string().min(8, "A nova senha deve ter pelo menos 8 caracteres") })).mutation(async ({ ctx, input }) => {
       const changed = ctx.user.role === "platform_admin" ? await changePlatformPassword(ctx.platformAdminId ?? ctx.user.id, input.currentPassword, input.newPassword) : await changeMemberPassword(ctx.memberAccountId ?? Math.abs(ctx.user.id), input.currentPassword, input.newPassword);
-      if (!changed) throw new TRPCError3({ code: "UNAUTHORIZED", message: "A senha atual est\xE1 incorreta." });
+      if (!changed) throw new TRPCError4({ code: "UNAUTHORIZED", message: "A senha atual est\xE1 incorreta." });
+      return { success: true };
+    }),
+    updateProfile: publicProcedure.use(async (opts) => {
+      if (!opts.ctx.user) throw new TRPCError4({ code: "UNAUTHORIZED", message: "Please login (10001)" });
+      return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
+    }).input(z2.object({
+      userName: z2.string().min(2).optional(),
+      avatarDataUrl: z2.string().max(4e5).optional().nullable()
+    })).mutation(async ({ ctx, input }) => {
+      if (ctx.user.role === "platform_admin") {
+        throw new TRPCError4({ code: "BAD_REQUEST", message: "Perfil de plataforma n\xE3o usa esta rota." });
+      }
+      const memberId = ctx.memberAccountId ?? Math.abs(ctx.user.id);
+      const companyId = ctx.accountId;
+      if (!companyId) throw new TRPCError4({ code: "FORBIDDEN", message: "Empresa n\xE3o identificada." });
+      let userName = ctx.user.name || "";
+      if (input.userName) {
+        const updated = await updateMemberProfile(memberId, { userName: input.userName });
+        userName = updated.userName;
+      }
+      if (input.avatarDataUrl !== void 0) {
+        const key = `member_avatar_${memberId}`;
+        if (!input.avatarDataUrl) {
+          await setSetting(key, "", companyId);
+        } else {
+          if (!input.avatarDataUrl.startsWith("data:image/")) {
+            throw new TRPCError4({ code: "BAD_REQUEST", message: "Imagem de perfil inv\xE1lida." });
+          }
+          await setSetting(key, input.avatarDataUrl, companyId);
+        }
+      }
+      return { success: true, userName };
+    }),
+    profileExtras: publicProcedure.use(async (opts) => {
+      if (!opts.ctx.user) throw new TRPCError4({ code: "UNAUTHORIZED", message: "Please login (10001)" });
+      return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
+    }).query(async ({ ctx }) => {
+      if (ctx.user.role === "platform_admin" || !ctx.accountId) {
+        return { avatarDataUrl: null, alertDays: 30 };
+      }
+      const memberId = ctx.memberAccountId ?? Math.abs(ctx.user.id);
+      const avatar = await getSetting(`member_avatar_${memberId}`, ctx.accountId, "");
+      const alertDays = parseInt(await getSetting("alert_days_ahead", ctx.accountId, "30"), 10) || 30;
+      return { avatarDataUrl: avatar || null, alertDays };
+    }),
+    regenerateRecoveryCode: publicProcedure.use(async (opts) => {
+      if (!opts.ctx.user) throw new TRPCError4({ code: "UNAUTHORIZED", message: "Please login (10001)" });
+      return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
+    }).input(z2.object({ currentPassword: z2.string().min(1) })).mutation(async ({ ctx, input }) => {
+      if (ctx.user.role === "platform_admin") {
+        throw new TRPCError4({ code: "BAD_REQUEST", message: "Indispon\xEDvel para admin da plataforma nesta tela." });
+      }
+      const memberId = ctx.memberAccountId ?? Math.abs(ctx.user.id);
+      const ok = await verifyMemberPassword(memberId, input.currentPassword);
+      if (!ok) throw new TRPCError4({ code: "UNAUTHORIZED", message: "Senha atual incorreta." });
+      const result = await regenerateMemberRecoveryCode(memberId);
+      return { success: true, recoveryCode: result.recoveryCode };
+    }),
+    logoutAllSessions: publicProcedure.use(async (opts) => {
+      if (!opts.ctx.user) throw new TRPCError4({ code: "UNAUTHORIZED", message: "Please login (10001)" });
+      return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
+    }).mutation(async ({ ctx }) => {
+      if (ctx.user.role === "platform_admin") return { success: true };
+      const memberId = ctx.memberAccountId ?? Math.abs(ctx.user.id);
+      await revokeAllMemberSessions(memberId);
       return { success: true };
     }),
     logout: publicProcedure.mutation(async ({ ctx }) => {
@@ -2638,7 +3189,7 @@ var appRouter = router({
         try {
           return await createCompanyWithAdmin(input);
         } catch (error) {
-          if (error?.code === "ER_DUP_ENTRY") throw new TRPCError3({ code: "CONFLICT", message: "Este e-mail j\xE1 est\xE1 cadastrado." });
+          if (error?.code === "ER_DUP_ENTRY") throw new TRPCError4({ code: "CONFLICT", message: "Este e-mail j\xE1 est\xE1 cadastrado." });
           throw error;
         }
       }),
@@ -2664,20 +3215,20 @@ var appRouter = router({
       createClient: platformProcedure.input(clientInput.extend({ companyId: z2.number().int().positive() })).mutation(async ({ input }) => {
         const { companyId, ...data } = input;
         const company = await getCompanyById(companyId);
-        if (!company || !company.active) throw new TRPCError3({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para cadastrar o cliente." });
+        if (!company || !company.active) throw new TRPCError4({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para cadastrar o cliente." });
         return { id: await createClient({ ...data, accountId: companyId, cnpj: emptyToNull(data.cnpj), address: emptyToNull(data.address), cep: emptyToNull(data.cep), phone: emptyToNull(data.phone), contactName: emptyToNull(data.contactName), cpf: emptyToNull(data.cpf), birthDate: emptyToNull(data.birthDate), notes: emptyToNull(data.notes) }) };
       }),
       createExtinguisher: platformProcedure.input(z2.object({ companyId: z2.number().int().positive(), clientId: z2.number(), typeModel: z2.string().min(1), capacity: z2.string().optional(), serialNumber: z2.string().optional(), locationInBuilding: z2.string().optional(), expirationDate: z2.string(), lastInspectionDate: z2.string().optional(), notes: z2.string().optional() })).mutation(async ({ input }) => {
         const { companyId, ...data } = input;
         const company = await getCompanyById(companyId);
-        if (!company || !company.active) throw new TRPCError3({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para cadastrar o extintor." });
+        if (!company || !company.active) throw new TRPCError4({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para cadastrar o extintor." });
         return { id: await createExtinguisher({ ...data, accountId: companyId, expirationDate: data.expirationDate, lastInspectionDate: data.lastInspectionDate || null, capacity: emptyToNull(data.capacity), serialNumber: emptyToNull(data.serialNumber), locationInBuilding: emptyToNull(data.locationInBuilding), notes: emptyToNull(data.notes) }, companyId) };
       }),
-      createOrder: platformProcedure.input(z2.object({ companyId: z2.number().int().positive(), orderNumber: z2.number().optional(), orderDate: z2.string(), clientId: z2.number(), replacedAndDelivered: z2.string().default("SIM"), leftReserve: z2.string().default("N\xC3O"), reserveDetails: z2.string().optional(), extinguisherExpiration: z2.string().optional(), licenseExpiration: z2.string().optional(), totalAmount: z2.string().default("0.00"), paymentMethod: z2.string().default("A VISTA"), installmentsCount: z2.number().default(1), installmentDates: z2.string().optional(), responsibleName: z2.string().optional(), responsibleCpf: z2.string().optional(), responsibleBirthDate: z2.string().optional(), observations: z2.string().optional(), items: z2.array(z2.object({ description: z2.string().min(1), quantity: z2.number().min(1), unitPrice: z2.string(), totalPrice: z2.string() })) })).mutation(async ({ input, ctx }) => {
+      createOrder: platformProcedure.input(z2.object({ companyId: z2.number().int().positive(), orderNumber: z2.number().optional(), orderDate: z2.string(), clientId: z2.number(), replacedAndDelivered: z2.string().default("SIM"), leftReserve: z2.string().default("N\xC3O"), reserveDetails: z2.string().optional(), extinguisherExpiration: z2.string().optional(), licenseExpiration: z2.string().optional(), totalAmount: z2.string().default("0.00"), paymentMethod: z2.string().default("A VISTA"), installmentsCount: z2.number().default(1), installmentDates: z2.string().optional(), responsibleName: z2.string().optional(), responsibleCpf: z2.string().optional(), responsibleBirthDate: z2.string().optional(), observations: z2.string().optional(), items: z2.array(z2.object({ description: z2.string().min(1), quantity: z2.number().min(1), unitPrice: z2.string(), totalPrice: z2.string(), extinguisherId: z2.number().optional() })) })).mutation(async ({ input, ctx }) => {
         const { companyId, items, ...orderData } = input;
         const company = await getCompanyById(companyId);
-        if (!company || !company.active) throw new TRPCError3({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para criar a ordem de servi\xE7o." });
-        return createServiceOrder({ ...orderData, accountId: companyId, createdByName: ctx.user.name || ctx.user.email || "Administrador geral" }, items, companyId);
+        if (!company || !company.active) throw new TRPCError4({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para criar a ordem de servi\xE7o." });
+        return createServiceOrder({ ...orderData, accountId: companyId, createdByName: ctx.user.name || ctx.user.email || "Administrador geral", createdByUserId: null }, items, companyId);
       }),
       deleteOrder: platformProcedure.input(z2.object({ companyId: z2.number().int().positive(), id: z2.number().int().positive() })).mutation(async ({ input }) => {
         await deleteServiceOrder(input.id, input.companyId);
@@ -2696,7 +3247,7 @@ var appRouter = router({
         await updateClient(id, { ...data, accountId: companyId, cnpj: emptyToNull(data.cnpj), address: emptyToNull(data.address), cep: emptyToNull(data.cep), phone: emptyToNull(data.phone), contactName: emptyToNull(data.contactName), cpf: emptyToNull(data.cpf), birthDate: emptyToNull(data.birthDate), notes: emptyToNull(data.notes) }, companyId);
         return { success: true };
       }),
-      updateOrder: platformProcedure.input(z2.object({ companyId: z2.number().int().positive(), id: z2.number().int().positive(), orderDate: z2.string(), clientId: z2.number(), replacedAndDelivered: z2.string(), leftReserve: z2.string(), reserveDetails: z2.string().optional(), extinguisherExpiration: z2.string().optional(), licenseExpiration: z2.string().optional(), totalAmount: z2.string(), paymentMethod: z2.string(), installmentsCount: z2.number(), installmentDates: z2.string().optional(), responsibleName: z2.string().optional(), responsibleCpf: z2.string().optional(), responsibleBirthDate: z2.string().optional(), observations: z2.string().optional(), items: z2.array(z2.object({ description: z2.string().min(1), quantity: z2.number().min(1), unitPrice: z2.string(), totalPrice: z2.string() })) })).mutation(async ({ input }) => {
+      updateOrder: platformProcedure.input(z2.object({ companyId: z2.number().int().positive(), id: z2.number().int().positive(), orderDate: z2.string(), clientId: z2.number(), replacedAndDelivered: z2.string(), leftReserve: z2.string(), reserveDetails: z2.string().optional(), extinguisherExpiration: z2.string().optional(), licenseExpiration: z2.string().optional(), totalAmount: z2.string(), paymentMethod: z2.string(), installmentsCount: z2.number(), installmentDates: z2.string().optional(), responsibleName: z2.string().optional(), responsibleCpf: z2.string().optional(), responsibleBirthDate: z2.string().optional(), observations: z2.string().optional(), items: z2.array(z2.object({ description: z2.string().min(1), quantity: z2.number().min(1), unitPrice: z2.string(), totalPrice: z2.string(), extinguisherId: z2.number().optional() })) })).mutation(async ({ input }) => {
         const { companyId, id, items, ...orderData } = input;
         await updateServiceOrder(id, { ...orderData, accountId: companyId }, items, companyId);
         return { success: true };
@@ -2756,6 +3307,7 @@ var appRouter = router({
     list: companyAdminProcedure.query(({ ctx }) => listMemberAccounts(ctx.accountId)),
     create: companyAdminProcedure.input(z2.object({ userName: z2.string().min(2), email: z2.string().email(), password: z2.string().min(8), role: companyUserRole })).mutation(async ({ ctx, input }) => {
       try {
+        await assertUserLimit(ctx.accountId);
         const created = await createCompanyUser({ ...input, companyId: ctx.accountId });
         void auditFromCtx(ctx, { action: "create", module: "users", entityType: "user", entityId: created.accountId, entityLabel: input.userName, description: `Usu\xE1rio criado: ${input.userName} (${input.role})`, newData: { userName: input.userName, email: input.email, role: input.role, id: created.accountId } });
         void (async () => {
@@ -2777,12 +3329,12 @@ var appRouter = router({
         })();
         return created;
       } catch (error) {
-        if (error?.code === "ER_DUP_ENTRY") throw new TRPCError3({ code: "CONFLICT", message: "Este e-mail j\xE1 est\xE1 cadastrado." });
+        if (error?.code === "ER_DUP_ENTRY") throw new TRPCError4({ code: "CONFLICT", message: "Este e-mail j\xE1 est\xE1 cadastrado." });
         throw error;
       }
     }),
     update: companyAdminProcedure.input(z2.object({ id: z2.number().int().positive(), userName: z2.string().min(2).optional(), email: z2.string().email().optional(), role: companyUserRole.optional() })).mutation(async ({ ctx, input }) => {
-      if (input.id === ctx.memberAccountId && input.role && input.role !== "company_admin") throw new TRPCError3({ code: "BAD_REQUEST", message: "O administrador n\xE3o pode remover o pr\xF3prio n\xEDvel administrativo." });
+      if (input.id === ctx.memberAccountId && input.role && input.role !== "company_admin") throw new TRPCError4({ code: "BAD_REQUEST", message: "O administrador n\xE3o pode remover o pr\xF3prio n\xEDvel administrativo." });
       const usersBefore = await listMemberAccounts(ctx.accountId);
       const beforeUser = usersBefore.find((u) => u.id === input.id) || null;
       await updateCompanyUser(input.id, ctx.accountId, { userName: input.userName, email: input.email, role: input.role });
@@ -2793,19 +3345,34 @@ var appRouter = router({
       return { success: true };
     }),
     setActive: companyAdminProcedure.input(z2.object({ id: z2.number().int().positive(), active: z2.boolean() })).mutation(async ({ ctx, input }) => {
-      if (input.id === ctx.memberAccountId && !input.active) throw new TRPCError3({ code: "BAD_REQUEST", message: "O administrador n\xE3o pode desativar a pr\xF3pria sess\xE3o." });
+      if (input.id === ctx.memberAccountId && !input.active) throw new TRPCError4({ code: "BAD_REQUEST", message: "O administrador n\xE3o pode desativar a pr\xF3pria sess\xE3o." });
       await setMemberActive(input.id, input.active, ctx.accountId);
       void auditFromCtx(ctx, { action: input.active ? "activate" : "deactivate", module: "users", entityType: "user", entityId: input.id, description: `Usu\xE1rio ${input.active ? "ativado" : "desativado"} #${input.id}`, newData: { active: input.active } });
       return { success: true };
     }),
     resetPassword: companyAdminProcedure.input(z2.object({ id: z2.number().int().positive(), newPassword: z2.string().min(8) })).mutation(async ({ ctx, input }) => {
       const users2 = await listMemberAccounts(ctx.accountId);
-      if (!users2.some((account) => account.id === input.id)) throw new TRPCError3({ code: "NOT_FOUND", message: "Usu\xE1rio n\xE3o pertence a esta empresa." });
+      if (!users2.some((account) => account.id === input.id)) throw new TRPCError4({ code: "NOT_FOUND", message: "Usu\xE1rio n\xE3o pertence a esta empresa." });
       await resetMemberPassword(input.id, input.newPassword);
       return { success: true };
     })
   }),
   dashboard: router({ stats: commercialProcedure.query(async ({ ctx }) => getDashboardStats(ctx.accountId)) }),
+  companyProfile: router({
+    updateName: companyAdminProcedure.input(z2.object({ name: z2.string().min(2).max(255) })).mutation(async ({ ctx, input }) => {
+      await updateCompany(ctx.accountId, { name: input.name.trim() });
+      void auditFromCtx(ctx, {
+        action: "update",
+        module: "company",
+        entityType: "company",
+        entityId: ctx.accountId,
+        entityLabel: input.name.trim(),
+        description: `Nome da empresa alterado para ${input.name.trim()}`,
+        newData: { name: input.name.trim() }
+      });
+      return { success: true };
+    })
+  }),
   settings: router({
     getAlertDays: commercialProcedure.query(async ({ ctx }) => parseInt(await getSetting("alert_days_ahead", ctx.accountId, "30"), 10) || 30),
     setAlertDays: companyAdminProcedure.input(z2.object({ days: z2.number().min(1).max(365) })).mutation(async ({ ctx, input }) => {
@@ -2816,24 +3383,38 @@ var appRouter = router({
     })
   }),
   clients: router({
-    list: commercialProcedure.input(z2.object({ city: z2.string().optional() }).optional()).query(async ({ ctx, input }) => getClients(input?.city, ctx.accountId)),
-    page: commercialProcedure.input(z2.object({ page: z2.number().int().positive().optional(), pageSize: z2.number().int().positive().max(100).optional(), city: z2.string().optional(), search: z2.string().optional() }).optional()).query(({ ctx, input }) => getClientsPage(ctx.accountId, input)),
+    list: commercialProcedure.input(z2.object({ city: z2.string().optional() }).optional()).query(async ({ ctx, input }) => {
+      const ownerUserId = ctx.user?.role === "company_admin" ? null : ctx.memberAccountId ?? null;
+      return getClients(input?.city, ctx.accountId, ownerUserId);
+    }),
+    page: commercialProcedure.input(z2.object({ page: z2.number().int().positive().optional(), pageSize: z2.number().int().positive().max(100).optional(), city: z2.string().optional(), search: z2.string().optional() }).optional()).query(({ ctx, input }) => {
+      const ownerUserId = ctx.user?.role === "company_admin" ? null : ctx.memberAccountId ?? null;
+      return getClientsPage(ctx.accountId, { ...input || {}, ownerUserId });
+    }),
     cities: commercialProcedure.query(async ({ ctx }) => getDistinctCities(ctx.accountId)),
     byId: commercialProcedure.input(z2.object({ id: z2.number() })).query(async ({ ctx, input }) => {
-      const client = await getClientById(input.id, ctx.accountId);
+      const ownerUserId = ctx.user?.role === "company_admin" ? null : ctx.memberAccountId ?? null;
+      const client = await getClientById(input.id, ctx.accountId, ownerUserId);
       if (!client) return { client: null, extinguishers: [], orders: [] };
-      return { client, extinguishers: await getExtinguishersByClient(input.id, ctx.accountId), orders: await getServiceOrders(input.id, ctx.accountId) };
+      return {
+        client,
+        extinguishers: await getExtinguishersByClient(input.id, ctx.accountId),
+        orders: await getServiceOrders(input.id, ctx.accountId, ownerUserId)
+      };
     }),
     create: commercialProcedure.input(clientInput).mutation(async ({ ctx, input }) => {
-      const id = await createClient({ ...input, accountId: ctx.accountId, cnpj: emptyToNull(input.cnpj), address: emptyToNull(input.address), cep: emptyToNull(input.cep), phone: emptyToNull(input.phone), contactName: emptyToNull(input.contactName), cpf: emptyToNull(input.cpf), birthDate: emptyToNull(input.birthDate), notes: emptyToNull(input.notes) });
+      await assertClientLimit(ctx.accountId);
+      const id = await createClient({ ...input, accountId: ctx.accountId, createdByUserId: ctx.memberAccountId ?? null, cnpj: emptyToNull(input.cnpj), address: emptyToNull(input.address), cep: emptyToNull(input.cep), phone: emptyToNull(input.phone), contactName: emptyToNull(input.contactName), cpf: emptyToNull(input.cpf), birthDate: emptyToNull(input.birthDate), notes: emptyToNull(input.notes) });
       void auditFromCtx(ctx, { action: "create", module: "clients", entityType: "client", entityId: id, entityLabel: input.companyName, description: `Cliente criado: ${input.companyName}`, newData: { ...input, id } });
       return { id };
     }),
     update: commercialProcedure.input(clientInput.extend({ id: z2.number() })).mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
-      const before = await getClientById(id, ctx.accountId);
+      const ownerUserId = ctx.user?.role === "company_admin" ? null : ctx.memberAccountId ?? null;
+      const before = await getClientById(id, ctx.accountId, ownerUserId);
+      if (!before) throw new TRPCError4({ code: "FORBIDDEN", message: "Cliente n\xE3o encontrado ou sem permiss\xE3o." });
       await updateClient(id, { ...data, cnpj: emptyToNull(data.cnpj), address: emptyToNull(data.address), cep: emptyToNull(data.cep), phone: emptyToNull(data.phone), contactName: emptyToNull(data.contactName), cpf: emptyToNull(data.cpf), birthDate: emptyToNull(data.birthDate), notes: emptyToNull(data.notes) }, ctx.accountId);
-      const after = await getClientById(id, ctx.accountId);
+      const after = await getClientById(id, ctx.accountId, ownerUserId);
       const diff = diffAuditData(before, after);
       void auditFromCtx(ctx, { action: "update", module: "clients", entityType: "client", entityId: id, entityLabel: after?.companyName || before?.companyName || `#${id}`, description: `Cliente atualizado: ${after?.companyName || id}`, oldData: diff.oldData, newData: diff.newData });
       return { success: true };
@@ -2857,7 +3438,8 @@ var appRouter = router({
       const days = input?.daysAhead || parseInt(await getSetting("alert_days_ahead", ctx.accountId, "30"), 10) || 30;
       return getExpiringExtinguishersPage(days, ctx.accountId, input);
     }),
-    create: commercialProcedure.input(z2.object({ clientId: z2.number(), typeModel: z2.string().min(1), capacity: z2.string().optional(), serialNumber: z2.string().optional(), locationInBuilding: z2.string().optional(), expirationDate: z2.string(), lastInspectionDate: z2.string().optional(), notes: z2.string().optional() })).mutation(async ({ ctx, input }) => {
+    create: commercialProcedure.input(z2.object({ clientId: z2.number(), typeModel: z2.string().min(1), capacity: z2.string().optional(), serialNumber: z2.string().optional(), locationInBuilding: z2.string().optional(), expirationDate: z2.string(), lastInspectionDate: z2.string().optional(), notes: z2.string().optional(), stockQuantity: z2.number().int().min(1).optional() })).mutation(async ({ ctx, input }) => {
+      await assertExtinguisherLimit(ctx.accountId);
       const id = await createExtinguisher({ ...input, accountId: ctx.accountId, expirationDate: input.expirationDate, lastInspectionDate: input.lastInspectionDate || null, capacity: emptyToNull(input.capacity), serialNumber: emptyToNull(input.serialNumber), locationInBuilding: emptyToNull(input.locationInBuilding), notes: emptyToNull(input.notes) }, ctx.accountId);
       const label = input.serialNumber || input.typeModel || `#${id}`;
       let publicToken = null;
@@ -2921,21 +3503,26 @@ var appRouter = router({
     })
   }),
   orders: router({
-    list: commercialProcedure.input(z2.object({ clientId: z2.number().optional() }).optional()).query(async ({ ctx, input }) => getServiceOrders(input?.clientId, ctx.accountId)),
-    page: commercialProcedure.input(z2.object({ page: z2.number().int().positive().optional(), pageSize: z2.number().int().positive().max(100).optional(), clientId: z2.number().int().positive().optional(), search: z2.string().optional(), city: z2.string().optional(), from: z2.string().optional(), to: z2.string().optional() }).optional()).query(({ ctx, input }) => getServiceOrdersPage(ctx.accountId, input)),
+    list: commercialProcedure.input(z2.object({ clientId: z2.number().optional() }).optional()).query(async ({ ctx, input }) => getServiceOrders(input?.clientId, ctx.accountId, ctx.user?.role === "company_admin" ? null : ctx.memberAccountId ?? null)),
+    page: commercialProcedure.input(z2.object({ page: z2.number().int().positive().optional(), pageSize: z2.number().int().positive().max(100).optional(), clientId: z2.number().int().positive().optional(), search: z2.string().optional(), city: z2.string().optional(), from: z2.string().optional(), to: z2.string().optional() }).optional()).query(({ ctx, input }) => getServiceOrdersPage(ctx.accountId, { ...input || {}, ownerUserId: ctx.user?.role === "company_admin" ? null : ctx.memberAccountId ?? null })),
     history: commercialProcedure.input(z2.object({ clientId: z2.number() })).query(async ({ ctx, input }) => getServiceOrderHistory(input.clientId, ctx.accountId)),
     nextNumber: commercialProcedure.query(async ({ ctx }) => getNextOrderNumber(ctx.accountId)),
     byId: commercialProcedure.input(z2.object({ id: z2.number() })).query(async ({ ctx, input }) => getServiceOrderById(input.id, ctx.accountId)),
-    create: commercialProcedure.input(z2.object({ orderNumber: z2.number().optional(), orderDate: z2.string(), clientId: z2.number(), replacedAndDelivered: z2.string().default("SIM"), leftReserve: z2.string().default("N\xC3O"), reserveDetails: z2.string().optional(), extinguisherExpiration: z2.string().optional(), licenseExpiration: z2.string().optional(), totalAmount: z2.string().default("0.00"), paymentMethod: z2.string().default("A VISTA"), installmentsCount: z2.number().default(1), installmentDates: z2.string().optional(), responsibleName: z2.string().optional(), responsibleCpf: z2.string().optional(), responsibleBirthDate: z2.string().optional(), observations: z2.string().optional(), items: z2.array(z2.object({ description: z2.string().min(1), quantity: z2.number().min(1), unitPrice: z2.string(), totalPrice: z2.string() })) })).mutation(async ({ ctx, input }) => {
+    create: commercialProcedure.input(z2.object({ orderNumber: z2.number().optional(), orderDate: z2.string(), clientId: z2.number(), replacedAndDelivered: z2.string().default("SIM"), leftReserve: z2.string().default("N\xC3O"), reserveDetails: z2.string().optional(), extinguisherExpiration: z2.string().optional(), licenseExpiration: z2.string().optional(), totalAmount: z2.string().default("0.00"), paymentMethod: z2.string().default("A VISTA"), installmentsCount: z2.number().default(1), installmentDates: z2.string().optional(), responsibleName: z2.string().optional(), responsibleCpf: z2.string().optional(), responsibleBirthDate: z2.string().optional(), observations: z2.string().optional(), items: z2.array(z2.object({ description: z2.string().min(1), quantity: z2.number().min(1), unitPrice: z2.string(), totalPrice: z2.string(), extinguisherId: z2.number().optional() })) })).mutation(async ({ ctx, input }) => {
+      await assertServiceOrderFeature(ctx.accountId);
       const { items, ...orderData } = input;
-      const created = await createServiceOrder({ ...orderData, accountId: ctx.accountId, createdByName: ctx.user.name || ctx.user.email || "Usu\xE1rio n\xE3o identificado" }, items, ctx.accountId);
+      const created = await createServiceOrder({ ...orderData, accountId: ctx.accountId, createdByName: ctx.user.name || ctx.user.email || "Usu\xE1rio n\xE3o identificado", createdByUserId: ctx.memberAccountId ?? null }, items, ctx.accountId);
       const orderId = typeof created === "object" && created !== null ? Number(created.id ?? created) : Number(created);
       void auditFromCtx(ctx, { action: "create", module: "orders", entityType: "order", entityId: orderId || null, entityLabel: "OS", description: "Ordem de servi\xE7o criada", newData: { ...orderData, items } });
       return created;
     }),
-    update: commercialProcedure.input(z2.object({ id: z2.number(), orderDate: z2.string(), clientId: z2.number(), replacedAndDelivered: z2.string(), leftReserve: z2.string(), reserveDetails: z2.string().optional(), extinguisherExpiration: z2.string().optional(), licenseExpiration: z2.string().optional(), totalAmount: z2.string(), paymentMethod: z2.string(), installmentsCount: z2.number(), installmentDates: z2.string().optional(), responsibleName: z2.string().optional(), responsibleCpf: z2.string().optional(), responsibleBirthDate: z2.string().optional(), observations: z2.string().optional(), items: z2.array(z2.object({ description: z2.string().min(1), quantity: z2.number().min(1), unitPrice: z2.string(), totalPrice: z2.string() })) })).mutation(async ({ ctx, input }) => {
+    update: commercialProcedure.input(z2.object({ id: z2.number(), orderDate: z2.string(), clientId: z2.number(), replacedAndDelivered: z2.string(), leftReserve: z2.string(), reserveDetails: z2.string().optional(), extinguisherExpiration: z2.string().optional(), licenseExpiration: z2.string().optional(), totalAmount: z2.string(), paymentMethod: z2.string(), installmentsCount: z2.number(), installmentDates: z2.string().optional(), responsibleName: z2.string().optional(), responsibleCpf: z2.string().optional(), responsibleBirthDate: z2.string().optional(), observations: z2.string().optional(), items: z2.array(z2.object({ description: z2.string().min(1), quantity: z2.number().min(1), unitPrice: z2.string(), totalPrice: z2.string(), extinguisherId: z2.number().optional() })) })).mutation(async ({ ctx, input }) => {
       const { id, items, ...orderData } = input;
       const before = await getServiceOrderById(id, ctx.accountId);
+      if (!before) throw new TRPCError4({ code: "NOT_FOUND", message: "Ordem n\xE3o encontrada." });
+      if (ctx.user?.role !== "company_admin" && before.createdByUserId != null && before.createdByUserId !== ctx.memberAccountId) {
+        throw new TRPCError4({ code: "FORBIDDEN", message: "Voc\xEA s\xF3 pode editar ordens que voc\xEA criou." });
+      }
       await updateServiceOrder(id, { ...orderData, accountId: ctx.accountId }, items, ctx.accountId);
       const after = await getServiceOrderById(id, ctx.accountId);
       const diff = diffAuditData(before, after);
@@ -2974,7 +3561,7 @@ var appRouter = router({
   publicExtinguisher: router({
     byToken: publicProcedure.input(z2.object({ token: z2.string().min(10).max(32) })).query(async ({ ctx, input }) => {
       const data = await getPublicExtinguisherByToken(input.token);
-      if (!data) throw new TRPCError3({ code: "NOT_FOUND", message: "Extintor n\xE3o encontrado." });
+      if (!data) throw new TRPCError4({ code: "NOT_FOUND", message: "Extintor n\xE3o encontrado." });
       const { _internalId, _accountId, ...publicFields } = data;
       const sameCompany = Boolean(ctx.accountId) && Number(ctx.accountId) === Number(_accountId) && ctx.user && ctx.user.role !== "platform_admin";
       return {
@@ -2993,7 +3580,10 @@ var appRouter = router({
       return all.filter((p) => p.active !== false);
     }),
     mySubscription: companyBillingProcedure.query(async ({ ctx }) => {
-      return resolveCompanyPlan(ctx.accountId);
+      const resolved = await resolveCompanyPlan(ctx.accountId);
+      const effective = await getEffectivePlan(ctx.accountId);
+      const plan = resolved.plan ? { ...resolved.plan, ...effective, id: effective.id ?? resolved.plan.id, name: effective.name } : effective;
+      return { ...resolved, plan, effective };
     }),
     payments: companyBillingProcedure.query(async ({ ctx }) => listPaymentsForCompany(ctx.accountId)),
     mockCheckout: companyAdminProcedure.input(z2.object({
@@ -3041,7 +3631,7 @@ var appRouter = router({
       outcome: z2.enum(["approved", "pending", "overdue", "canceled"]).default("approved")
     })).mutation(async ({ ctx, input }) => {
       if (ctx.user.role !== "company_admin") {
-        throw new TRPCError3({ code: "FORBIDDEN", message: "Somente o administrador da empresa pode assinar." });
+        throw new TRPCError4({ code: "FORBIDDEN", message: "Somente o administrador da empresa pode assinar." });
       }
       const result = await applyMockCheckout({ companyId: ctx.accountId, planId: input.planId, outcome: input.outcome });
       if (input.outcome === "approved" && ctx.user.email) {
@@ -3079,7 +3669,7 @@ var appRouter = router({
     })
   }),
   audit: router({
-    list: commercialProcedure.input(z2.object({
+    list: companyAdminProcedure.input(z2.object({
       page: z2.number().int().positive().optional(),
       pageSize: z2.number().int().positive().max(100).optional(),
       from: z2.string().optional(),
@@ -3090,23 +3680,25 @@ var appRouter = router({
       entityType: z2.string().optional(),
       entityId: z2.number().int().positive().optional(),
       search: z2.string().optional()
-    }).optional()).query(async ({ ctx, input }) => listAuditLogs({
-      companyId: ctx.accountId,
-      enforceTenant: true,
-      page: input?.page,
-      pageSize: input?.pageSize,
-      from: input?.from,
-      to: input?.to,
-      userId: input?.userId,
-      module: input?.module,
-      action: input?.action,
-      entityType: input?.entityType,
-      entityId: input?.entityId,
-      search: input?.search
-    })),
-    byId: commercialProcedure.input(z2.object({ id: z2.number().int().positive() })).query(async ({ ctx, input }) => {
+    }).optional()).query(async ({ ctx, input }) => {
+      return listAuditLogs({
+        companyId: ctx.accountId,
+        enforceTenant: true,
+        page: input?.page,
+        pageSize: input?.pageSize,
+        from: input?.from,
+        to: input?.to,
+        userId: input?.userId,
+        module: input?.module,
+        action: input?.action,
+        entityType: input?.entityType,
+        entityId: input?.entityId,
+        search: input?.search
+      });
+    }),
+    byId: companyAdminProcedure.input(z2.object({ id: z2.number().int().positive() })).query(async ({ ctx, input }) => {
       const row2 = await getAuditLogById(input.id, ctx.accountId);
-      if (!row2) throw new TRPCError3({ code: "NOT_FOUND", message: "Registro de auditoria n\xE3o encontrado." });
+      if (!row2) throw new TRPCError4({ code: "NOT_FOUND", message: "Registro de auditoria n\xE3o encontrado." });
       return row2;
     }),
     entityHistory: commercialProcedure.input(z2.object({
@@ -3322,12 +3914,12 @@ async function runScheduledMaintenance() {
   }
 }
 async function runExpirationEmailAlerts(daysAhead = 30) {
-  const { getDb: getDb2 } = await Promise.resolve().then(() => (init_db(), db_exports));
+  const { getDb: getDb3 } = await Promise.resolve().then(() => (init_db(), db_exports));
   const dbmod = await Promise.resolve().then(() => (init_db(), db_exports));
   const emailService = await Promise.resolve().then(() => (init_email(), email_exports));
   const schema = await Promise.resolve().then(() => (init_schema(), schema_exports));
-  const { eq: eq4, and: and4 } = await import("drizzle-orm");
-  const database = await getDb2();
+  const { eq: eq4, and: and3 } = await import("drizzle-orm");
+  const database = await getDb3();
   if (!database) return { companies: 0, emails: 0 };
   const companies2 = await database.select({ id: schema.companies.id, name: schema.companies.name }).from(schema.companies).where(eq4(schema.companies.active, true));
   let emails = 0;
@@ -3339,7 +3931,7 @@ async function runExpirationEmailAlerts(daysAhead = 30) {
       email: schema.memberAccounts.email,
       userName: schema.memberAccounts.userName
     }).from(schema.memberAccounts).where(
-      and4(
+      and3(
         eq4(schema.memberAccounts.companyId, company.id),
         eq4(schema.memberAccounts.active, true),
         eq4(schema.memberAccounts.role, "company_admin")

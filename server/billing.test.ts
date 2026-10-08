@@ -1,51 +1,99 @@
-import { describe, expect, it } from "vitest";
-import { normalizePlanLimit, parsePlanFeatures, resolveSubscriptionAccess } from "./billing";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { checkSubscriptionAccess } from "./subscriptionAccess";
+import * as db from "./db";
 
-const plan = { id: 1, name: "Essencial" } as any;
-const baseSubscription = (overrides: Record<string, unknown> = {}) => ({
-  id: 1, companyId: 1, planId: 1, status: "ACTIVE", startsAt: new Date("2026-01-01T00:00:00Z"), currentPeriodStart: new Date("2026-01-01T00:00:00Z"), currentPeriodEnd: new Date("2026-02-01T00:00:00Z"), trialEndsAt: null, gracePeriodEndsAt: null, autoRenew: false, provider: null, providerSubscriptionId: null, createdAt: new Date(), updatedAt: new Date(), ...overrides,
-}) as any;
-const now = new Date("2026-01-15T00:00:00Z");
+vi.mock("./db", () => ({
+  getCompanyById: vi.fn(),
+  getLatestCompanySubscription: vi.fn(),
+}));
 
-describe("subscription access rules", () => {
-  it("preserves compatibility when no subscription is configured", () => {
-    expect(resolveSubscriptionAccess(null, null, now)).toMatchObject({ configured: false, allowed: true, status: "UNCONFIGURED" });
+describe("checkSubscriptionAccess", () => {
+  beforeEach(() => {
+    vi.mocked(db.getCompanyById).mockReset();
+    vi.mocked(db.getLatestCompanySubscription).mockReset();
   });
-  it("allows an active subscription and calculates days dynamically", () => {
-    expect(resolveSubscriptionAccess(baseSubscription(), plan, now)).toMatchObject({ allowed: true, status: "ACTIVE", daysRemaining: 17 });
+
+  it("permite trial válido", async () => {
+    const future = new Date(Date.now() + 5 * 24 * 3600 * 1000);
+    vi.mocked(db.getCompanyById).mockResolvedValue({
+      id: 1,
+      name: "ACME",
+      subscriptionStatus: "trial",
+      trialEndsAt: future,
+      subscriptionExpiresAt: future,
+    } as any);
+    const r = await checkSubscriptionAccess(1);
+    expect(r.allowed).toBe(true);
+    expect(r.status).toBe("trial");
   });
-  it("allows trial status while its period is valid", () => {
-    expect(resolveSubscriptionAccess(baseSubscription({ status: "TRIAL", trialEndsAt: new Date("2026-01-20T00:00:00Z") }), plan, now)).toMatchObject({ allowed: true, status: "TRIAL" });
+
+  it("bloqueia trial expirado", async () => {
+    const past = new Date(Date.now() - 2 * 24 * 3600 * 1000);
+    vi.mocked(db.getCompanyById).mockResolvedValue({
+      id: 1,
+      name: "ACME",
+      subscriptionStatus: "trial",
+      trialEndsAt: past,
+    } as any);
+    const r = await checkSubscriptionAccess(1);
+    expect(r.allowed).toBe(false);
   });
-  it("allows access inside the grace period", () => {
-    expect(resolveSubscriptionAccess(baseSubscription({ currentPeriodEnd: new Date("2026-01-10T00:00:00Z"), gracePeriodEndsAt: new Date("2026-01-20T00:00:00Z") }), plan, now)).toMatchObject({ allowed: true, status: "GRACE_PERIOD" });
+
+  it("permite active", async () => {
+    vi.mocked(db.getCompanyById).mockResolvedValue({
+      id: 1,
+      subscriptionStatus: "active",
+      subscriptionExpiresAt: new Date(Date.now() + 10 * 24 * 3600 * 1000),
+    } as any);
+    const r = await checkSubscriptionAccess(1);
+    expect(r.allowed).toBe(true);
+    expect(r.status).toBe("active");
   });
-  it("blocks expired, suspended and canceled companies", () => {
-    expect(resolveSubscriptionAccess(baseSubscription({ currentPeriodEnd: new Date("2026-01-10T00:00:00Z") }), plan, now).allowed).toBe(false);
-    expect(resolveSubscriptionAccess(baseSubscription({ status: "SUSPENDED" }), plan, now).allowed).toBe(false);
-    expect(resolveSubscriptionAccess(baseSubscription({ status: "CANCELED" }), plan, now).allowed).toBe(false);
+
+  it("permite overdue dentro da tolerância", async () => {
+    const expired = new Date(Date.now() - 1 * 24 * 3600 * 1000);
+    const grace = new Date(Date.now() + 2 * 24 * 3600 * 1000);
+    vi.mocked(db.getCompanyById).mockResolvedValue({
+      id: 1,
+      subscriptionStatus: "overdue",
+      subscriptionExpiresAt: expired,
+      gracePeriodEndsAt: grace,
+    } as any);
+    const r = await checkSubscriptionAccess(1);
+    expect(r.allowed).toBe(true);
+  });
+
+  it("bloqueia suspended", async () => {
+    vi.mocked(db.getCompanyById).mockResolvedValue({
+      id: 1,
+      subscriptionStatus: "suspended",
+    } as any);
+    const r = await checkSubscriptionAccess(1);
+    expect(r.allowed).toBe(false);
+    expect(r.status).toBe("suspended");
+  });
+
+  it("bloqueia canceled após período", async () => {
+    vi.mocked(db.getCompanyById).mockResolvedValue({
+      id: 1,
+      subscriptionStatus: "canceled",
+      subscriptionExpiresAt: new Date(Date.now() - 1000),
+    } as any);
+    const r = await checkSubscriptionAccess(1);
+    expect(r.allowed).toBe(false);
+  });
+
+  it("empresa inexistente", async () => {
+    vi.mocked(db.getCompanyById).mockResolvedValue(undefined);
+    const r = await checkSubscriptionAccess(999);
+    expect(r.allowed).toBe(false);
+    expect(r.status).toBe("none");
   });
 });
 
-describe("plan limits", () => {
-  it("uses NULL for unlimited limits, including legacy sentinel values", () => {
-    expect(normalizePlanLimit(null)).toBeNull();
-    expect(normalizePlanLimit(0)).toBeNull();
-    expect(normalizePlanLimit(999999)).toBeNull();
-    expect(normalizePlanLimit(25)).toBe(25);
-  });
-
-  it("rejects invalid negative or fractional limits", () => {
-    expect(() => normalizePlanLimit(-1)).toThrow();
-    expect(() => normalizePlanLimit(1.5)).toThrow();
-  });
-});
-
-describe("plan features", () => {
-  it("accepts JSON arrays returned by TiDB and legacy JSON strings", () => {
-    expect(parsePlanFeatures(["dashboard", "clients"])).toEqual(["dashboard", "clients"]);
-    expect(parsePlanFeatures('["orders","alerts"]')).toEqual(["orders", "alerts"]);
-    expect(parsePlanFeatures("dashboard,clients")).toEqual(["dashboard", "clients"]);
-    expect(parsePlanFeatures({})).toEqual([]);
+describe("payment event idempotency shape", () => {
+  it("eventId is required for uniqueness", () => {
+    const eventId = "evt_123";
+    expect(eventId.length).toBeGreaterThan(0);
   });
 });

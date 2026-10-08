@@ -88,7 +88,7 @@ export function useAuth(options?: UseAuthOptions) {
       if (!isOffline) await utils.auth.me.invalidate();
       // Volta para a landing (login no modal da página inicial)
       if (typeof window !== "undefined") {
-        window.location.replace("/landing-site.html?from=logout");
+        window.location.replace("/landing-site.html");
       }
     }
   }, [isOffline, logoutMutation, utils]);
