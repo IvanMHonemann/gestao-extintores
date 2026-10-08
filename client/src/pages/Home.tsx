@@ -168,7 +168,10 @@ export default function Home() {
     staleTime: 60_000,
   });
   const clientsPageQuery = trpc.clients.page.useQuery(clientPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin), staleTime: 30_000 });
-  const allExtinguishersQuery = trpc.extinguishers.list.useQuery(undefined, { enabled: false });
+  const allExtinguishersQuery = trpc.extinguishers.list.useQuery(undefined, {
+    enabled: Boolean(tenantKey && !isPlatformAdmin && (isOrderModalOpen || isExtinguisherModalOpen || activeTab === "extinguishers")),
+    staleTime: 15_000,
+  });
   const alertsQuery = trpc.extinguishers.alerts.useQuery(undefined, { enabled: false });
   const ordersQuery = trpc.orders.list.useQuery(undefined, { enabled: false });
   const ordersPageQuery = trpc.orders.page.useQuery(orderPageInput, { enabled: Boolean(tenantKey && !isPlatformAdmin), staleTime: 30_000 });
@@ -492,15 +495,16 @@ export default function Home() {
   });
 
   const createExtinguisherMutation = trpc.extinguishers.create.useMutation({
-    onSuccess: (result, input) => {
+    onSuccess: async (result, input) => {
       toast.success("Extintor registrado com sucesso!");
       setIsExtinguisherModalOpen(false);
       setEditingExtinguisherId(null);
-      utils.extinguishers.invalidate();
-      utils.clients.invalidate();
-      utils.dashboard.stats.invalidate();
+      await Promise.all([
+        utils.extinguishers.invalidate(),
+        utils.clients.invalidate(),
+        utils.dashboard.stats.invalidate(),
+      ]);
       if (returnToOrderAfterExtinguisher && result?.id) {
-        const qty = Number((input as any).stockQuantity) || 1;
         setOrderForm((prev) => ({
           ...prev,
           clientId: prev.clientId || input.clientId,
@@ -510,7 +514,6 @@ export default function Home() {
             unitPrice: "45.00",
             totalPrice: "45.00",
             extinguisherId: result.id,
-            stockQuantity: qty,
           }],
         }));
         setReturnToOrderAfterExtinguisher(false);
@@ -781,6 +784,7 @@ export default function Home() {
               expirationDate: asDate(payload.expirationDate) || new Date().toISOString().slice(0, 10),
               lastInspectionDate: asDate(payload.lastInspectionDate),
               notes: payload.notes || undefined,
+              stockQuantity: Math.max(1, Number(payload.stockQuantity) || 1),
             };
             Object.keys(payload).forEach((key) => delete payload[key]);
             Object.assign(payload, picked);
@@ -924,7 +928,7 @@ export default function Home() {
     responsibleBirthDate: "",
     observations: "",
     items: [
-      { description: "", quantity: 1, unitPrice: "45.00", totalPrice: "45.00", extinguisherId: 0 },
+      { description: "Serviço", quantity: 1, unitPrice: "45.00", totalPrice: "45.00", extinguisherId: 0 },
     ],
   });
 
@@ -947,7 +951,7 @@ export default function Home() {
       ...orderForm,
       items: [
         ...orderForm.items,
-        { description: "", quantity: 1, unitPrice: "45.00", totalPrice: "45.00", extinguisherId: 0 },
+        { description: "Serviço", quantity: 1, unitPrice: "45.00", totalPrice: "45.00", extinguisherId: 0 },
       ],
     });
   };
@@ -2441,6 +2445,7 @@ export default function Home() {
                     expirationDate: extinguisherForm.expirationDate,
                     lastInspectionDate: extinguisherForm.lastInspectionDate || undefined,
                     notes: extinguisherForm.notes || undefined,
+                    stockQuantity: Math.max(1, Number(extinguisherForm.stockQuantity) || 1),
                   };
                   if (!offline.isOnline || !navigator.onLine) {
                     void (async () => {
@@ -2801,10 +2806,6 @@ export default function Home() {
                   const payload = { ...orderForm, totalAmount: calculatedTotalOrder };
                   if (!payload.clientId) {
                     toast.error("Selecione o cliente da OS.");
-                    return;
-                  }
-                  if (payload.items.some((item: any) => !item.extinguisherId)) {
-                    toast.error("Selecione o extintor do estoque em cada linha da OS.");
                     return;
                   }
                   if (!offline.isOnline || !navigator.onLine) {

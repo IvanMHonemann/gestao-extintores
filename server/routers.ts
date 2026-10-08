@@ -558,7 +558,7 @@ export const appRouter = router({
       });
       return result;
     }),
-    update: commercialProcedure.input(z.object({ id: z.number(), typeModel: z.string().min(1), capacity: z.string().optional(), serialNumber: z.string().optional(), locationInBuilding: z.string().optional(), expirationDate: z.string(), lastInspectionDate: z.string().optional(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
+    update: commercialProcedure.input(z.object({ id: z.number(), typeModel: z.string().min(1), capacity: z.string().optional(), serialNumber: z.string().optional(), locationInBuilding: z.string().optional(), expirationDate: z.string(), lastInspectionDate: z.string().optional(), notes: z.string().optional(), stockQuantity: z.number().int().min(1).optional() })).mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
       const rowsBefore = await db.getExtinguishers(ctx.accountId);
       const before = (rowsBefore as any[]).find((e: any) => e.id === id) || null;
@@ -817,7 +817,7 @@ export const appRouter = router({
           module: input?.module, action: input?.action,
           entityType: input?.entityType, entityId: input?.entityId, search: input?.search,
         });
-        return { csv, contentType: "text/csv; charset=utf-8", filename: `auditoria-${ctx.accountId}.csv` } as const;
+        return { csv, contentType: "text/csv;charset=utf-8", filename: `auditoria-${ctx.accountId}.csv` } as const;
       }),
     platformList: platformProcedure
       .input(z.object({

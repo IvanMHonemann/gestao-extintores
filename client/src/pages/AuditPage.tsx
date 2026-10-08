@@ -174,16 +174,22 @@ export default function AuditPage() {
       setExportPhase("downloading");
       toast.loading("Iniciando download…", { id: "audit-csv-export" });
       try {
-        const blob = new Blob([data.csv], { type: data.contentType || "text/csv; charset=utf-8" });
-        const url = URL.createObjectURL(blob);
+        const csv = `\ufeff${data.csv || ""}`;
+        const blob = new Blob([csv], { type: data.contentType || "text/csv;charset=utf-8" });
+        const url = typeof URL.createObjectURL === "function"
+          ? URL.createObjectURL(blob)
+          : `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
         const a = document.createElement("a");
         a.href = url;
         a.download = data.filename || "auditoria.csv";
         a.rel = "noopener";
+        a.style.display = "none";
         document.body.appendChild(a);
         a.click();
         a.remove();
-        window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+        if (url.startsWith("blob:") && typeof URL.revokeObjectURL === "function") {
+          window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+        }
         setExportPhase("done");
         toast.success("Download do CSV iniciado.", { id: "audit-csv-export" });
       } catch (err) {
