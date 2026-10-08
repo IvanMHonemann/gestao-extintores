@@ -511,7 +511,7 @@ export default function Home() {
       if (returnToOrderAfterExtinguisher && result?.id) {
         setOrderForm((prev) => ({
           ...prev,
-          clientId: prev.clientId || input.clientId,
+          clientId: prev.clientId || input.clientId || 0,
           items: [...prev.items.filter((item) => item.description.trim()), {
             description: `Extintor ${input.typeModel}${input.capacity ? ` ${input.capacity}` : ""}`,
             quantity: 1,
@@ -533,7 +533,7 @@ export default function Home() {
         if (returnToOrderAfterExtinguisher) {
           setOrderForm((prev) => ({
             ...prev,
-            clientId: prev.clientId || input.clientId,
+            clientId: prev.clientId || input.clientId || 0,
             items: [...prev.items.filter((item) => item.description.trim()), {
               description: `Extintor ${input.typeModel}${input.capacity ? ` ${input.capacity}` : ""}`,
               quantity: 1,
@@ -821,7 +821,7 @@ export default function Home() {
           }
           if (mutation.entity === "extinguisher" && mutation.action === "create") {
             const picked: any = {
-              clientId: Number(payload.clientId),
+              clientId: Number(payload.clientId) > 0 ? Number(payload.clientId) : undefined,
               typeModel: String(payload.typeModel || "PQS"),
               capacity: payload.capacity || undefined,
               serialNumber: payload.serialNumber || undefined,
@@ -913,7 +913,6 @@ export default function Home() {
       if (!cancelled) {
         setLastSyncResult({ ok, failed });
         setSyncProgress({ done: ok, total: queued.length, failed, pending: Math.max(queued.length - ok - failed, 0) });
-        setIsSyncingOffline(false);
         suppressOrderPreviewRef.current = false;
         setViewingOrderId((current) => (current != null && current < 0 ? null : current));
         setPlatformOrderPreview((current: any) => (current?.id < 0 ? null : current));
@@ -932,7 +931,13 @@ export default function Home() {
             alerts: serverAlerts as any,
             preserveExisting: false,
           });
-          await utils.dashboard.stats.invalidate();
+          await Promise.all([
+            utils.dashboard.stats.invalidate(),
+            utils.offline.snapshot.invalidate(),
+            utils.clients.list.invalidate(),
+            utils.extinguishers.list.invalidate(),
+            utils.orders.list.invalidate(),
+          ]);
           const remaining = (await offlineDb.mutations.where("tenantKey").equals(tenantKey).toArray())
             .filter((mutation) => (mutation.state || "pending") === "pending" || mutation.state === "failed").length;
           setSyncProgress((current) => ({ ...current, pending: remaining }));
@@ -941,6 +946,9 @@ export default function Home() {
           console.warn("[offline] Não foi possível espelhar o snapshot após a sincronização", mirrorError);
           toast.error("Sincronização concluída, mas o espelho local será atualizado na próxima tentativa.");
         }
+        setSyncProgress((current) => ({ ...current, done: ok, failed, pending: 0 }));
+        setLastSyncResult({ ok, failed });
+        setIsSyncingOffline(false);
         if (failed) toast.error(lastError ? `Falha ao sincronizar: ${lastError}` : `${failed} operação(ões) não sincronizaram.`);
       }
     })().finally(() => {
@@ -1075,7 +1083,7 @@ export default function Home() {
     await offlineDb.clients.put({ ...input, id, tenantKey, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
     return id;
   };
-  const saveOfflineExtinguisher = async (input: Partial<typeof extinguisherForm> & { clientId: number; typeModel: string; expirationDate: string }) => {
+  const saveOfflineExtinguisher = async (input: Partial<typeof extinguisherForm> & { clientId?: number; typeModel: string; expirationDate: string }) => {
     if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
     const id = offlineId();
     const expiration = new Date(`${input.expirationDate}T12:00:00`);
@@ -1176,13 +1184,28 @@ export default function Home() {
     toast.success("OS excluída no dispositivo (offline). Será sincronizada ao reconectar.");
   };
 
-  const saveExtinguisherOfflineAndQueue = async (input: Partial<typeof extinguisherForm> & { clientId: number; typeModel: string; expirationDate: string }) => {
+  const saveExtinguisherOfflineAndQueue = async (input: Partial<typeof extinguisherForm> & { clientId?: number; typeModel: string; expirationDate: string }) => {
     if (!tenantKey) throw new Error("Não há empresa associada para salvar offline.");
     const localId = await saveOfflineExtinguisher(input);
     await queueOfflineMutation({ tenantKey, entity: "extinguisher", action: "create", payload: { ...input, localId } });
     toast.success("Extintor salvo no dispositivo (offline). Será sincronizado ao reconectar.");
     setIsExtinguisherModalOpen(false);
     setEditingExtinguisherId(null);
+    if (returnToOrderAfterExtinguisher) {
+      setOrderForm((prev) => ({
+        ...prev,
+        clientId: prev.clientId || input.clientId || 0,
+        items: [...prev.items.filter((item) => item.description.trim()), {
+          description: `Extintor ${input.typeModel}${input.capacity ? ` ${input.capacity}` : ""}`,
+          quantity: 1,
+          unitPrice: "45.00",
+          totalPrice: "45.00",
+          extinguisherId: localId,
+        }],
+      }));
+      setReturnToOrderAfterExtinguisher(false);
+      setIsOrderModalOpen(true);
+    }
     return localId;
   };
 
@@ -1230,9 +1253,14 @@ export default function Home() {
   const openOrderEditor = async (id: number) => {
     try {
       const listedOrder = (paginatedOrders || []).find((entry: any) => entry.order.id === id)?.order;
-      const detail: any = isPlatformAdmin
-        ? (await utils.platform.data.history.fetch({ companyId: listedOrder?.accountId, clientId: listedOrder?.clientId })).find((entry: any) => entry.order.id === id)
-        : await utils.orders.byId.fetch({ id });
+      const localOrder = !offline.isOnline
+        ? (await offlineDb.orders.get(id))
+        : undefined;
+      const detail: any = !offline.isOnline && (localOrder || listedOrder)
+        ? { ...(localOrder?.order || listedOrder), client: localOrder?.client, items: localOrder?.order?.items || listedOrder?.items || [] }
+        : isPlatformAdmin
+          ? (await utils.platform.data.history.fetch({ companyId: listedOrder?.accountId, clientId: listedOrder?.clientId })).find((entry: any) => entry.order.id === id)
+          : await utils.orders.byId.fetch({ id });
       if (!detail) throw new Error("OS não encontrada");
       const order = isPlatformAdmin ? detail.order : detail;
       const orderClient = isPlatformAdmin ? detail.client : detail.client;
@@ -1258,6 +1286,7 @@ export default function Home() {
           quantity: Number(item.quantity) || 1,
           unitPrice: String(item.unitPrice || "0.00"),
           totalPrice: String(item.totalPrice || "0.00"),
+          extinguisherId: item.extinguisherId || 0,
         })),
       });
       setIsOrderModalOpen(true);
@@ -1860,7 +1889,7 @@ export default function Home() {
             onEdit={(ext) => {
               setEditingExtinguisherId(ext.id);
               setExtinguisherForm({
-                clientId: ext.clientId,
+                clientId: ext.clientId || 0,
                 typeModel: ext.typeModel || "PQS ABC 4kg",
                 capacity: ext.capacity || "",
                 serialNumber: ext.serialNumber || "",
@@ -2392,15 +2421,16 @@ export default function Home() {
 
           <div className="space-y-3 py-2 text-xs">
             <div>
-              <label className="font-bold block mb-1">Cliente Vinculado</label>
+              <label className="font-bold block mb-1">Cliente Vinculado <span className="font-normal text-slate-500">(opcional)</span></label>
               <Select
                 value={extinguisherForm.clientId ? String(extinguisherForm.clientId) : ""}
                 onValueChange={(val) => setExtinguisherForm({ ...extinguisherForm, clientId: Number(val) })}
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder={clientsQuery.isLoading ? "Carregando clientes…" : "Selecione um cliente"} />
+                  <SelectValue placeholder={clientsQuery.isLoading ? "Carregando clientes…" : "Estoque geral da empresa"} />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="0">Estoque geral da empresa</SelectItem>
                   {(selectClients || []).map((c: any) => (
                     <SelectItem key={c.id} value={String(c.id)}>
                       {c.companyName} ({c.city})
@@ -2413,7 +2443,7 @@ export default function Home() {
               )}
               {!clientsQuery.isLoading && (!selectClients || selectClients.length === 0) && (
                 <p className="mt-1 text-[11px] text-amber-700">
-                  Nenhum cliente encontrado. Cadastre um cliente antes de vincular o extintor.
+                  Nenhum cliente encontrado. O extintor será cadastrado no estoque geral da empresa.
                 </p>
               )}
             </div>
@@ -2500,10 +2530,6 @@ export default function Home() {
             <Button
               className="bg-red-600 hover:bg-red-700 text-white font-semibold"
               onClick={() => {
-                if (!extinguisherForm.clientId) {
-                  toast.error("Selecione o cliente!");
-                  return;
-                }
                 if (!extinguisherForm.expirationDate) {
                   toast.error("Informe a data de vencimento!");
                   return;
@@ -2541,13 +2567,13 @@ export default function Home() {
                     toast.error("Selecione a empresa responsável pelo extintor.");
                     return;
                   }
-                  platformCreateExtinguisherMutation.mutate({ ...extinguisherForm, companyId: selectedCompanyId });
+                  platformCreateExtinguisherMutation.mutate({ ...extinguisherForm, clientId: extinguisherForm.clientId || undefined, companyId: selectedCompanyId });
                 } else if (!offline.isOnline || !navigator.onLine) {
-                  void saveExtinguisherOfflineAndQueue(extinguisherForm).catch((error) =>
+                  void saveExtinguisherOfflineAndQueue({ ...extinguisherForm, clientId: extinguisherForm.clientId || undefined }).catch((error) =>
                     toast.error(error instanceof Error ? error.message : "Não foi possível salvar o extintor offline."),
                   );
                 } else {
-                  createExtinguisherMutation.mutate(extinguisherForm);
+                  createExtinguisherMutation.mutate({ ...extinguisherForm, clientId: extinguisherForm.clientId || undefined });
                 }
               }}
             >
@@ -2616,8 +2642,7 @@ export default function Home() {
               <div className="border-b border-slate-200 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-500">
                 Escolha um extintor do estoque. A quantidade da OS baixa o estoque ao salvar. Se não houver estoque, cadastre um extintor e ele entra nesta OS.
               </div>
-              {effectiveExtinguishers.filter((ext: any) => Number(ext.stockQuantity ?? 1) > 0).length === 0 && (
-                <div className="px-3 py-3">
+              <div className="px-3 py-3">
                   <Button type="button" className="bg-red-600 text-white hover:bg-red-700" onClick={() => {
                     if (!orderForm.clientId) { toast.error("Selecione o cliente da OS antes de cadastrar o extintor."); return; }
                     setExtinguisherForm((prev) => ({ ...prev, clientId: orderForm.clientId, stockQuantity: 1 }));
@@ -2625,8 +2650,7 @@ export default function Home() {
                     setIsOrderModalOpen(false);
                     setIsExtinguisherModalOpen(true);
                   }}>Cadastrar extintor e adicionar na OS</Button>
-                </div>
-              )}
+              </div>
               <div className="hidden grid-cols-[minmax(0,1fr)_70px_110px_110px_32px] gap-2 bg-slate-50 px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:grid">
                 <span>Descrição do serviço / modelo</span><span className="text-center">Qtd.</span><span className="text-right">Valor unitário</span><span className="text-right">Total calculado</span><span />
               </div>

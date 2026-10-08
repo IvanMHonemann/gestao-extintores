@@ -29,7 +29,7 @@ type Filter = "all" | "active" | "near" | "expired";
 
 export type ExtinguisherListItem = {
   id: number;
-  clientId: number;
+  clientId?: number | null;
   typeModel: string;
   capacity?: string | null;
   serialNumber?: string | null;
@@ -38,6 +38,7 @@ export type ExtinguisherListItem = {
   lastInspectionDate?: string | Date | null;
   status?: string;
   notes?: string | null;
+  stockQuantity?: number;
   publicToken?: string | null;
   clientName?: string;
   clientCity?: string;
@@ -110,6 +111,7 @@ export function ExtinguishersPanel({
         lastInspectionDate: e.lastInspectionDate,
         status: e.status,
         notes: e.notes,
+        stockQuantity: e.stockQuantity ?? 1,
         publicToken: e.publicToken,
         clientName: c?.companyName || row.clientName,
         clientCity: c?.city || row.clientCity,
@@ -231,6 +233,7 @@ export function ExtinguishersPanel({
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-slate-600">
                         <span className="font-mono">{label}</span>
+                        <span className="font-semibold text-slate-800">Estoque: {ext.stockQuantity ?? 1}</span>
                         {ext.clientName && (
                           <span className="flex items-center gap-1">
                             <MapPin className="h-3 w-3 text-slate-400" />
@@ -238,6 +241,7 @@ export function ExtinguishersPanel({
                             {ext.clientCity ? ` · ${ext.clientCity}` : ""}
                           </span>
                         )}
+                        {!ext.clientName && <span className="font-semibold text-slate-700">Estoque geral da empresa</span>}
                         <span>Local: {ext.locationInBuilding || "—"}</span>
                         <span>Validade: {formatDate(ext.expirationDate)}</span>
                         <span>Últ. inspeção: {formatDate(ext.lastInspectionDate)}</span>

@@ -134,7 +134,7 @@ export type InsertClient = typeof clients.$inferInsert;
 export const extinguishers = mysqlTable("extinguishers", {
   id: int("id").autoincrement().primaryKey(),
   accountId: int("accountId").notNull().references(() => companies.id, { onDelete: "restrict" }),
-  clientId: int("clientId").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  clientId: int("clientId").references(() => clients.id, { onDelete: "cascade" }),
   /** Token público opaco para QR Code (/e/:token). Nunca sequencial. */
   publicToken: varchar("publicToken", { length: 32 }),
   typeModel: varchar("typeModel", { length: 100 }).notNull(),

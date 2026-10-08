@@ -133,7 +133,7 @@ var init_schema = __esm({
     extinguishers = mysqlTable("extinguishers", {
       id: int("id").autoincrement().primaryKey(),
       accountId: int("accountId").notNull().references(() => companies.id, { onDelete: "restrict" }),
-      clientId: int("clientId").notNull().references(() => clients.id, { onDelete: "cascade" }),
+      clientId: int("clientId").references(() => clients.id, { onDelete: "cascade" }),
       /** Token público opaco para QR Code (/e/:token). Nunca sequencial. */
       publicToken: varchar("publicToken", { length: 32 }),
       typeModel: varchar("typeModel", { length: 100 }).notNull(),
@@ -468,6 +468,7 @@ async function ensureOwnerScopeColumns() {
     await pool.query("ALTER TABLE `clients` ADD COLUMN `createdByUserId` int NULL").catch(() => void 0);
     await pool.query("ALTER TABLE `service_orders` ADD COLUMN `createdByUserId` int NULL").catch(() => void 0);
     await pool.query("ALTER TABLE `extinguishers` ADD COLUMN `stockQuantity` int NOT NULL DEFAULT 1").catch(() => void 0);
+    await pool.query("ALTER TABLE `extinguishers` MODIFY COLUMN `clientId` int NULL").catch(() => void 0);
     await pool.query("ALTER TABLE `clients` ADD COLUMN `stockQuantity` int NOT NULL DEFAULT 1").catch(() => void 0);
     ownerScopeReady = true;
   } catch (err) {
@@ -732,7 +733,7 @@ async function getExtinguishersPage(accountId, options = {}) {
   if (options.filter === "near") conditions.push(sql`${extinguishers.expirationDate} >= CURRENT_DATE() AND ${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL 30 DAY)`);
   const where = and(...conditions);
   const [items, totalRows] = await Promise.all([
-    db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).innerJoin(clients, eq(extinguishers.clientId, clients.id)).where(and(where, eq(clients.accountId, tenant))).orderBy(extinguishers.expirationDate, desc(extinguishers.id)).limit(pageSize).offset(offset),
+    db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).leftJoin(clients, eq(extinguishers.clientId, clients.id)).where(and(where, or(isNull(clients.accountId), eq(clients.accountId, tenant)))).orderBy(extinguishers.expirationDate, desc(extinguishers.id)).limit(pageSize).offset(offset),
     db.select({ total: sql`count(*)` }).from(extinguishers).where(where)
   ]);
   return pageResult(items, Number(totalRows[0]?.total || 0), page, pageSize);
@@ -763,7 +764,8 @@ async function createExtinguisher(data, accountId) {
   await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  if (data.accountId !== tenant || !await getClientById(data.clientId, tenant)) throw new Error("Cliente sem permiss\xE3o");
+  if (data.accountId !== tenant) throw new Error("Empresa sem permiss\xE3o");
+  if (data.clientId != null && !await getClientById(data.clientId, tenant)) throw new Error("Cliente sem permiss\xE3o");
   const publicToken = data.publicToken?.trim() || generateExtinguisherPublicToken();
   const result = await db.insert(extinguishers).values({ ...data, accountId: tenant, publicToken });
   return Number(result[0].insertId);
@@ -3222,7 +3224,7 @@ var appRouter = router({
         if (!company || !company.active) throw new TRPCError4({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para cadastrar o cliente." });
         return { id: await createClient({ ...data, accountId: companyId, cnpj: emptyToNull(data.cnpj), address: emptyToNull(data.address), cep: emptyToNull(data.cep), phone: emptyToNull(data.phone), contactName: emptyToNull(data.contactName), cpf: emptyToNull(data.cpf), birthDate: emptyToNull(data.birthDate), notes: emptyToNull(data.notes) }) };
       }),
-      createExtinguisher: platformProcedure.input(z2.object({ companyId: z2.number().int().positive(), clientId: z2.number(), typeModel: z2.string().min(1), capacity: z2.string().optional(), serialNumber: z2.string().optional(), locationInBuilding: z2.string().optional(), expirationDate: z2.string(), lastInspectionDate: z2.string().optional(), notes: z2.string().optional() })).mutation(async ({ input }) => {
+      createExtinguisher: platformProcedure.input(z2.object({ companyId: z2.number().int().positive(), clientId: z2.number().int().positive().optional(), typeModel: z2.string().min(1), capacity: z2.string().optional(), serialNumber: z2.string().optional(), locationInBuilding: z2.string().optional(), expirationDate: z2.string(), lastInspectionDate: z2.string().optional(), notes: z2.string().optional(), stockQuantity: z2.number().int().min(1).optional() })).mutation(async ({ input }) => {
         const { companyId, ...data } = input;
         const company = await getCompanyById(companyId);
         if (!company || !company.active) throw new TRPCError4({ code: "BAD_REQUEST", message: "Selecione uma empresa ativa para cadastrar o extintor." });
@@ -3442,7 +3444,7 @@ var appRouter = router({
       const days = input?.daysAhead || parseInt(await getSetting("alert_days_ahead", ctx.accountId, "30"), 10) || 30;
       return getExpiringExtinguishersPage(days, ctx.accountId, input);
     }),
-    create: commercialProcedure.input(z2.object({ clientId: z2.number(), typeModel: z2.string().min(1), capacity: z2.string().optional(), serialNumber: z2.string().optional(), locationInBuilding: z2.string().optional(), expirationDate: z2.string(), lastInspectionDate: z2.string().optional(), notes: z2.string().optional(), stockQuantity: z2.number().int().min(1).optional() })).mutation(async ({ ctx, input }) => {
+    create: commercialProcedure.input(z2.object({ clientId: z2.number().int().positive().optional(), typeModel: z2.string().min(1), capacity: z2.string().optional(), serialNumber: z2.string().optional(), locationInBuilding: z2.string().optional(), expirationDate: z2.string(), lastInspectionDate: z2.string().optional(), notes: z2.string().optional(), stockQuantity: z2.number().int().min(1).optional() })).mutation(async ({ ctx, input }) => {
       await assertExtinguisherLimit(ctx.accountId);
       const id = await createExtinguisher({ ...input, accountId: ctx.accountId, expirationDate: input.expirationDate, lastInspectionDate: input.lastInspectionDate || null, capacity: emptyToNull(input.capacity), serialNumber: emptyToNull(input.serialNumber), locationInBuilding: emptyToNull(input.locationInBuilding), notes: emptyToNull(input.notes) }, ctx.accountId);
       const label = input.serialNumber || input.typeModel || `#${id}`;

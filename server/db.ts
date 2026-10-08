@@ -73,6 +73,7 @@ export async function ensureOwnerScopeColumns() {
     await pool.query("ALTER TABLE `clients` ADD COLUMN `createdByUserId` int NULL").catch(() => undefined);
     await pool.query("ALTER TABLE `service_orders` ADD COLUMN `createdByUserId` int NULL").catch(() => undefined);
     await pool.query("ALTER TABLE `extinguishers` ADD COLUMN `stockQuantity` int NOT NULL DEFAULT 1").catch(() => undefined);
+    await pool.query("ALTER TABLE `extinguishers` MODIFY COLUMN `clientId` int NULL").catch(() => undefined);
     await pool.query("ALTER TABLE `clients` ADD COLUMN `stockQuantity` int NOT NULL DEFAULT 1").catch(() => undefined);
     ownerScopeReady = true;
   } catch (err) {
@@ -359,7 +360,7 @@ export async function getExtinguishersPage(accountId: number, options: { page?: 
   if (options.filter === "near") conditions.push(sql`${extinguishers.expirationDate} >= CURRENT_DATE() AND ${extinguishers.expirationDate} <= DATE_ADD(CURRENT_DATE(), INTERVAL 30 DAY)`);
   const where = and(...conditions);
   const [items, totalRows] = await Promise.all([
-    db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).innerJoin(clients, eq(extinguishers.clientId, clients.id)).where(and(where, eq(clients.accountId, tenant))).orderBy(extinguishers.expirationDate, desc(extinguishers.id)).limit(pageSize).offset(offset),
+    db.select({ extinguisher: extinguishers, client: clients }).from(extinguishers).leftJoin(clients, eq(extinguishers.clientId, clients.id)).where(and(where, or(isNull(clients.accountId), eq(clients.accountId, tenant)))).orderBy(extinguishers.expirationDate, desc(extinguishers.id)).limit(pageSize).offset(offset),
     db.select({ total: sql<number>`count(*)` }).from(extinguishers).where(where),
   ]);
   return pageResult(items, Number(totalRows[0]?.total || 0), page, pageSize);
@@ -395,7 +396,8 @@ export async function createExtinguisher(data: InsertExtinguisher, accountId: nu
   await ensureOwnerScopeColumns();
   const db = await getDb();
   if (!db) throw new Error("Database not connected");
-  if (data.accountId !== tenant || !(await getClientById(data.clientId, tenant))) throw new Error("Cliente sem permissão");
+  if (data.accountId !== tenant) throw new Error("Empresa sem permissão");
+  if (data.clientId != null && !(await getClientById(data.clientId, tenant))) throw new Error("Cliente sem permissão");
   const publicToken = data.publicToken?.trim() || generateExtinguisherPublicToken();
   const result = await db.insert(extinguishers).values({ ...data, accountId: tenant, publicToken });
   return Number(result[0].insertId);
