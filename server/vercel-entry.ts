@@ -7,12 +7,16 @@ import { createContext } from "./_core/context";
 import { runScheduledMaintenance, runExpirationEmailAlerts } from "./scheduledMaintenance";
 import { notifyOwner } from "./_core/notification";
 import crypto from "node:crypto";
-
+import { csrfProtection, requestId, securityHeaders, validateProductionEnvironment } from "./security";
+import { consumeRateLimit, RATE_RULES } from "./rateLimit";
 async function createApp() {
   const app = express();
   app.set("trust proxy", 1);
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  validateProductionEnvironment();
+  app.use(requestId);
+  app.use(securityHeaders);
+  app.use(express.json({ limit: "1mb" }));
+  app.use(express.urlencoded({ limit: "1mb", extended: true, parameterLimit: 500 }));
   app.get("/healthz", (_req, res) => res.status(200).json({ ok: true }));
   app.post("/api/scheduled/database-maintenance", async (req, res) => {
     try {
@@ -32,11 +36,13 @@ async function createApp() {
     }
   });
   
-  app.post("/api/webhooks/asaas", express.json(), async (req, res) => {
+  app.post("/api/webhooks/asaas", express.json({ limit: "100kb" }), async (req, res) => {
     try {
+      const ipLimit = await consumeRateLimit(`asaas:webhook:${req.ip}`, RATE_RULES.webhook);
+      if (!ipLimit.allowed) { res.setHeader("Retry-After", ipLimit.retryAfter); return res.status(429).json({ error: "Too many requests" }); }
       const token = process.env.ASAAS_WEBHOOK_TOKEN || "";
       const headerToken = String(req.headers["asaas-access-token"] || req.headers["x-asaas-token"] || "");
-      if (token && headerToken && token !== headerToken) {
+      if ((process.env.NODE_ENV === "production" && !token) || !headerToken || !token || token.length !== headerToken.length || !crypto.timingSafeEqual(Buffer.from(token), Buffer.from(headerToken))) {
         return res.status(401).json({ error: "Invalid webhook token" });
       }
       const body = req.body || {};
@@ -60,6 +66,7 @@ async function createApp() {
       return res.status(500).json({ error: "Webhook processing failed" });
     }
   });
+  app.use(csrfProtection);
 
   app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
   app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));

@@ -9,6 +9,8 @@ import { serveStatic, setupVite } from "./vite";
 import { runScheduledMaintenance } from "../scheduledMaintenance";
 import { notifyOwner } from "./notification";
 import crypto from "node:crypto";
+import { csrfProtection, requestId, securityHeaders, validateProductionEnvironment } from "../security";
+import { consumeRateLimit, RATE_RULES } from "../rateLimit";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -34,19 +36,27 @@ export async function createApp(): Promise<Express> {
   const app = express();
   // Required behind reverse proxies so req.protocol and secure cookies work on HTTPS.
   app.set("trust proxy", 1);
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  validateProductionEnvironment();
+  app.use(requestId);
+  app.use(securityHeaders);
+  app.use(express.json({ limit: "1mb" }));
+  app.use(express.urlencoded({ limit: "1mb", extended: true, parameterLimit: 500 }));
 
   app.get("/healthz", (_req, res) => {
     res.status(200).json({ ok: true });
   });
 
   
-  app.post("/api/webhooks/asaas", express.json(), async (req, res) => {
+  app.post("/api/webhooks/asaas", express.json({ limit: "100kb" }), async (req, res) => {
     try {
+      const ipLimit = await consumeRateLimit(`asaas:webhook:${req.ip}`, RATE_RULES.webhook);
+      if (!ipLimit.allowed) {
+        res.setHeader("Retry-After", ipLimit.retryAfter);
+        return res.status(429).json({ error: "Too many requests" });
+      }
       const token = process.env.ASAAS_WEBHOOK_TOKEN || "";
       const headerToken = String(req.headers["asaas-access-token"] || req.headers["x-asaas-token"] || "");
-      if (token && headerToken && token !== headerToken) {
+      if ((process.env.NODE_ENV === "production" && !token) || !headerToken || !token || token.length !== headerToken.length || !crypto.timingSafeEqual(Buffer.from(token), Buffer.from(headerToken))) {
         return res.status(401).json({ error: "Invalid webhook token" });
       }
       const body = req.body || {};
@@ -86,6 +96,8 @@ app.post("/api/scheduled/database-maintenance", async (req, res) => {
       return res.status(500).json({ error: "Scheduled maintenance failed" });
     }
   });
+
+  app.use(csrfProtection);
 
   app.use(
     "/api/trpc",

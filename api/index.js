@@ -22,6 +22,7 @@ __export(schema_exports, {
   payments: () => payments,
   platformAdmins: () => platformAdmins,
   platformSessions: () => platformSessions,
+  securityRateLimits: () => securityRateLimits,
   serviceOrderItems: () => serviceOrderItems,
   serviceOrders: () => serviceOrders,
   subscriptionPlans: () => subscriptionPlans,
@@ -30,7 +31,7 @@ __export(schema_exports, {
   users: () => users
 });
 import { boolean, date, decimal, index, int, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
-var users, companies, platformAdmins, memberAccounts, memberSessions, platformSessions, clients, extinguishers, serviceOrders, serviceOrderItems, trashItems, systemSettings, subscriptionPlans, companySubscriptions, payments, paymentEvents, auditLogs;
+var users, companies, platformAdmins, memberAccounts, memberSessions, platformSessions, clients, extinguishers, serviceOrders, serviceOrderItems, trashItems, systemSettings, subscriptionPlans, companySubscriptions, payments, paymentEvents, securityRateLimits, auditLogs;
 var init_schema = __esm({
   "drizzle/schema.ts"() {
     "use strict";
@@ -304,6 +305,13 @@ var init_schema = __esm({
     }, (table) => ({
       processedIdx: index("payment_events_processed_idx").on(table.processed)
     }));
+    securityRateLimits = mysqlTable("security_rate_limits", {
+      rateKey: varchar("rateKey", { length: 255 }).primaryKey(),
+      windowStart: int("windowStart").notNull(),
+      hitCount: int("hitCount").notNull().default(0),
+      blockedUntil: int("blockedUntil").notNull().default(0),
+      updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull()
+    });
     auditLogs = mysqlTable("audit_logs", {
       id: int("id").autoincrement().primaryKey(),
       companyId: int("companyId").references(() => companies.id, { onDelete: "cascade" }),
@@ -349,7 +357,9 @@ var init_env = __esm({
       resendApiKey: process.env.RESEND_API_KEY ?? "",
       emailFrom: process.env.EMAIL_FROM ?? "Extinfy <onboarding@resend.dev>",
       adminNotificationEmail: process.env.ADMIN_NOTIFICATION_EMAIL ?? "ivan.honemann@gmail.com",
-      appPublicUrl: process.env.APP_PUBLIC_URL ?? "https://gestao-de-extintores-teste.vercel.app"
+      appPublicUrl: process.env.APP_PUBLIC_URL ?? "https://gestao-de-extintores-teste.vercel.app",
+      allowedOrigins: process.env.ALLOWED_ORIGINS ?? "",
+      allowCrossSitePreview: process.env.ALLOW_CROSS_SITE_PREVIEW === "true"
     };
   }
 });
@@ -1740,8 +1750,8 @@ __export(email_exports, {
   getEmailFrom: () => getEmailFrom,
   sendEmail: () => sendEmail
 });
-function env(name, fallback = "") {
-  return (process.env[name] ?? fallback).trim();
+function env(name, fallback2 = "") {
+  return (process.env[name] ?? fallback2).trim();
 }
 function getAdminNotificationEmail() {
   return env("ADMIN_NOTIFICATION_EMAIL", "ivan.honemann@gmail.com");
@@ -2014,7 +2024,7 @@ import path2 from "path";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 
 // shared/const.ts
-var MEMBER_COOKIE_NAME = "member_session_id";
+var MEMBER_COOKIE_NAME = "__Host-member_session_id";
 var ONE_YEAR_MS = 1e3 * 60 * 60 * 24 * 365;
 var UNAUTHED_ERR_MSG = "Please login (10001)";
 var NOT_ADMIN_ERR_MSG = "You do not have required permission (10002)";
@@ -2025,6 +2035,12 @@ import { parse as parseCookie } from "cookie";
 import { TRPCError as TRPCError4 } from "@trpc/server";
 
 // server/_core/cookies.ts
+var LOCAL_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "::1"]);
+function isIpAddress(host) {
+  host = host || "";
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return true;
+  return host.includes(":");
+}
 function isSecureRequest(req) {
   if (req.protocol === "https") return true;
   const forwardedProto = req.headers["x-forwarded-proto"];
@@ -2033,13 +2049,14 @@ function isSecureRequest(req) {
   return protoList.some((proto) => proto.trim().toLowerCase() === "https");
 }
 function getSessionCookieOptions(req, allowCrossSite = false) {
+  const hostname = req.hostname || "";
+  const local = LOCAL_HOSTS.has(hostname) || isIpAddress(hostname);
+  const previewCrossSite = process.env.NODE_ENV === "test" || process.env.ALLOW_CROSS_SITE_PREVIEW === "true" && process.env.NODE_ENV !== "production";
   return {
     httpOnly: true,
     path: "/",
-    // O preview da plataforma pode abrir o site em iframe HTTPS. Nesse caso,
-    // o cookie precisa aceitar contexto cross-site; no localhost mantemos Lax.
-    sameSite: allowCrossSite && isSecureRequest(req) ? "none" : "lax",
-    secure: isSecureRequest(req)
+    sameSite: allowCrossSite && previewCrossSite && isSecureRequest(req) ? "none" : "lax",
+    secure: !local || isSecureRequest(req)
   };
 }
 
@@ -2111,11 +2128,51 @@ async function notifyOwner(payload) {
 // server/_core/trpc.ts
 import { initTRPC, TRPCError as TRPCError2 } from "@trpc/server";
 import superjson from "superjson";
+
+// server/rateLimit.ts
+init_db();
+var fallback = /* @__PURE__ */ new Map();
+async function consumeRateLimit(key, rule) {
+  const now = Math.floor(Date.now() / 1e3);
+  const windowStart = now - now % rule.windowSeconds;
+  const blockedUntil = now + (rule.blockSeconds ?? rule.windowSeconds);
+  const pool = process.env.NODE_ENV === "test" ? null : await getPool().catch(() => null);
+  if (pool) {
+    await pool.query(`INSERT INTO security_rate_limits (rateKey, windowStart, hitCount, blockedUntil) VALUES (?, ?, 1, 0) ON DUPLICATE KEY UPDATE hitCount = IF(windowStart <> VALUES(windowStart), 1, hitCount + 1), windowStart = IF(windowStart <> VALUES(windowStart), VALUES(windowStart), windowStart), blockedUntil = IF(hitCount + 1 >= ?, VALUES(blockedUntil), blockedUntil)`, [key, windowStart, rule.limit, blockedUntil]);
+    const [rows] = await pool.query("SELECT hitCount, windowStart, blockedUntil FROM security_rate_limits WHERE rateKey = ? LIMIT 1", [key]);
+    const row2 = rows[0];
+    const retry = Math.max(1, Number(row2?.blockedUntil || 0) > now ? Number(row2.blockedUntil) - now : windowStart + rule.windowSeconds - now);
+    return { allowed: Number(row2?.blockedUntil || 0) <= now && Number(row2?.hitCount || 0) <= rule.limit, retryAfter: retry };
+  }
+  const current = fallback.get(key);
+  const entry = !current || current.start !== windowStart ? { start: windowStart, count: 1, blockedUntil: 0 } : { ...current, count: current.count + 1 };
+  if (entry.count > rule.limit) entry.blockedUntil = blockedUntil;
+  fallback.set(key, entry);
+  return { allowed: entry.blockedUntil <= now && entry.count <= rule.limit, retryAfter: Math.max(1, (entry.blockedUntil || windowStart + rule.windowSeconds) - now) };
+}
+async function clearRateLimit(key) {
+  fallback.delete(key);
+  const pool = process.env.NODE_ENV === "test" ? null : await getPool().catch(() => null);
+  if (pool) await pool.query("DELETE FROM security_rate_limits WHERE rateKey = ?", [key]);
+}
+var RATE_RULES = {
+  loginEmail: { limit: 5, windowSeconds: 15 * 60, blockSeconds: 15 * 60 },
+  loginIp: { limit: 20, windowSeconds: 15 * 60, blockSeconds: 15 * 60 },
+  recovery: { limit: 3, windowSeconds: 60 * 60, blockSeconds: 60 * 60 },
+  signupIp: { limit: 5, windowSeconds: 60 * 60, blockSeconds: 60 * 60 },
+  publicPlans: { limit: 60, windowSeconds: 60, blockSeconds: 60 },
+  authenticated: { limit: 300, windowSeconds: 60, blockSeconds: 60 },
+  webhook: { limit: 120, windowSeconds: 60, blockSeconds: 60 }
+};
+
+// server/_core/trpc.ts
 var t = initTRPC.context().create({ transformer: superjson });
 var router = t.router;
 var publicProcedure = t.procedure;
 var requireUser = t.middleware(async (opts) => {
   if (!opts.ctx.user) throw new TRPCError2({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  const limited = await consumeRateLimit(`trpc:user:${opts.ctx.user.id}`, RATE_RULES.authenticated);
+  if (!limited.allowed) throw new TRPCError2({ code: "TOO_MANY_REQUESTS", message: "Muitas requisi\xE7\xF5es. Tente novamente em instantes.", cause: { retryAfter: limited.retryAfter } });
   return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
 });
 var requireCompanyUser = t.middleware(async (opts) => {
@@ -2220,7 +2277,7 @@ function registerFailure(key) {
   if (entry.failures >= RATE_LIMIT) entry.blockedUntil = now + BLOCK_MS;
   authRate.set(key, entry);
 }
-function clearRateLimit(key) {
+function clearRateLimit2(key) {
   authRate.delete(key);
 }
 function hashPassword(password) {
@@ -2247,13 +2304,13 @@ async function authenticateMember(email, password) {
   const platformResult = await db.select().from(platformAdmins).where(eq2(platformAdmins.email, normalizedEmail)).limit(1);
   const platform = platformResult[0];
   if (platform && platform.active && verifyPassword(password, platform.passwordHash)) {
-    clearRateLimit(key);
+    clearRateLimit2(key);
     return { kind: "platform", account: platform };
   }
   const memberResult = await db.select().from(memberAccounts).where(eq2(memberAccounts.email, normalizedEmail)).limit(1);
   const member = memberResult[0];
   if (member && member.active && verifyPassword(password, member.passwordHash)) {
-    clearRateLimit(key);
+    clearRateLimit2(key);
     return { kind: "company", account: member };
   }
   registerFailure(key);
@@ -2307,7 +2364,7 @@ async function changeMemberPassword(memberAccountId, currentPassword, newPasswor
     registerFailure(key);
     return false;
   }
-  clearRateLimit(key);
+  clearRateLimit2(key);
   await db.update(memberAccounts).set({ passwordHash: hashPassword(newPassword) }).where(eq2(memberAccounts.id, memberAccountId));
   await db.delete(memberSessions).where(eq2(memberSessions.memberAccountId, memberAccountId));
   return true;
@@ -2323,7 +2380,7 @@ async function changePlatformPassword(platformAdminId, currentPassword, newPassw
     registerFailure(key);
     return false;
   }
-  clearRateLimit(key);
+  clearRateLimit2(key);
   await db.update(platformAdmins).set({ passwordHash: hashPassword(newPassword) }).where(eq2(platformAdmins.id, platformAdminId));
   await db.delete(platformSessions).where(eq2(platformSessions.platformAdminId, platformAdminId));
   return true;
@@ -2333,7 +2390,7 @@ async function resetMemberPassword(memberAccountId, newPassword) {
   if (!db) throw new Error("Database not connected");
   await db.update(memberAccounts).set({ passwordHash: hashPassword(newPassword) }).where(eq2(memberAccounts.id, memberAccountId));
   await db.delete(memberSessions).where(eq2(memberSessions.memberAccountId, memberAccountId));
-  clearRateLimit(`login:${memberAccountId}`);
+  clearRateLimit2(`login:${memberAccountId}`);
 }
 async function recoverPassword(email, recoveryCode, newPassword) {
   const normalizedEmail = email.trim().toLowerCase();
@@ -2347,7 +2404,7 @@ async function recoverPassword(email, recoveryCode, newPassword) {
   if (platform?.active && platform.recoveryCodeHash && verifyPassword(recoveryCode, platform.recoveryCodeHash)) {
     await db.update(platformAdmins).set({ passwordHash: hashPassword(newPassword), recoveryCodeHash: hashPassword(nextRecoveryCode) }).where(eq2(platformAdmins.id, platform.id));
     await db.delete(platformSessions).where(eq2(platformSessions.platformAdminId, platform.id));
-    clearRateLimit(key);
+    clearRateLimit2(key);
     return { recoveryCode: nextRecoveryCode, kind: "platform" };
   }
   const memberResult = await db.select().from(memberAccounts).where(eq2(memberAccounts.email, normalizedEmail)).limit(1);
@@ -2355,7 +2412,7 @@ async function recoverPassword(email, recoveryCode, newPassword) {
   if (member?.active && member.recoveryCodeHash && verifyPassword(recoveryCode, member.recoveryCodeHash)) {
     await db.update(memberAccounts).set({ passwordHash: hashPassword(newPassword), recoveryCodeHash: hashPassword(nextRecoveryCode) }).where(eq2(memberAccounts.id, member.id));
     await db.delete(memberSessions).where(eq2(memberSessions.memberAccountId, member.id));
-    clearRateLimit(key);
+    clearRateLimit2(key);
     return { recoveryCode: nextRecoveryCode, kind: "company" };
   }
   registerFailure(key);
@@ -2481,7 +2538,7 @@ async function verifyMemberPassword(memberAccountId, password) {
     registerFailure(key);
     return false;
   }
-  clearRateLimit(key);
+  clearRateLimit2(key);
   return true;
 }
 
@@ -2964,11 +3021,13 @@ var appRouter = router({
       companyName: z2.string().min(2, "Nome da empresa \xE9 obrigat\xF3rio"),
       userName: z2.string().min(2, "Nome do respons\xE1vel \xE9 obrigat\xF3rio"),
       email: z2.string().email(),
-      password: z2.string().min(8, "A senha deve ter pelo menos 8 caracteres"),
+      password: z2.string().min(10, "A senha deve ter pelo menos 10 caracteres").max(256),
       planId: z2.number().int().positive("Selecione um plano antes de criar a conta"),
       paymentConfirmed: z2.boolean().refine((v) => v === true, { message: "Confirme o pagamento para criar a conta." })
     })).mutation(async ({ ctx, input }) => {
       try {
+        const signupLimit = await consumeRateLimit(`signup:ip:${ctx.req.ip}`, RATE_RULES.signupIp);
+        if (!signupLimit.allowed) throw new TRPCError4({ code: "TOO_MANY_REQUESTS", message: "N\xE3o foi poss\xEDvel concluir o cadastro agora. Tente novamente mais tarde.", cause: { retryAfter: signupLimit.retryAfter } });
         const created = await createCompanyWithAdmin({
           companyName: input.companyName,
           userName: input.userName,
@@ -3018,11 +3077,19 @@ var appRouter = router({
       }
     }),
     login: publicProcedure.input(z2.object({ email: z2.string().email(), password: z2.string().min(1) })).mutation(async ({ ctx, input }) => {
+      const normalizedEmail = input.email.trim().toLowerCase();
+      const emailLimit = await consumeRateLimit(`login:email:${normalizedEmail}`, RATE_RULES.loginEmail);
+      const ipLimit = await consumeRateLimit(`login:ip:${ctx.req.ip}`, RATE_RULES.loginIp);
+      if (!emailLimit.allowed || !ipLimit.allowed) throw new TRPCError4({ code: "TOO_MANY_REQUESTS", message: "E-mail ou senha inv\xE1lidos.", cause: { retryAfter: Math.max(emailLimit.retryAfter, ipLimit.retryAfter) } });
       const principal = await authenticateMember(input.email, input.password);
       if (!principal) {
+        await consumeRateLimit(`login:fail:email:${normalizedEmail}`, RATE_RULES.loginEmail);
+        await consumeRateLimit(`login:fail:ip:${ctx.req.ip}`, RATE_RULES.loginIp);
         void auditFromCtx(ctx, { action: "login_failed", module: "auth", entityType: "session", description: `Tentativa de login falhou para ${input.email}`, newData: { email: input.email } });
         throw new TRPCError4({ code: "UNAUTHORIZED", message: "E-mail ou senha inv\xE1lidos." });
       }
+      await clearRateLimit(`login:fail:email:${normalizedEmail}`);
+      await clearRateLimit(`login:fail:ip:${ctx.req.ip}`);
       const session = await createSession(principal);
       ctx.res.cookie(MEMBER_COOKIE_NAME, session.rawToken, { ...getSessionCookieOptions(ctx.req, true), maxAge: 30 * 24 * 60 * 60 * 1e3 });
       void auditFromCtx(ctx, {
@@ -3035,7 +3102,10 @@ var appRouter = router({
       });
       return { success: true, kind: session.kind };
     }),
-    recoverPassword: publicProcedure.input(z2.object({ email: z2.string().email(), recoveryCode: z2.string().min(1), newPassword: z2.string().min(8, "A nova senha deve ter pelo menos 8 caracteres") })).mutation(async ({ input }) => {
+    recoverPassword: publicProcedure.input(z2.object({ email: z2.string().email(), recoveryCode: z2.string().min(1).max(256), newPassword: z2.string().min(10, "A nova senha deve ter pelo menos 10 caracteres") })).mutation(async ({ ctx, input }) => {
+      const emailLimit = await consumeRateLimit(`recover:email:${input.email.trim().toLowerCase()}`, RATE_RULES.recovery);
+      const ipLimit = await consumeRateLimit(`recover:ip:${ctx.req.ip}`, RATE_RULES.recovery);
+      if (!emailLimit.allowed || !ipLimit.allowed) throw new TRPCError4({ code: "TOO_MANY_REQUESTS", message: "N\xE3o foi poss\xEDvel concluir a recupera\xE7\xE3o agora." });
       const recovered = await recoverPassword(input.email, input.recoveryCode, input.newPassword);
       if (!recovered) throw new TRPCError4({ code: "UNAUTHORIZED", message: "E-mail ou c\xF3digo de recupera\xE7\xE3o inv\xE1lido." });
       return { success: true, recoveryCode: recovered.recoveryCode };
@@ -3043,7 +3113,7 @@ var appRouter = router({
     changePassword: publicProcedure.use(async (opts) => {
       if (!opts.ctx.user) throw new TRPCError4({ code: "UNAUTHORIZED", message: "Please login (10001)" });
       return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
-    }).input(z2.object({ currentPassword: z2.string().min(1), newPassword: z2.string().min(8, "A nova senha deve ter pelo menos 8 caracteres") })).mutation(async ({ ctx, input }) => {
+    }).input(z2.object({ currentPassword: z2.string().min(1).max(256), newPassword: z2.string().min(10, "A nova senha deve ter pelo menos 10 caracteres").max(256) })).mutation(async ({ ctx, input }) => {
       const changed = ctx.user.role === "platform_admin" ? await changePlatformPassword(ctx.platformAdminId ?? ctx.user.id, input.currentPassword, input.newPassword) : await changeMemberPassword(ctx.memberAccountId ?? Math.abs(ctx.user.id), input.currentPassword, input.newPassword);
       if (!changed) throw new TRPCError4({ code: "UNAUTHORIZED", message: "A senha atual est\xE1 incorreta." });
       return { success: true };
@@ -3436,6 +3506,7 @@ var appRouter = router({
     }),
     delete: companyAdminProcedure.input(z2.object({ id: z2.number() })).mutation(async ({ ctx, input }) => {
       const before = await getClientById(input.id, ctx.accountId);
+      if (!before) throw new TRPCError4({ code: "FORBIDDEN", message: "Cliente n\xE3o encontrado ou sem permiss\xE3o." });
       await deleteClient(input.id, ctx.accountId);
       void auditFromCtx(ctx, { action: "delete", module: "clients", entityType: "client", entityId: input.id, entityLabel: before?.companyName || `#${input.id}`, description: `Cliente exclu\xEDdo (lixeira): ${before?.companyName || input.id}`, oldData: before });
       return { success: true };
@@ -3565,7 +3636,9 @@ var appRouter = router({
   }),
   /** Planos públicos (sem login) — página de preços e cadastro. */
   publicCatalog: router({
-    plans: publicProcedure.query(async () => {
+    plans: publicProcedure.query(async ({ ctx }) => {
+      const limited = await consumeRateLimit(`public:plans:${ctx.req.ip}`, RATE_RULES.publicPlans);
+      if (!limited.allowed) throw new TRPCError4({ code: "TOO_MANY_REQUESTS", message: "Muitas consultas. Tente novamente em instantes.", cause: { retryAfter: limited.retryAfter } });
       await ensureSeedPlans();
       return listAvailablePlansForCompanies();
     })
@@ -3576,6 +3649,8 @@ var appRouter = router({
    */
   publicExtinguisher: router({
     byToken: publicProcedure.input(z2.object({ token: z2.string().min(10).max(32) })).query(async ({ ctx, input }) => {
+      const limited = await consumeRateLimit(`public:qr:${ctx.req.ip}`, RATE_RULES.publicPlans);
+      if (!limited.allowed) throw new TRPCError4({ code: "TOO_MANY_REQUESTS", message: "Muitas consultas. Tente novamente em instantes.", cause: { retryAfter: limited.retryAfter } });
       const data = await getPublicExtinguisherByToken(input.token);
       if (!data) throw new TRPCError4({ code: "NOT_FOUND", message: "Extintor n\xE3o encontrado." });
       const { _internalId, _accountId, ...publicFields } = data;
@@ -3976,18 +4051,88 @@ async function runExpirationEmailAlerts(daysAhead = 30) {
 }
 
 // server/vercel-entry.ts
+import crypto4 from "node:crypto";
+
+// server/security.ts
 import crypto3 from "node:crypto";
+function validateProductionEnvironment() {
+  if (process.env.NODE_ENV !== "production") return;
+  const required = [
+    ["EXTERNAL_DATABASE_URL", (v) => v.startsWith("mysql://") || v.startsWith("mysqls://")],
+    ["JWT_SECRET", (v) => Buffer.byteLength(v, "utf8") >= 32 && !/replace|change|default|secret/i.test(v)],
+    ["SCHEDULE_SECRET", (v) => v.length >= 32 && !/replace|change|default|secret/i.test(v)]
+  ];
+  const missing = required.filter(([name, check]) => !check(process.env[name] || "")).map(([name]) => name);
+  const asaasEnv = (process.env.ASAAS_ENVIRONMENT || "mock").toLowerCase();
+  if (asaasEnv === "production" && !(process.env.ASAAS_API_KEY && process.env.ASAAS_WEBHOOK_TOKEN)) {
+    missing.push("ASAAS_API_KEY/ASAAS_WEBHOOK_TOKEN");
+  }
+  if (missing.length) throw new Error(`Production security configuration missing: ${missing.join(", ")}`);
+}
+function securityHeaders(_req, res, next) {
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(self), microphone=(), geolocation=(), payment=()");
+  res.setHeader("Content-Security-Policy", [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' https://fonts.gstatic.com data:",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "script-src 'self' 'wasm-unsafe-eval'",
+    "connect-src 'self' https:",
+    "worker-src 'self' blob:",
+    "frame-src 'self' https://sandbox.asaas.com https://www.asaas.com"
+  ].join("; "));
+  res.setHeader("X-Permitted-Cross-Domain-Policies", "none");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  next();
+}
+function allowedOrigins(req) {
+  const values = [process.env.APP_PUBLIC_URL, process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "", ...(process.env.ALLOWED_ORIGINS || "").split(",")];
+  const origins = new Set(values.map((v) => String(v || "").trim().replace(/\/$/, "")).filter(Boolean));
+  const host = req.get("host");
+  if (host && (process.env.NODE_ENV !== "production" || process.env.ALLOW_REQUEST_HOST_ORIGIN === "true")) {
+    origins.add(`${req.protocol}://${host}`);
+  }
+  return origins;
+}
+function csrfProtection(req, res, next) {
+  if (req.method !== "POST" || !req.path.startsWith("/api/trpc")) return next();
+  const origin = req.get("origin");
+  const referer = req.get("referer");
+  const candidate = origin || (referer ? new URL(referer).origin : "");
+  if (!candidate || !allowedOrigins(req).has(candidate.replace(/\/$/, ""))) {
+    return res.status(403).json({ error: "Origem n\xE3o autorizada." });
+  }
+  return next();
+}
+function requestId(req, res, next) {
+  const id = req.get("x-request-id") || crypto3.randomUUID();
+  res.setHeader("X-Request-ID", id);
+  next();
+}
+
+// server/vercel-entry.ts
 async function createApp() {
   const app = express();
   app.set("trust proxy", 1);
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  validateProductionEnvironment();
+  app.use(requestId);
+  app.use(securityHeaders);
+  app.use(express.json({ limit: "1mb" }));
+  app.use(express.urlencoded({ limit: "1mb", extended: true, parameterLimit: 500 }));
   app.get("/healthz", (_req, res) => res.status(200).json({ ok: true }));
   app.post("/api/scheduled/database-maintenance", async (req, res) => {
     try {
       const configuredSecret = process.env.SCHEDULE_SECRET;
       const suppliedSecret = req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.headers["x-schedule-secret"];
-      if (!configuredSecret || typeof suppliedSecret !== "string" || suppliedSecret.length !== configuredSecret.length || !crypto3.timingSafeEqual(Buffer.from(suppliedSecret), Buffer.from(configuredSecret))) {
+      if (!configuredSecret || typeof suppliedSecret !== "string" || suppliedSecret.length !== configuredSecret.length || !crypto4.timingSafeEqual(Buffer.from(suppliedSecret), Buffer.from(configuredSecret))) {
         return res.status(401).json({ error: "Schedule authentication required" });
       }
       const result = await runScheduledMaintenance();
@@ -4004,11 +4149,16 @@ async function createApp() {
       return res.status(500).json({ error: "Scheduled maintenance failed" });
     }
   });
-  app.post("/api/webhooks/asaas", express.json(), async (req, res) => {
+  app.post("/api/webhooks/asaas", express.json({ limit: "100kb" }), async (req, res) => {
     try {
+      const ipLimit = await consumeRateLimit(`asaas:webhook:${req.ip}`, RATE_RULES.webhook);
+      if (!ipLimit.allowed) {
+        res.setHeader("Retry-After", ipLimit.retryAfter);
+        return res.status(429).json({ error: "Too many requests" });
+      }
       const token = process.env.ASAAS_WEBHOOK_TOKEN || "";
       const headerToken = String(req.headers["asaas-access-token"] || req.headers["x-asaas-token"] || "");
-      if (token && headerToken && token !== headerToken) {
+      if (process.env.NODE_ENV === "production" && !token || !headerToken || !token || token.length !== headerToken.length || !crypto4.timingSafeEqual(Buffer.from(token), Buffer.from(headerToken))) {
         return res.status(401).json({ error: "Invalid webhook token" });
       }
       const body = req.body || {};
@@ -4031,6 +4181,7 @@ async function createApp() {
       return res.status(500).json({ error: "Webhook processing failed" });
     }
   });
+  app.use(csrfProtection);
   app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
   app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
   const distPath = path2.resolve(process.cwd(), "dist", "public");

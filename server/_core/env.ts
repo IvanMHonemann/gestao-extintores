@@ -10,4 +10,6 @@ export const ENV = {
   emailFrom: process.env.EMAIL_FROM ?? "Extinfy <onboarding@resend.dev>",
   adminNotificationEmail: process.env.ADMIN_NOTIFICATION_EMAIL ?? "ivan.honemann@gmail.com",
   appPublicUrl: process.env.APP_PUBLIC_URL ?? "https://gestao-de-extintores-teste.vercel.app",
+  allowedOrigins: process.env.ALLOWED_ORIGINS ?? "",
+  allowCrossSitePreview: process.env.ALLOW_CROSS_SITE_PREVIEW === "true",
 };

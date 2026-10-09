@@ -3,6 +3,7 @@ import type { AccessLevel } from "@shared/auth";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
+import { consumeRateLimit, RATE_RULES } from "../rateLimit";
 
 const t = initTRPC.context<TrpcContext>().create({ transformer: superjson });
 
@@ -11,6 +12,8 @@ export const publicProcedure = t.procedure;
 
 const requireUser = t.middleware(async opts => {
   if (!opts.ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  const limited = await consumeRateLimit(`trpc:user:${opts.ctx.user.id}`, RATE_RULES.authenticated);
+  if (!limited.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Muitas requisições. Tente novamente em instantes.", cause: { retryAfter: limited.retryAfter } });
   return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
 });
 

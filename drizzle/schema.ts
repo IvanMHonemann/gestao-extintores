@@ -344,6 +344,17 @@ export const paymentEvents = mysqlTable("payment_events", {
 export type PaymentEvent = typeof paymentEvents.$inferSelect;
 export type InsertPaymentEvent = typeof paymentEvents.$inferInsert;
 
+/** Contadores compartilhados de abuso por chave e janela; não contém dados pessoais. */
+export const securityRateLimits = mysqlTable("security_rate_limits", {
+  rateKey: varchar("rateKey", { length: 255 }).primaryKey(),
+  windowStart: int("windowStart").notNull(),
+  hitCount: int("hitCount").notNull().default(0),
+  blockedUntil: int("blockedUntil").notNull().default(0),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type SecurityRateLimit = typeof securityRateLimits.$inferSelect;
+
 /**
  * Registro imutável de auditoria (append-only).
  * companyId isola o tenant; platform admin consulta com companyId opcional.

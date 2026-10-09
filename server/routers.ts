@@ -12,6 +12,7 @@ import * as db from "./db";
 import * as memberAuth from "./memberAuth";
 import * as emailService from "./email";
 import { auditFromCtx, diffAuditData, exportAuditLogsCsv, getAuditLogById, listAuditLogs, listEntityAuditHistory } from "./audit";
+import { consumeRateLimit, clearRateLimit, RATE_RULES } from "./rateLimit";
 
 const emptyToNull = (value?: string) => value?.trim() || null;
 const companyUserRole = z.enum(["company_admin", "operator", "technician"]);
@@ -35,12 +36,14 @@ export const appRouter = router({
         companyName: z.string().min(2, "Nome da empresa é obrigatório"),
         userName: z.string().min(2, "Nome do responsável é obrigatório"),
         email: z.string().email(),
-        password: z.string().min(8, "A senha deve ter pelo menos 8 caracteres"),
+        password: z.string().min(10, "A senha deve ter pelo menos 10 caracteres").max(256),
         planId: z.number().int().positive("Selecione um plano antes de criar a conta"),
         paymentConfirmed: z.boolean().refine((v) => v === true, { message: "Confirme o pagamento para criar a conta." }),
       }))
       .mutation(async ({ ctx, input }) => {
         try {
+          const signupLimit = await consumeRateLimit(`signup:ip:${ctx.req.ip}`, RATE_RULES.signupIp);
+          if (!signupLimit.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Não foi possível concluir o cadastro agora. Tente novamente mais tarde.", cause: { retryAfter: signupLimit.retryAfter } });
           // Conta só é criada após plano + confirmação de pagamento (mock ou real no futuro)
           const created = await memberAuth.createCompanyWithAdmin({
             companyName: input.companyName,
@@ -96,11 +99,19 @@ export const appRouter = router({
     login: publicProcedure
       .input(z.object({ email: z.string().email(), password: z.string().min(1) }))
       .mutation(async ({ ctx, input }) => {
+        const normalizedEmail = input.email.trim().toLowerCase();
+        const emailLimit = await consumeRateLimit(`login:email:${normalizedEmail}`, RATE_RULES.loginEmail);
+        const ipLimit = await consumeRateLimit(`login:ip:${ctx.req.ip}`, RATE_RULES.loginIp);
+        if (!emailLimit.allowed || !ipLimit.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "E-mail ou senha inválidos.", cause: { retryAfter: Math.max(emailLimit.retryAfter, ipLimit.retryAfter) } });
         const principal = await memberAuth.authenticateMember(input.email, input.password);
         if (!principal) {
+          await consumeRateLimit(`login:fail:email:${normalizedEmail}`, RATE_RULES.loginEmail);
+          await consumeRateLimit(`login:fail:ip:${ctx.req.ip}`, RATE_RULES.loginIp);
           void auditFromCtx(ctx, { action: "login_failed", module: "auth", entityType: "session", description: `Tentativa de login falhou para ${input.email}`, newData: { email: input.email } });
           throw new TRPCError({ code: "UNAUTHORIZED", message: "E-mail ou senha inválidos." });
         }
+        await clearRateLimit(`login:fail:email:${normalizedEmail}`);
+        await clearRateLimit(`login:fail:ip:${ctx.req.ip}`);
         const session = await memberAuth.createSession(principal);
         ctx.res.cookie(MEMBER_COOKIE_NAME, session.rawToken, { ...getSessionCookieOptions(ctx.req, true), maxAge: 30 * 24 * 60 * 60 * 1000 });
         void auditFromCtx(ctx, {
@@ -115,8 +126,11 @@ export const appRouter = router({
       }),
 
     recoverPassword: publicProcedure
-      .input(z.object({ email: z.string().email(), recoveryCode: z.string().min(1), newPassword: z.string().min(8, "A nova senha deve ter pelo menos 8 caracteres") }))
-      .mutation(async ({ input }) => {
+      .input(z.object({ email: z.string().email(), recoveryCode: z.string().min(1).max(256), newPassword: z.string().min(10, "A nova senha deve ter pelo menos 10 caracteres") }))
+      .mutation(async ({ ctx, input }) => {
+        const emailLimit = await consumeRateLimit(`recover:email:${input.email.trim().toLowerCase()}`, RATE_RULES.recovery);
+        const ipLimit = await consumeRateLimit(`recover:ip:${ctx.req.ip}`, RATE_RULES.recovery);
+        if (!emailLimit.allowed || !ipLimit.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Não foi possível concluir a recuperação agora." });
         const recovered = await memberAuth.recoverPassword(input.email, input.recoveryCode, input.newPassword);
         if (!recovered) throw new TRPCError({ code: "UNAUTHORIZED", message: "E-mail ou código de recuperação inválido." });
         return { success: true, recoveryCode: recovered.recoveryCode } as const;
@@ -127,7 +141,7 @@ export const appRouter = router({
         if (!opts.ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Please login (10001)" });
         return opts.next({ ctx: { ...opts.ctx, user: opts.ctx.user } });
       })
-      .input(z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(8, "A nova senha deve ter pelo menos 8 caracteres") }))
+      .input(z.object({ currentPassword: z.string().min(1).max(256), newPassword: z.string().min(10, "A nova senha deve ter pelo menos 10 caracteres").max(256) }))
       .mutation(async ({ ctx, input }) => {
         const changed = ctx.user.role === "platform_admin"
           ? await memberAuth.changePlatformPassword(ctx.platformAdminId ?? ctx.user.id, input.currentPassword, input.newPassword)
@@ -504,6 +518,7 @@ export const appRouter = router({
     }),
     delete: companyAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
       const before = await db.getClientById(input.id, ctx.accountId);
+      if (!before) throw new TRPCError({ code: "FORBIDDEN", message: "Cliente não encontrado ou sem permissão." });
       await db.deleteClient(input.id, ctx.accountId);
       void auditFromCtx(ctx, { action: "delete", module: "clients", entityType: "client", entityId: input.id, entityLabel: before?.companyName || `#${input.id}`, description: `Cliente excluído (lixeira): ${before?.companyName || input.id}`, oldData: before });
       return { success: true } as const;
@@ -624,7 +639,9 @@ export const appRouter = router({
   }),
   /** Planos públicos (sem login) — página de preços e cadastro. */
   publicCatalog: router({
-    plans: publicProcedure.query(async () => {
+    plans: publicProcedure.query(async ({ ctx }) => {
+      const limited = await consumeRateLimit(`public:plans:${ctx.req.ip}`, RATE_RULES.publicPlans);
+      if (!limited.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Muitas consultas. Tente novamente em instantes.", cause: { retryAfter: limited.retryAfter } });
       await db.ensureSeedPlans();
       return db.listAvailablePlansForCompanies();
     }),
@@ -636,6 +653,8 @@ export const appRouter = router({
    */
   publicExtinguisher: router({
     byToken: publicProcedure.input(z.object({ token: z.string().min(10).max(32) })).query(async ({ ctx, input }) => {
+      const limited = await consumeRateLimit(`public:qr:${ctx.req.ip}`, RATE_RULES.publicPlans);
+      if (!limited.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Muitas consultas. Tente novamente em instantes.", cause: { retryAfter: limited.retryAfter } });
       const data = await db.getPublicExtinguisherByToken(input.token);
       if (!data) throw new TRPCError({ code: "NOT_FOUND", message: "Extintor não encontrado." });
       const { _internalId, _accountId, ...publicFields } = data;
