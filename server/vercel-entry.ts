@@ -9,6 +9,7 @@ import { notifyOwner } from "./_core/notification";
 import crypto from "node:crypto";
 import { csrfProtection, requestId, securityHeaders, validateProductionEnvironment } from "./security";
 import { consumeRateLimit, RATE_RULES } from "./rateLimit";
+import { parseExternalReference, validateAsaasPayment } from "./asaasWebhook";
 async function createApp() {
   const app = express();
   app.set("trust proxy", 1);
@@ -48,7 +49,20 @@ async function createApp() {
       const body = req.body || {};
       const eventId = String(body.id || body.eventId || body.payment?.id || `${body.event || "evt"}_${Date.now()}`);
       const event = String(body.event || body.type || "UNKNOWN");
-      const recorded = await (await import("./db")).recordPaymentEvent({
+      const payment = body.payment || body;
+      const reference = parseExternalReference(payment.externalReference);
+      const billingDb = await import("./db");
+      const company = reference ? await billingDb.getCompanyById(reference.companyId) : null;
+      const plan = reference ? await billingDb.getSubscriptionPlanById(reference.planId) : null;
+      const validation = company && plan
+        ? validateAsaasPayment({ payment, company, plan })
+        : { ok: false as const, reason: "empresa ou plano não encontrado" };
+      if (!validation.ok) {
+        console.warn("[Asaas webhook] evento rejeitado:", validation.reason);
+        await billingDb.recordPaymentEvent({ eventId: `${eventId}:rejected`.slice(0, 128), event: `${event}:REJECTED`, payload: JSON.stringify({ eventId, event, reason: validation.reason, reference }), processed: false }).catch(() => undefined);
+        return res.status(422).json({ error: "Webhook de pagamento inválido" });
+      }
+      const recorded = await billingDb.recordPaymentEvent({
         eventId,
         event,
         paymentId: body.payment?.id ? undefined : undefined,
@@ -68,7 +82,16 @@ async function createApp() {
   });
   app.use(csrfProtection);
 
-  app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
+  app.use("/api/trpc", createExpressMiddleware({
+    router: appRouter,
+    createContext,
+    onError({ error, ctx }) {
+      if (error.code === "TOO_MANY_REQUESTS") {
+        const retryAfter = Number((error.cause as any)?.retryAfter);
+        if (Number.isFinite(retryAfter) && retryAfter > 0) ctx?.res.setHeader("Retry-After", String(Math.ceil(retryAfter)));
+      }
+    },
+  }));
   app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
   const distPath = path.resolve(process.cwd(), "dist", "public");
   if (fs.existsSync(distPath)) {
