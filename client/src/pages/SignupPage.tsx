@@ -60,14 +60,9 @@ export default function SignupPage() {
 
   const signup = trpc.auth.signup.useMutation({
     onSuccess: async (data) => {
-      toast.success(
-        data.recoveryCode
-          ? `Pagamento confirmado e conta criada. Código de recuperação: ${data.recoveryCode}`
-          : "Pagamento confirmado e conta criada.",
-        { duration: 12000 },
-      );
+      toast.success("Cadastro recebido. Verifique seu e-mail para ativar a conta.", { duration: 12000 });
       await trpcUtils.auth.me.invalidate();
-      window.location.href = "/";
+      navigate("/?login=1");
     },
     onError: (e) => toast.error(e.message),
   });
@@ -183,8 +178,8 @@ export default function SignupPage() {
                     <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="password">Senha (mín. 8 caracteres)</Label>
-                    <PasswordInput id="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} />
+                    <Label htmlFor="password">Senha (mín. 10 caracteres)</Label>
+                    <PasswordInput id="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={10} />
                   </div>
                   <Button type="submit" className="w-full bg-red-600 hover:bg-red-500">
                     Continuar para pagamento

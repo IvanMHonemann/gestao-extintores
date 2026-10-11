@@ -1,7 +1,8 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { and, eq, gt, lte } from "drizzle-orm";
+import { and, eq, gt, lte, sql } from "drizzle-orm";
 import { companies, companySubscriptions, memberAccounts, memberSessions, platformAdmins, platformSessions, subscriptionPlans } from "../drizzle/schema";
 import { getDb } from "./db";
+import { isDisposableEmail, normalizeSignupEmail } from "./signupPolicy";
 
 const SESSION_DAYS = 30;
 const RATE_WINDOW_MS = 15 * 60 * 1000;
@@ -72,7 +73,7 @@ export async function authenticateMember(email: string, password: string): Promi
 
   const memberResult = await db.select().from(memberAccounts).where(eq(memberAccounts.email, normalizedEmail)).limit(1);
   const member = memberResult[0];
-  if (member && member.active && verifyPassword(password, member.passwordHash)) {
+  if (member && member.active && member.emailVerifiedAt && verifyPassword(password, member.passwordHash)) {
     clearRateLimit(key);
     return { kind: "company", account: member };
   }
@@ -200,6 +201,18 @@ export async function recoverPassword(email: string, recoveryCode: string, newPa
   return false;
 }
 
+export async function verifyMemberEmail(email: string, token: string) {
+  const db = await getDb();
+  if (!db || !token) return false;
+  const normalizedEmail = email.trim().toLowerCase();
+  const rows = await db.select().from(memberAccounts).where(eq(memberAccounts.email, normalizedEmail)).limit(1);
+  const account = rows[0];
+  if (!account || account.emailVerifiedAt || !account.emailVerificationTokenHash || !account.emailVerificationExpiresAt) return false;
+  if (account.emailVerificationExpiresAt.getTime() <= Date.now() || account.emailVerificationTokenHash !== hashToken(token)) return false;
+  await db.update(memberAccounts).set({ emailVerifiedAt: new Date(), emailVerificationTokenHash: null, emailVerificationExpiresAt: null }).where(eq(memberAccounts.id, account.id));
+  return true;
+}
+
 export async function createCompanyWithAdmin(input: {
   companyName: string;
   userName: string;
@@ -210,8 +223,17 @@ export async function createCompanyWithAdmin(input: {
   const database = await getDb();
   if (!database) throw new Error("Database not connected");
   const recoveryCode = `EXT-${randomBytes(12).toString("base64url")}`;
-  const normalizedEmail = input.email.trim().toLowerCase();
+  const emailVerificationToken = randomBytes(32).toString("base64url");
+  const emailVerificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const normalizedEmail = normalizeSignupEmail(input.email);
+  if (isDisposableEmail(normalizedEmail)) throw new Error("E-mail descartável não é permitido.");
   return await database.transaction(async (tx) => {
+    const existing = await tx.select({ id: memberAccounts.id }).from(memberAccounts).where(sql`LOWER(${memberAccounts.email}) = ${normalizedEmail}`).limit(1);
+    if (existing.length) {
+      const duplicate: any = new Error("E-mail já cadastrado");
+      duplicate.code = "ER_DUP_ENTRY";
+      throw duplicate;
+    }
     const trialEnds = new Date(Date.now() + 14 * 24 * 3600 * 1000);
     const trialYmd = trialEnds.toISOString().slice(0, 10);
     const todayYmd = new Date().toISOString().slice(0, 10);
@@ -231,6 +253,9 @@ export async function createCompanyWithAdmin(input: {
       email: normalizedEmail,
       passwordHash: hashPassword(input.password),
       recoveryCodeHash: hashPassword(recoveryCode),
+      emailVerifiedAt: null,
+      emailVerificationTokenHash: hashToken(emailVerificationToken),
+      emailVerificationExpiresAt,
       role: "company_admin",
       active: true,
     });
@@ -253,7 +278,7 @@ export async function createCompanyWithAdmin(input: {
         } as any);
       }
     }
-    return { companyId, accountId: Number(accountResult[0].insertId), recoveryCode, planId: input.planId ?? null };
+    return { companyId, accountId: Number(accountResult[0].insertId), recoveryCode, emailVerificationToken, planId: input.planId ?? null };
   });
 }
 
@@ -267,6 +292,7 @@ export async function createCompanyUser(input: { companyId: number; userName: st
     email: input.email.trim().toLowerCase(),
     passwordHash: hashPassword(input.password),
     recoveryCodeHash: hashPassword(recoveryCode),
+    emailVerifiedAt: new Date(),
     role: input.role,
     active: true,
   });

@@ -38,6 +38,7 @@ export type AsaasSubscription = {
   value: number;
   cycle: "MONTHLY" | "YEARLY";
   status: string;
+  externalReference?: string;
   nextDueDate?: string;
 };
 
@@ -49,6 +50,7 @@ export type AsaasPayment = {
   netValue?: number;
   billingType: string;
   status: string;
+  externalReference?: string;
   dueDate?: string;
   paymentDate?: string;
   invoiceUrl?: string;
@@ -93,6 +95,7 @@ export async function createSubscription(input: {
   value: number;
   cycle: "MONTHLY" | "YEARLY";
   nextDueDate?: string;
+  externalReference?: string;
 }): Promise<AsaasSubscription> {
   if (isMockMode()) {
     return {
@@ -160,6 +163,7 @@ export async function createPayment(input: {
   value: number;
   billingType?: string;
   dueDate?: string;
+  externalReference?: string;
 }): Promise<AsaasPayment> {
   if (isMockMode()) {
     return {

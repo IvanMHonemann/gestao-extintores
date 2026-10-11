@@ -83,6 +83,9 @@ var init_schema = __esm({
       email: varchar("email", { length: 320 }).notNull().unique(),
       passwordHash: varchar("passwordHash", { length: 255 }).notNull(),
       recoveryCodeHash: varchar("recoveryCodeHash", { length: 255 }),
+      emailVerifiedAt: timestamp("emailVerifiedAt"),
+      emailVerificationTokenHash: varchar("emailVerificationTokenHash", { length: 64 }),
+      emailVerificationExpiresAt: timestamp("emailVerificationExpiresAt"),
       role: mysqlEnum("role", ["company_admin", "operator", "technician"]).default("operator").notNull(),
       active: boolean("active").default(true).notNull(),
       createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -481,6 +484,10 @@ async function ensureOwnerScopeColumns() {
     await pool.query("ALTER TABLE `extinguishers` ADD COLUMN `stockQuantity` int NOT NULL DEFAULT 1").catch(() => void 0);
     await pool.query("ALTER TABLE `extinguishers` MODIFY COLUMN `clientId` int NULL").catch(() => void 0);
     await pool.query("ALTER TABLE `clients` ADD COLUMN `stockQuantity` int NOT NULL DEFAULT 1").catch(() => void 0);
+    await pool.query("ALTER TABLE `member_accounts` ADD COLUMN `emailVerifiedAt` timestamp NULL").catch(() => void 0);
+    await pool.query("ALTER TABLE `member_accounts` ADD COLUMN `emailVerificationTokenHash` varchar(64) NULL").catch(() => void 0);
+    await pool.query("ALTER TABLE `member_accounts` ADD COLUMN `emailVerificationExpiresAt` timestamp NULL").catch(() => void 0);
+    await pool.query("UPDATE `member_accounts` SET `emailVerifiedAt` = COALESCE(`emailVerifiedAt`, `createdAt`) WHERE `emailVerifiedAt` IS NULL").catch(() => void 0);
     ownerScopeReady = true;
   } catch (err) {
     console.warn("[db] ensureOwnerScopeColumns", err);
@@ -1451,15 +1458,23 @@ async function recordPaymentEvent(data) {
   if (!db) throw new Error("Database not connected");
   const existing = await findPaymentEventByEventId(data.eventId);
   if (existing) return { id: existing.id, duplicate: true };
-  const [result] = await db.insert(paymentEvents).values({
-    eventId: data.eventId,
-    event: data.event,
-    paymentId: data.paymentId ?? null,
-    subscriptionId: data.subscriptionId ?? null,
-    payload: data.payload,
-    processed: data.processed ?? true
-  });
-  return { id: Number(result.insertId), duplicate: false };
+  try {
+    const [result] = await db.insert(paymentEvents).values({
+      eventId: data.eventId,
+      event: data.event,
+      paymentId: data.paymentId ?? null,
+      subscriptionId: data.subscriptionId ?? null,
+      payload: data.payload,
+      processed: data.processed ?? true
+    });
+    return { id: Number(result.insertId), duplicate: false };
+  } catch (error) {
+    if (error?.code === "ER_DUP_ENTRY") {
+      const concurrent = await findPaymentEventByEventId(data.eventId);
+      if (concurrent) return { id: concurrent.id, duplicate: true };
+    }
+    throw error;
+  }
 }
 async function listAvailablePlansForCompanies() {
   const db = await getDb();
@@ -1745,6 +1760,7 @@ __export(email_exports, {
   emailAdminPlanChanged: () => emailAdminPlanChanged,
   emailExtinguisherAlerts: () => emailExtinguisherAlerts,
   emailPlanChanged: () => emailPlanChanged,
+  emailVerifyAccount: () => emailVerifyAccount,
   getAdminNotificationEmail: () => getAdminNotificationEmail,
   getAppPublicUrl: () => getAppPublicUrl,
   getEmailFrom: () => getEmailFrom,
@@ -1890,14 +1906,12 @@ async function emailAccountCreated(input) {
     ["Respons\xE1vel", input.userName],
     ["E-mail de acesso", input.email]
   ];
-  if (input.password) rows.push(["Senha", input.password]);
-  rows.push(["C\xF3digo de redefini\xE7\xE3o", input.recoveryCode]);
   rows.push(["Plano", planLine]);
   const html = layout(
     "Sua conta Extinfy foi criada",
     `<p style="margin:0 0 12px;color:#c4cae0;line-height:1.5;">Ol\xE1, <strong style="color:#fff;">${escapeHtml(input.userName)}</strong>. Sua conta foi criada com sucesso. Guarde estes dados em local seguro.</p>
     ${dataTable(rows)}
-    <p style="margin:0 0 8px;color:#c4cae0;font-size:13px;line-height:1.5;">Use o <strong style="color:#fff;">c\xF3digo de redefini\xE7\xE3o</strong> se precisar trocar a senha na tela de recupera\xE7\xE3o.</p>
+    <p style="margin:0 0 8px;color:#c4cae0;font-size:13px;line-height:1.5;">Use o fluxo de confirma\xE7\xE3o e recupera\xE7\xE3o dentro do Extinfy. Dados secretos n\xE3o s\xE3o enviados por e-mail.</p>
     ${cta(loginUrl, "Entrar no Extinfy")}`
   );
   return sendEmail({
@@ -1907,11 +1921,14 @@ async function emailAccountCreated(input) {
     text: `Conta criada
 Empresa: ${input.companyName}
 E-mail: ${input.email}
-Senha: ${input.password || "(a definida no cadastro)"}
-C\xF3digo de redefini\xE7\xE3o: ${input.recoveryCode}
 Plano: ${planLine}
-Acesse: ${loginUrl}`
+A senha n\xE3o \xE9 enviada por e-mail. Confirme a conta e use o fluxo seguro de recupera\xE7\xE3o em: ${loginUrl}`
   });
+}
+async function emailVerifyAccount(input) {
+  const url = `${getAppPublicUrl()}/confirmar-email?email=${encodeURIComponent(input.to)}&token=${encodeURIComponent(input.token)}`;
+  const html = layout("Confirme seu e-mail", `<p style="color:#c4cae0;line-height:1.5;">Ol\xE1, <strong style="color:#fff;">${escapeHtml(input.userName)}</strong>. Confirme seu endere\xE7o para ativar o acesso ao Extinfy.</p>${cta(url, "Confirmar e-mail")}<p style="color:#8b93ad;font-size:12px;">O link expira em 24 horas.</p>`);
+  return sendEmail({ to: input.to, subject: "Extinfy \u2014 confirme seu e-mail", html, text: `Confirme seu e-mail em: ${url}` });
 }
 async function emailPlanChanged(input) {
   const title = input.isUpgrade ? "Upgrade de plano confirmado" : "Plano adquirido";
@@ -2256,7 +2273,28 @@ import { TRPCError as TRPCError3 } from "@trpc/server";
 init_schema();
 init_db();
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { and as and2, eq as eq2, gt, lte } from "drizzle-orm";
+import { and as and2, eq as eq2, gt, lte, sql as sql2 } from "drizzle-orm";
+
+// server/signupPolicy.ts
+var DISPOSABLE_DOMAINS = /* @__PURE__ */ new Set([
+  "10minutemail.com",
+  "guerrillamail.com",
+  "mailinator.com",
+  "temp-mail.org",
+  "tempmail.com",
+  "yopmail.com",
+  "sharklasers.com",
+  "trashmail.com"
+]);
+function normalizeSignupEmail(email) {
+  return email.trim().toLowerCase();
+}
+function isDisposableEmail(email) {
+  const domain = normalizeSignupEmail(email).split("@").pop() || "";
+  return DISPOSABLE_DOMAINS.has(domain.replace(/^\s+/, ""));
+}
+
+// server/memberAuth.ts
 var SESSION_DAYS = 30;
 var RATE_WINDOW_MS = 15 * 60 * 1e3;
 var RATE_LIMIT = 5;
@@ -2309,7 +2347,7 @@ async function authenticateMember(email, password) {
   }
   const memberResult = await db.select().from(memberAccounts).where(eq2(memberAccounts.email, normalizedEmail)).limit(1);
   const member = memberResult[0];
-  if (member && member.active && verifyPassword(password, member.passwordHash)) {
+  if (member && member.active && member.emailVerifiedAt && verifyPassword(password, member.passwordHash)) {
     clearRateLimit2(key);
     return { kind: "company", account: member };
   }
@@ -2418,12 +2456,32 @@ async function recoverPassword(email, recoveryCode, newPassword) {
   registerFailure(key);
   return false;
 }
+async function verifyMemberEmail(email, token) {
+  const db = await getDb();
+  if (!db || !token) return false;
+  const normalizedEmail = email.trim().toLowerCase();
+  const rows = await db.select().from(memberAccounts).where(eq2(memberAccounts.email, normalizedEmail)).limit(1);
+  const account = rows[0];
+  if (!account || account.emailVerifiedAt || !account.emailVerificationTokenHash || !account.emailVerificationExpiresAt) return false;
+  if (account.emailVerificationExpiresAt.getTime() <= Date.now() || account.emailVerificationTokenHash !== hashToken(token)) return false;
+  await db.update(memberAccounts).set({ emailVerifiedAt: /* @__PURE__ */ new Date(), emailVerificationTokenHash: null, emailVerificationExpiresAt: null }).where(eq2(memberAccounts.id, account.id));
+  return true;
+}
 async function createCompanyWithAdmin(input) {
   const database = await getDb();
   if (!database) throw new Error("Database not connected");
   const recoveryCode = `EXT-${randomBytes(12).toString("base64url")}`;
-  const normalizedEmail = input.email.trim().toLowerCase();
+  const emailVerificationToken = randomBytes(32).toString("base64url");
+  const emailVerificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1e3);
+  const normalizedEmail = normalizeSignupEmail(input.email);
+  if (isDisposableEmail(normalizedEmail)) throw new Error("E-mail descart\xE1vel n\xE3o \xE9 permitido.");
   return await database.transaction(async (tx) => {
+    const existing = await tx.select({ id: memberAccounts.id }).from(memberAccounts).where(sql2`LOWER(${memberAccounts.email}) = ${normalizedEmail}`).limit(1);
+    if (existing.length) {
+      const duplicate = new Error("E-mail j\xE1 cadastrado");
+      duplicate.code = "ER_DUP_ENTRY";
+      throw duplicate;
+    }
     const trialEnds = new Date(Date.now() + 14 * 24 * 3600 * 1e3);
     const trialYmd = trialEnds.toISOString().slice(0, 10);
     const todayYmd = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
@@ -2443,6 +2501,9 @@ async function createCompanyWithAdmin(input) {
       email: normalizedEmail,
       passwordHash: hashPassword(input.password),
       recoveryCodeHash: hashPassword(recoveryCode),
+      emailVerifiedAt: null,
+      emailVerificationTokenHash: hashToken(emailVerificationToken),
+      emailVerificationExpiresAt,
       role: "company_admin",
       active: true
     });
@@ -2465,7 +2526,7 @@ async function createCompanyWithAdmin(input) {
         });
       }
     }
-    return { companyId, accountId: Number(accountResult[0].insertId), recoveryCode, planId: input.planId ?? null };
+    return { companyId, accountId: Number(accountResult[0].insertId), recoveryCode, emailVerificationToken, planId: input.planId ?? null };
   });
 }
 async function createCompanyUser(input) {
@@ -2478,6 +2539,7 @@ async function createCompanyUser(input) {
     email: input.email.trim().toLowerCase(),
     passwordHash: hashPassword(input.password),
     recoveryCodeHash: hashPassword(recoveryCode),
+    emailVerifiedAt: /* @__PURE__ */ new Date(),
     role: input.role,
     active: true
   });
@@ -2544,7 +2606,7 @@ async function verifyMemberPassword(memberAccountId, password) {
 
 // server/planLimits.ts
 init_schema();
-import { sql as sql2, eq as eq3 } from "drizzle-orm";
+import { sql as sql3, eq as eq3 } from "drizzle-orm";
 async function getEffectivePlan(companyId) {
   const resolved = await resolveCompanyPlan(companyId);
   const plan = resolved.plan;
@@ -2597,13 +2659,13 @@ async function requirePlanFeature(companyId, feature, label) {
 async function countClients(companyId) {
   const database = await getDb();
   if (!database) return 0;
-  const rows = await database.select({ total: sql2`count(*)` }).from(clients).where(eq3(clients.accountId, companyId));
+  const rows = await database.select({ total: sql3`count(*)` }).from(clients).where(eq3(clients.accountId, companyId));
   return Number(rows[0]?.total || 0);
 }
 async function countExtinguishers(companyId) {
   const database = await getDb();
   if (!database) return 0;
-  const rows = await database.select({ total: sql2`count(*)` }).from(extinguishers).where(eq3(extinguishers.accountId, companyId));
+  const rows = await database.select({ total: sql3`count(*)` }).from(extinguishers).where(eq3(extinguishers.accountId, companyId));
   return Number(rows[0]?.total || 0);
 }
 async function countUsers(companyId) {
@@ -3028,6 +3090,8 @@ var appRouter = router({
       try {
         const signupLimit = await consumeRateLimit(`signup:ip:${ctx.req.ip}`, RATE_RULES.signupIp);
         if (!signupLimit.allowed) throw new TRPCError4({ code: "TOO_MANY_REQUESTS", message: "N\xE3o foi poss\xEDvel concluir o cadastro agora. Tente novamente mais tarde.", cause: { retryAfter: signupLimit.retryAfter } });
+        const normalizedEmail = normalizeSignupEmail(input.email);
+        if (isDisposableEmail(normalizedEmail)) throw new TRPCError4({ code: "BAD_REQUEST", message: "Use um e-mail permanente para criar a conta." });
         const created = await createCompanyWithAdmin({
           companyName: input.companyName,
           userName: input.userName,
@@ -3047,11 +3111,10 @@ var appRouter = router({
               userName: input.userName,
               companyName: input.companyName,
               email: input.email,
-              password: input.password,
-              recoveryCode: created.recoveryCode,
               planName,
               isTrial: true
             });
+            await emailVerifyAccount({ to: normalizedEmail, userName: input.userName, token: created.emailVerificationToken });
             await emailAdminNewCompany({
               companyName: input.companyName,
               userName: input.userName,
@@ -3063,18 +3126,18 @@ var appRouter = router({
             console.warn("[email] signup notify failed", err);
           }
         })();
-        const principal = await authenticateMember(input.email, input.password);
-        if (principal) {
-          const session = await createSession(principal);
-          ctx.res.cookie(MEMBER_COOKIE_NAME, session.rawToken, { ...getSessionCookieOptions(ctx.req, true), maxAge: 30 * 24 * 60 * 60 * 1e3 });
-        }
-        return { success: true, ...created };
+        return { success: true, emailVerificationRequired: true };
       } catch (error) {
         if (error?.code === "ER_DUP_ENTRY") {
           throw new TRPCError4({ code: "CONFLICT", message: "Este e-mail j\xE1 est\xE1 cadastrado." });
         }
         throw error;
       }
+    }),
+    verifyEmail: publicProcedure.input(z2.object({ email: z2.string().email(), token: z2.string().min(20).max(256) })).mutation(async ({ input }) => {
+      const verified = await verifyMemberEmail(input.email, input.token);
+      if (!verified) throw new TRPCError4({ code: "BAD_REQUEST", message: "Link de confirma\xE7\xE3o inv\xE1lido ou expirado." });
+      return { success: true };
     }),
     login: publicProcedure.input(z2.object({ email: z2.string().email(), password: z2.string().min(1) })).mutation(async ({ ctx, input }) => {
       const normalizedEmail = input.email.trim().toLowerCase();
@@ -3361,8 +3424,6 @@ var appRouter = router({
             userName: input.userName,
             companyName: input.companyName,
             email: input.email,
-            password: input.password,
-            recoveryCode: created.recoveryCode,
             planName: null,
             isTrial: true
           });
@@ -3403,8 +3464,6 @@ var appRouter = router({
               userName: input.userName,
               companyName: company?.name || `Empresa #${ctx.accountId}`,
               email: input.email,
-              password: input.password,
-              recoveryCode: created.recoveryCode,
               planName: null,
               isTrial: false
             });
@@ -4118,6 +4177,31 @@ function requestId(req, res, next) {
   next();
 }
 
+// server/asaasWebhook.ts
+function parseExternalReference(value) {
+  const match = String(value || "").trim().match(/^company:(\d+):plan:(\d+)$/i);
+  if (!match) return null;
+  const companyId = Number(match[1]);
+  const planId = Number(match[2]);
+  return companyId > 0 && planId > 0 ? { companyId, planId } : null;
+}
+function money(value) {
+  const number = typeof value === "number" ? value : Number(String(value ?? "").replace(",", "."));
+  return Number.isFinite(number) ? Math.round(number * 100) / 100 : null;
+}
+function validateAsaasPayment(input) {
+  const reference = parseExternalReference(input.payment.externalReference);
+  if (!reference) return { ok: false, reason: "externalReference ausente ou inv\xE1lida" };
+  if (reference.companyId !== input.company.id || reference.planId !== input.plan.id) return { ok: false, reason: "empresa ou plano divergente" };
+  if (input.payment.customer && input.company.asaasCustomerId && input.payment.customer !== input.company.asaasCustomerId) return { ok: false, reason: "cliente Asaas divergente" };
+  const expectedSubscription = input.subscription?.asaasSubscriptionId || input.company.asaasSubscriptionId;
+  if (expectedSubscription && input.payment.subscription !== expectedSubscription) return { ok: false, reason: "assinatura Asaas divergente" };
+  const received = money(input.payment.value);
+  const expected = money(input.subscription?.amount ?? input.plan.price);
+  if (received === null || expected === null || received !== expected) return { ok: false, reason: "valor divergente" };
+  return { ok: true, reference };
+}
+
 // server/vercel-entry.ts
 async function createApp() {
   const app = express();
@@ -4164,7 +4248,18 @@ async function createApp() {
       const body = req.body || {};
       const eventId = String(body.id || body.eventId || body.payment?.id || `${body.event || "evt"}_${Date.now()}`);
       const event = String(body.event || body.type || "UNKNOWN");
-      const recorded = await (await Promise.resolve().then(() => (init_db(), db_exports))).recordPaymentEvent({
+      const payment = body.payment || body;
+      const reference = parseExternalReference(payment.externalReference);
+      const billingDb = await Promise.resolve().then(() => (init_db(), db_exports));
+      const company = reference ? await billingDb.getCompanyById(reference.companyId) : null;
+      const plan = reference ? await billingDb.getSubscriptionPlanById(reference.planId) : null;
+      const validation = company && plan ? validateAsaasPayment({ payment, company, plan }) : { ok: false, reason: "empresa ou plano n\xE3o encontrado" };
+      if (!validation.ok) {
+        console.warn("[Asaas webhook] evento rejeitado:", validation.reason);
+        await billingDb.recordPaymentEvent({ eventId: `${eventId}:rejected`.slice(0, 128), event: `${event}:REJECTED`, payload: JSON.stringify({ eventId, event, reason: validation.reason, reference }), processed: false }).catch(() => void 0);
+        return res.status(422).json({ error: "Webhook de pagamento inv\xE1lido" });
+      }
+      const recorded = await billingDb.recordPaymentEvent({
         eventId,
         event,
         paymentId: body.payment?.id ? void 0 : void 0,
@@ -4182,7 +4277,16 @@ async function createApp() {
     }
   });
   app.use(csrfProtection);
-  app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
+  app.use("/api/trpc", createExpressMiddleware({
+    router: appRouter,
+    createContext,
+    onError({ error, ctx }) {
+      if (error.code === "TOO_MANY_REQUESTS") {
+        const retryAfter = Number(error.cause?.retryAfter);
+        if (Number.isFinite(retryAfter) && retryAfter > 0) ctx?.res.setHeader("Retry-After", String(Math.ceil(retryAfter)));
+      }
+    }
+  }));
   app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
   const distPath = path2.resolve(process.cwd(), "dist", "public");
   if (fs2.existsSync(distPath)) {

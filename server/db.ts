@@ -75,6 +75,10 @@ export async function ensureOwnerScopeColumns() {
     await pool.query("ALTER TABLE `extinguishers` ADD COLUMN `stockQuantity` int NOT NULL DEFAULT 1").catch(() => undefined);
     await pool.query("ALTER TABLE `extinguishers` MODIFY COLUMN `clientId` int NULL").catch(() => undefined);
     await pool.query("ALTER TABLE `clients` ADD COLUMN `stockQuantity` int NOT NULL DEFAULT 1").catch(() => undefined);
+    await pool.query("ALTER TABLE `member_accounts` ADD COLUMN `emailVerifiedAt` timestamp NULL").catch(() => undefined);
+    await pool.query("ALTER TABLE `member_accounts` ADD COLUMN `emailVerificationTokenHash` varchar(64) NULL").catch(() => undefined);
+    await pool.query("ALTER TABLE `member_accounts` ADD COLUMN `emailVerificationExpiresAt` timestamp NULL").catch(() => undefined);
+    await pool.query("UPDATE `member_accounts` SET `emailVerifiedAt` = COALESCE(`emailVerifiedAt`, `createdAt`) WHERE `emailVerifiedAt` IS NULL").catch(() => undefined);
     ownerScopeReady = true;
   } catch (err) {
     console.warn("[db] ensureOwnerScopeColumns", err);
@@ -1235,15 +1239,23 @@ export async function recordPaymentEvent(data: {
   if (!db) throw new Error("Database not connected");
   const existing = await findPaymentEventByEventId(data.eventId);
   if (existing) return { id: existing.id, duplicate: true as const };
-  const [result] = await db.insert(paymentEvents).values({
-    eventId: data.eventId,
-    event: data.event,
-    paymentId: data.paymentId ?? null,
-    subscriptionId: data.subscriptionId ?? null,
-    payload: data.payload,
-    processed: data.processed ?? true,
-  });
-  return { id: Number((result as any).insertId), duplicate: false as const };
+  try {
+    const [result] = await db.insert(paymentEvents).values({
+      eventId: data.eventId,
+      event: data.event,
+      paymentId: data.paymentId ?? null,
+      subscriptionId: data.subscriptionId ?? null,
+      payload: data.payload,
+      processed: data.processed ?? true,
+    });
+    return { id: Number((result as any).insertId), duplicate: false as const };
+  } catch (error: any) {
+    if (error?.code === "ER_DUP_ENTRY") {
+      const concurrent = await findPaymentEventByEventId(data.eventId);
+      if (concurrent) return { id: concurrent.id, duplicate: true as const };
+    }
+    throw error;
+  }
 }
 
 export async function listAvailablePlansForCompanies() {

@@ -13,6 +13,7 @@ import * as memberAuth from "./memberAuth";
 import * as emailService from "./email";
 import { auditFromCtx, diffAuditData, exportAuditLogsCsv, getAuditLogById, listAuditLogs, listEntityAuditHistory } from "./audit";
 import { consumeRateLimit, clearRateLimit, RATE_RULES } from "./rateLimit";
+import { isDisposableEmail, normalizeSignupEmail } from "./signupPolicy";
 
 const emptyToNull = (value?: string) => value?.trim() || null;
 const companyUserRole = z.enum(["company_admin", "operator", "technician"]);
@@ -44,6 +45,8 @@ export const appRouter = router({
         try {
           const signupLimit = await consumeRateLimit(`signup:ip:${ctx.req.ip}`, RATE_RULES.signupIp);
           if (!signupLimit.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Não foi possível concluir o cadastro agora. Tente novamente mais tarde.", cause: { retryAfter: signupLimit.retryAfter } });
+          const normalizedEmail = normalizeSignupEmail(input.email);
+          if (isDisposableEmail(normalizedEmail)) throw new TRPCError({ code: "BAD_REQUEST", message: "Use um e-mail permanente para criar a conta." });
           // Conta só é criada após plano + confirmação de pagamento (mock ou real no futuro)
           const created = await memberAuth.createCompanyWithAdmin({
             companyName: input.companyName,
@@ -65,11 +68,10 @@ export const appRouter = router({
                 userName: input.userName,
                 companyName: input.companyName,
                 email: input.email,
-                password: input.password,
-                recoveryCode: created.recoveryCode,
                 planName,
                 isTrial: true,
               });
+              await emailService.emailVerifyAccount({ to: normalizedEmail, userName: input.userName, token: created.emailVerificationToken });
               await emailService.emailAdminNewCompany({
                 companyName: input.companyName,
                 userName: input.userName,
@@ -81,19 +83,21 @@ export const appRouter = router({
               console.warn("[email] signup notify failed", err);
             }
           })();
-          // Auto-login after signup
-          const principal = await memberAuth.authenticateMember(input.email, input.password);
-          if (principal) {
-            const session = await memberAuth.createSession(principal);
-            ctx.res.cookie(MEMBER_COOKIE_NAME, session.rawToken, { ...getSessionCookieOptions(ctx.req, true), maxAge: 30 * 24 * 60 * 60 * 1000 });
-          }
-          return { success: true as const, ...created };
+          return { success: true as const, emailVerificationRequired: true };
         } catch (error: any) {
           if (error?.code === "ER_DUP_ENTRY") {
             throw new TRPCError({ code: "CONFLICT", message: "Este e-mail já está cadastrado." });
           }
           throw error;
         }
+      }),
+
+    verifyEmail: publicProcedure
+      .input(z.object({ email: z.string().email(), token: z.string().min(20).max(256) }))
+      .mutation(async ({ input }) => {
+        const verified = await memberAuth.verifyMemberEmail(input.email, input.token);
+        if (!verified) throw new TRPCError({ code: "BAD_REQUEST", message: "Link de confirmação inválido ou expirado." });
+        return { success: true as const };
       }),
 
     login: publicProcedure
@@ -381,8 +385,6 @@ export const appRouter = router({
               userName: input.userName,
               companyName: input.companyName,
               email: input.email,
-              password: input.password,
-              recoveryCode: created.recoveryCode,
               planName: null,
               isTrial: true,
             });
@@ -418,8 +420,6 @@ export const appRouter = router({
               userName: input.userName,
               companyName: company?.name || `Empresa #${ctx.accountId}`,
               email: input.email,
-              password: input.password,
-              recoveryCode: created.recoveryCode,
               planName: null,
               isTrial: false,
             });

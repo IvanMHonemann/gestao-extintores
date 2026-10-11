@@ -181,8 +181,6 @@ export async function emailAccountCreated(input: {
   userName: string;
   companyName: string;
   email: string;
-  password?: string;
-  recoveryCode: string;
   planName?: string | null;
   isTrial?: boolean;
 }) {
@@ -197,15 +195,13 @@ export async function emailAccountCreated(input: {
     ["Responsável", input.userName],
     ["E-mail de acesso", input.email],
   ];
-  if (input.password) rows.push(["Senha", input.password]);
-  rows.push(["Código de redefinição", input.recoveryCode]);
   rows.push(["Plano", planLine]);
 
   const html = layout(
     "Sua conta Extinfy foi criada",
     `<p style="margin:0 0 12px;color:#c4cae0;line-height:1.5;">Olá, <strong style="color:#fff;">${escapeHtml(input.userName)}</strong>. Sua conta foi criada com sucesso. Guarde estes dados em local seguro.</p>
     ${dataTable(rows)}
-    <p style="margin:0 0 8px;color:#c4cae0;font-size:13px;line-height:1.5;">Use o <strong style="color:#fff;">código de redefinição</strong> se precisar trocar a senha na tela de recuperação.</p>
+    <p style="margin:0 0 8px;color:#c4cae0;font-size:13px;line-height:1.5;">Use o fluxo de confirmação e recuperação dentro do Extinfy. Dados secretos não são enviados por e-mail.</p>
     ${cta(loginUrl, "Entrar no Extinfy")}`,
   );
 
@@ -213,8 +209,14 @@ export async function emailAccountCreated(input: {
     to: input.to,
     subject: "Extinfy — conta criada e dados de acesso",
     html,
-    text: `Conta criada\nEmpresa: ${input.companyName}\nE-mail: ${input.email}\nSenha: ${input.password || "(a definida no cadastro)"}\nCódigo de redefinição: ${input.recoveryCode}\nPlano: ${planLine}\nAcesse: ${loginUrl}`,
+    text: `Conta criada\nEmpresa: ${input.companyName}\nE-mail: ${input.email}\nPlano: ${planLine}\nA senha não é enviada por e-mail. Confirme a conta e use o fluxo seguro de recuperação em: ${loginUrl}`,
   });
+}
+
+export async function emailVerifyAccount(input: { to: string; userName: string; token: string }) {
+  const url = `${getAppPublicUrl()}/confirmar-email?email=${encodeURIComponent(input.to)}&token=${encodeURIComponent(input.token)}`;
+  const html = layout("Confirme seu e-mail", `<p style="color:#c4cae0;line-height:1.5;">Olá, <strong style="color:#fff;">${escapeHtml(input.userName)}</strong>. Confirme seu endereço para ativar o acesso ao Extinfy.</p>${cta(url, "Confirmar e-mail")}<p style="color:#8b93ad;font-size:12px;">O link expira em 24 horas.</p>`);
+  return sendEmail({ to: input.to, subject: "Extinfy — confirme seu e-mail", html, text: `Confirme seu e-mail em: ${url}` });
 }
 
 /** Compra / upgrade de plano. */
